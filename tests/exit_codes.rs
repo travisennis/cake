@@ -35,8 +35,6 @@ const UNREACHABLE_BASE_URL: &str = "http://127.0.0.1:1";
 fn provider_settings(base_url: &str) -> String {
     format!(
         r#"
-default_model = "test"
-
 [[models]]
 name = "test"
 model = "test-model"
@@ -50,7 +48,8 @@ api_type = "responses"
 /// Spawn a `stream-json` run against `base_url`, optionally with the strict
 /// exit-code flag.
 fn spawn_stream_json(env: &TestEnv, base_url: &str, fail_on_error: bool) -> Child {
-    env.write_project_settings(&provider_settings(base_url));
+    env.write_global_settings(&provider_settings(base_url));
+    env.write_project_settings("default_model = \"test\"\n");
     let mut command = env.command();
     command
         .args(["--output-format", "stream-json"])
@@ -68,7 +67,8 @@ fn spawn_stream_json(env: &TestEnv, base_url: &str, fail_on_error: bool) -> Chil
 /// Spawn a `json` run against `base_url`, optionally with the strict
 /// exit-code flag (which must be inert in this mode).
 fn spawn_json(env: &TestEnv, base_url: &str, fail_on_error: bool) -> Child {
-    env.write_project_settings(&provider_settings(base_url));
+    env.write_global_settings(&provider_settings(base_url));
+    env.write_project_settings("default_model = \"test\"\n");
     let mut command = env.command();
     command
         .args(["--output-format", "json"])
@@ -333,10 +333,8 @@ fn test_unparsable_project_settings_exits_three() {
 #[test]
 fn test_missing_api_key_exits_three() {
     let env = cake_env();
-    env.write_project_settings(
+    env.write_global_settings(
         r#"
-default_model = "test"
-
 [[models]]
 name = "test"
 model = "glm-5.1"
@@ -344,6 +342,7 @@ base_url = "https://example.com"
 api_key_env = "TEST_API_KEY"
 "#,
     );
+    env.write_project_settings("default_model = \"test\"\n");
 
     let output = env
         .command()

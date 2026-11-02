@@ -4,10 +4,15 @@ use std::path::{Path, PathBuf};
 
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::config::expand_home;
 use crate::config::model::{ApiType, ModelConfig, ModelProvider, ProviderHeaders, ReasoningEffort};
 use crate::config::skills::SkillConfig;
+use crate::config::trust::{
+    AuthorityKind, AuthoritySource, ConfigLoadError, ProjectConfigMode, ProjectConfigSnapshot,
+    ProjectTrustReport,
+};
 
 /// Skill settings loaded from settings.toml.
 ///
@@ -306,10 +311,9 @@ pub struct ProfileSettings {
 ///
 /// # Examples
 ///
-/// Settings are loaded via [`SettingsLoader::load`],
-/// [`SettingsLoader::load_with_profile`], or
-/// [`SettingsLoader::load_with_profile_and_gate_bypass`], which merge global
-/// and project-level settings files automatically.
+/// Settings are loaded via [`SettingsLoader::load_with_project_config`],
+/// which merges global and trusted project settings under a
+/// [`ProjectConfigMode`](crate::config::trust::ProjectConfigMode).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default)]
@@ -343,6 +347,151 @@ pub struct Settings {
     /// Agent-loop and tool output limits.
     #[serde(default)]
     pub limits: Option<LimitsSettingsOverlay>,
+}
+
+impl Settings {
+    /// Return a copy with every authority-bearing project key removed.
+    ///
+    /// Low-authority fields (`default_model`, `[limits]`, narrowing
+    /// `[tools].enabled`, profile selection, and skill filters) are preserved.
+    #[must_use]
+    pub fn without_authority(&self) -> Self {
+        let mut stripped = self.clone();
+        stripped.gates.clear();
+        stripped.directories.clear();
+        stripped.sandbox = None;
+        stripped.system_prompt = None;
+        if let Some(skills) = &mut stripped.skills {
+            skills.path = None;
+        }
+        if let Some(tools) = &mut stripped.tools {
+            tools.bash = None;
+        }
+        for profile in stripped.profiles.values_mut() {
+            profile.gates.clear();
+            profile.directories.clear();
+            profile.sandbox = None;
+            profile.system_prompt = None;
+            profile.skills.path = None;
+            profile.tools.bash = None;
+        }
+        stripped
+    }
+}
+
+/// Helpers for classifying authority-bearing settings keys.
+pub struct ProjectAuthority;
+
+impl ProjectAuthority {
+    /// Report every authority-bearing key in one project settings source.
+    ///
+    /// The same function is used for review, status, and enforcement so a key
+    /// cannot be trusted in one place and applied in another.
+    #[must_use]
+    pub fn from_settings(settings: &Settings, path: &Path) -> Vec<AuthoritySource> {
+        let mut keys = Self::top_level_keys(settings);
+        let mut profile_names: Vec<&String> = settings.profiles.keys().collect();
+        profile_names.sort();
+        for name in profile_names {
+            if let Some(profile) = settings.profiles.get(name) {
+                keys.extend(Self::profile_keys(name, profile));
+            }
+        }
+        if keys.is_empty() {
+            Vec::new()
+        } else {
+            vec![AuthoritySource {
+                path: path.display().to_string(),
+                kind: AuthorityKind::Settings,
+                keys,
+                executable: false,
+            }]
+        }
+    }
+
+    /// Authority-bearing top-level settings keys.
+    fn top_level_keys(settings: &Settings) -> Vec<String> {
+        let mut keys = Vec::new();
+        if !settings.directories.is_empty() {
+            keys.push("directories".to_string());
+        }
+        Self::sandbox_keys(settings.sandbox.as_ref(), None, &mut keys);
+        keys.extend(settings.gates.keys().map(|name| format!("[gates.{name}]")));
+        let (gates, judge) = settings
+            .tools
+            .as_ref()
+            .and_then(|tools| tools.bash.as_ref())
+            .map_or((false, false), |bash| {
+                (bash.gates.is_some(), bash.judge.is_some())
+            });
+        Self::bash_keys(gates, judge, None, &mut keys);
+        if settings.system_prompt.is_some() {
+            keys.push("system_prompt".to_string());
+        }
+        if settings
+            .skills
+            .as_ref()
+            .is_some_and(|skills| skills.path.is_some())
+        {
+            keys.push("[skills].path".to_string());
+        }
+        keys
+    }
+
+    /// Append sandbox grant keys, optionally namespaced to a profile.
+    fn sandbox_keys(
+        sandbox: Option<&SandboxSettings>,
+        profile: Option<&str>,
+        keys: &mut Vec<String>,
+    ) {
+        let Some(sandbox) = sandbox else {
+            return;
+        };
+        let prefix = profile.map_or_else(String::new, |name| format!("profiles.{name}."));
+        if !sandbox.read_only.is_empty() {
+            keys.push(format!("[{prefix}sandbox].read_only"));
+        }
+        if !sandbox.writable.is_empty() {
+            keys.push(format!("[{prefix}sandbox].writable"));
+        }
+    }
+
+    /// Append Bash gate and legacy judge keys, optionally namespaced to a profile.
+    fn bash_keys(gates: bool, judge: bool, profile: Option<&str>, keys: &mut Vec<String>) {
+        let prefix = profile.map_or_else(String::new, |name| format!("profiles.{name}."));
+        if gates {
+            keys.push(format!("[{prefix}tools.bash].gates"));
+        }
+        if judge {
+            keys.push(format!("[{prefix}tools.bash.judge]"));
+        }
+    }
+
+    /// Authority-bearing keys inside one profile overlay.
+    fn profile_keys(name: &str, profile: &ProfileSettings) -> Vec<String> {
+        let mut keys = Vec::new();
+        if !profile.directories.is_empty() {
+            keys.push(format!("[profiles.{name}].directories"));
+        }
+        Self::sandbox_keys(profile.sandbox.as_ref(), Some(name), &mut keys);
+        keys.extend(
+            profile
+                .gates
+                .keys()
+                .map(|gate| format!("[profiles.{name}.gates.{gate}]")),
+        );
+        let (gates, judge) = profile.tools.bash.as_ref().map_or((false, false), |bash| {
+            (bash.gates.is_some(), bash.judge.is_some())
+        });
+        Self::bash_keys(gates, judge, Some(name), &mut keys);
+        if profile.system_prompt.is_some() {
+            keys.push(format!("[profiles.{name}].system_prompt"));
+        }
+        if profile.skills.path.is_some() {
+            keys.push(format!("[profiles.{name}.skills].path"));
+        }
+        keys
+    }
 }
 
 /// A single user-configured agent-loop resource limit.
@@ -735,6 +884,55 @@ impl LoadedSettings {
     }
 }
 
+/// Which settings file supplied a merged value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsOrigin {
+    /// User-owned global settings, always trusted.
+    Global,
+    /// Project `.cake/settings.toml`, subject to the trust decision.
+    Project,
+}
+
+/// One settings file read exactly once for hashing, parsing, and merging.
+#[derive(Debug, Clone)]
+pub struct SettingsSource {
+    /// Absolute path used in warnings and diagnostics.
+    pub path: PathBuf,
+    /// Whether this is global or project settings.
+    pub origin: SettingsOrigin,
+    /// Lowercase hex SHA-256 of the file bytes.
+    pub sha256: String,
+    /// The parsed settings.
+    pub settings: Settings,
+    /// Unrecognized-key warnings for this file.
+    pub warnings: Vec<String>,
+}
+
+impl SettingsSource {
+    /// Return a copy with every authority-bearing key removed.
+    ///
+    /// Used by inspection commands and by enforcement when project authority
+    /// is not trusted: the low-authority overlay still applies, but nothing in
+    /// the returned value can grant paths, start gates, or read host files.
+    #[must_use]
+    pub fn without_authority(&self) -> Self {
+        let mut source = self.clone();
+        source.settings = source.settings.without_authority();
+        source
+    }
+}
+
+/// Settings plus the project trust decision they were loaded under.
+#[derive(Debug, Clone)]
+pub struct SettingsLoad {
+    /// The merged settings.
+    pub settings: LoadedSettings,
+    /// The project trust decision.
+    pub trust: ProjectTrustReport,
+    /// Exact project hook file bytes validated with the trust snapshot.
+    pub hook_files: Vec<crate::config::trust::HookFileSource>,
+}
+
 /// Definition of a named model in settings.toml.
 ///
 /// Each model has a unique name that can be used with `--model <name>`
@@ -742,9 +940,10 @@ impl LoadedSettings {
 ///
 /// # Examples
 ///
-/// Model definitions are declared in `settings.toml` under `[[models]]`.
-/// Use `SettingsLoader::load` to obtain a `LoadedSettings` map and access
-/// definitions by name.
+/// Model definitions are declared in the global `settings.toml` under
+/// `[[models]]`; project settings may select one by name. Use
+/// [`SettingsLoader::load_with_project_config`] to obtain a `LoadedSettings`
+/// map and access definitions by name.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelDefinition {
     /// Unique name for the model (lowercase alphanumeric + hyphens only)
@@ -882,6 +1081,20 @@ pub enum SettingsError {
     #[error("Profile '{name}' defines models, but model configs are only supported at top level")]
     ProfileModelsUnsupported { name: String },
 
+    #[error(
+        "Project settings {path} define models [{}], but model definitions are global-only. \
+         Move the entries to <config>/cake/settings.toml and select one by name from the project.",
+        names.join(", ")
+    )]
+    ProjectModelsUnsupported { path: PathBuf, names: Vec<String> },
+
+    #[error(
+        "Project settings {path} broaden [tools].enabled with [{}], but a project may only \
+         narrow the inherited tool selection.",
+        added.join(", ")
+    )]
+    ProjectToolsBroadened { path: PathBuf, added: Vec<String> },
+
     #[error("Unknown profile '{name}'{available}. Define [profiles.{name}] in settings.toml.")]
     UnknownProfile { name: String, available: String },
 
@@ -921,32 +1134,67 @@ pub enum SettingsError {
 /// # Examples
 ///
 /// ```ignore
-/// let loaded = SettingsLoader::load(Some(Path::new("/project")))?;
-/// if let Some(model) = loaded.models.get("zen") {
+/// let load = SettingsLoader::load_with_project_config(
+///     Path::new("/project"),
+///     None,
+///     false,
+///     &crate::config::config_dir(),
+///     ProjectConfigMode::Enforce,
+/// )?;
+/// if let Some(model) = load.settings.models.get("zen") {
 ///     println!("Model: {}", model.model);
 /// }
 /// ```
 pub struct SettingsLoader;
 
 impl SettingsLoader {
-    fn load_file(path: &Path) -> Result<Option<(Settings, Vec<String>)>, SettingsError> {
-        if !path.exists() {
-            return Ok(None);
+    /// Read one settings file and parse the same bytes that are hashed.
+    ///
+    /// Returns `Ok(None)` when the path does not exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns a settings error when the file cannot be read, is not UTF-8, or
+    /// cannot be parsed as TOML.
+    pub fn read_source(
+        path: &Path,
+        origin: SettingsOrigin,
+    ) -> Result<Option<SettingsSource>, SettingsError> {
+        match std::fs::read(path) {
+            Ok(bytes) => Self::read_source_bytes(path, origin, &bytes).map(Some),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(SettingsError::IoError(error)),
         }
-        Self::parse_settings_file(path).map(Some)
     }
 
-    /// Parse a settings file and report settings keys the deserializer dropped
-    /// because no [`Settings`] field matches them; they are ignored for
-    /// behavior but surfaced to the user.
-    fn parse_settings_file(path: &Path) -> Result<(Settings, Vec<String>), SettingsError> {
-        let content = std::fs::read_to_string(path)?;
+    /// Parse settings from the exact bytes the caller hashed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a settings error when the bytes are not UTF-8 or not TOML.
+    pub(crate) fn read_source_bytes(
+        path: &Path,
+        origin: SettingsOrigin,
+        bytes: &[u8],
+    ) -> Result<SettingsSource, SettingsError> {
+        let content = std::str::from_utf8(bytes)
+            .map_err(|error| {
+                SettingsError::IoError(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+            })?
+            .to_string();
         // Parse twice: once as a raw document to compare against, and once into
         // the typed [`Settings`], which silently drops unrecognized keys.
         let original: toml::Value = toml::from_str(&content)?;
         let settings: Settings = toml::from_str(&content)?;
         let round_trip = toml::Value::try_from(&settings)?;
-        Ok((settings, collect_unknown_keys(&original, &round_trip, path)))
+        let warnings = collect_unknown_keys(&original, &round_trip, path);
+        Ok(SettingsSource {
+            path: path.to_path_buf(),
+            origin,
+            sha256: hex::encode(Sha256::digest(bytes)),
+            settings,
+            warnings,
+        })
     }
 
     /// Resolve skill configuration from CLI flags and settings.
@@ -1021,111 +1269,164 @@ impl SettingsLoader {
         settings.map(<[String]>::to_vec)
     }
 
-    /// Loads and merges settings from global and project locations.
+    /// Loads global and project settings with the project trust decision.
     ///
-    /// Settings are loaded from:
-    /// 1. Global settings: `~/.config/cake/settings.toml`
-    /// 2. Project settings: `{project_dir}/.cake/settings.toml`
-    ///
-    /// Project settings override global settings for models with the same name
-    /// and for `default_model`.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let loaded = SettingsLoader::load(Some(Path::new("/my/project")))?;
-    /// if let Some(model) = loaded.models.get("default") {
-    ///     println!("Model: {}", model.model);
-    /// }
-    /// ```
+    /// The global source is always trusted. The project source is read once by
+    /// [`ProjectConfigSnapshot`], merged for low-authority keys, and merged in
+    /// full only when the trust decision allows project authority.
     ///
     /// # Errors
     ///
-    /// Returns an error if a settings file exists but cannot be parsed,
-    /// if duplicate model names are found within the same file,
-    /// or if `default_model` references a model that doesn't exist.
-    pub fn load(project_dir: Option<&Path>) -> Result<LoadedSettings, SettingsError> {
-        Self::load_with_profile_inner(project_dir, None, false)
+    /// Returns [`ConfigLoadError::Settings`] for an invalid settings file and
+    /// [`ConfigLoadError::Trust`] when an enforcing mode cannot use the project
+    /// configuration.
+    pub fn load_with_project_config(
+        project_dir: &Path,
+        profile: Option<&str>,
+        no_gate: bool,
+        config_dir: &Path,
+        mode: ProjectConfigMode,
+    ) -> Result<SettingsLoad, ConfigLoadError> {
+        let mut acc = SettingsAccumulator::default();
+        Self::merge_global_source(&mut acc, config_dir)?;
+        let snapshot = ProjectConfigSnapshot::load(project_dir, config_dir, mode)?;
+        let trust = snapshot.evaluate()?;
+        Self::merge_project_source(&mut acc, &snapshot, mode, &trust)?;
+        let settings = Self::finish_loaded(acc, profile, no_gate)?;
+        Ok(SettingsLoad {
+            settings,
+            trust,
+            hook_files: snapshot.hook_files.clone(),
+        })
     }
 
-    /// Loads and merges settings, applying the selected profile if provided.
+    /// Merge the user-owned global settings source.
+    fn merge_global_source(
+        acc: &mut SettingsAccumulator,
+        config_dir: &Path,
+    ) -> Result<(), SettingsError> {
+        let global_path = config_dir.join("cake").join("settings.toml");
+        if let Some(source) = Self::read_source(&global_path, SettingsOrigin::Global)? {
+            Self::merge_source(&source, acc)?;
+        }
+        Ok(())
+    }
+
+    /// Merge the project settings source, stripping authority when the report
+    /// does not allow it.
+    fn merge_project_source(
+        acc: &mut SettingsAccumulator,
+        snapshot: &ProjectConfigSnapshot,
+        mode: ProjectConfigMode,
+        trust: &ProjectTrustReport,
+    ) -> Result<(), SettingsError> {
+        if let Some(source) = &snapshot.settings {
+            let applies_authority = mode.is_enforcing() || trust.allows_authority();
+            let source = if applies_authority {
+                source.clone()
+            } else {
+                source.without_authority()
+            };
+            Self::merge_source(&source, acc)?;
+        }
+        acc.warnings.extend(snapshot.warnings.iter().cloned());
+        Ok(())
+    }
+
+    /// Apply the selected profile and validate the resolved model and gates.
+    fn finish_loaded(
+        mut acc: SettingsAccumulator,
+        profile: Option<&str>,
+        no_gate: bool,
+    ) -> Result<LoadedSettings, SettingsError> {
+        Self::apply_profile(profile, &mut acc)?;
+        Self::validate_default_model(&acc)?;
+        Self::validate_judge_model(&acc, no_gate)?;
+        Self::validate_gate_configuration(&acc, no_gate)?;
+        Ok(acc.into_loaded())
+    }
+
+    /// Test-only convenience loader that applies the project snapshot as if it
+    /// were trusted for one run.
+    ///
+    /// Production code uses [`Self::load_with_project_config`]. Tests that
+    /// exercise the trust boundary call that entry point instead.
+    #[cfg(test)]
+    pub fn load(project_dir: Option<&Path>) -> Result<LoadedSettings, SettingsError> {
+        Self::load_test_only(project_dir, None, false)
+    }
+
+    /// Test-only convenience loader with a profile.
+    #[cfg(test)]
     pub fn load_with_profile(
         project_dir: Option<&Path>,
         profile: Option<&str>,
     ) -> Result<LoadedSettings, SettingsError> {
-        Self::load_with_profile_inner(project_dir, profile, false)
+        Self::load_test_only(project_dir, profile, false)
     }
 
-    /// Loads and merges settings, applying the selected profile if provided.
-    ///
-    /// An explicit `--no-gate` bypass skips gate configuration validation so
-    /// the invocation can start from an otherwise broken selection. The
-    /// environment bypasses are handled inside validation.
+    /// Test-only convenience loader with a gate bypass.
+    #[cfg(test)]
     pub fn load_with_profile_and_gate_bypass(
         project_dir: Option<&Path>,
         profile: Option<&str>,
         no_gate: bool,
     ) -> Result<LoadedSettings, SettingsError> {
-        if !no_gate {
-            return if profile.is_some() {
-                Self::load_with_profile(project_dir, profile)
-            } else {
-                Self::load(project_dir)
-            };
-        }
-        Self::load_with_profile_inner(project_dir, profile, true)
+        Self::load_test_only(project_dir, profile, no_gate)
     }
 
-    fn load_with_profile_inner(
+    #[cfg(test)]
+    fn load_test_only(
         project_dir: Option<&Path>,
         profile: Option<&str>,
         no_gate: bool,
     ) -> Result<LoadedSettings, SettingsError> {
-        let mut acc = Self::load_sources(project_dir)?;
-        Self::apply_profile(profile, &mut acc)?;
-        Self::validate_default_model(&acc)?;
-
-        // Validate that the judge model (if set) refers to an existing model,
-        // mirroring default_model (see [`Self::validate_judge_model`]).
-        Self::validate_judge_model(&acc, no_gate)?;
-        Self::validate_gate_configuration(&acc, no_gate)?;
-
-        Ok(acc.into_loaded())
-    }
-
-    /// Load settings in precedence order so each source uses the same merge
-    /// pipeline. The global source is visited first and the optional project
-    /// source second, allowing project settings to override global scalars.
-    fn load_sources(project_dir: Option<&Path>) -> Result<SettingsAccumulator, SettingsError> {
+        let config_dir = crate::config::config_dir();
         let mut acc = SettingsAccumulator::default();
-        for path in Self::settings_paths(project_dir) {
-            Self::merge_settings_file(&path, &mut acc)?;
-        }
-        Ok(acc)
-    }
-
-    fn settings_paths(project_dir: Option<&Path>) -> Vec<PathBuf> {
-        let mut paths = vec![
-            crate::config::config_dir()
-                .join("cake")
-                .join("settings.toml"),
-        ];
+        Self::merge_global_source(&mut acc, &config_dir)?;
         if let Some(project_dir) = project_dir {
-            paths.push(project_dir.join(".cake").join("settings.toml"));
+            let snapshot = ProjectConfigSnapshot::load(
+                project_dir,
+                &config_dir,
+                ProjectConfigMode::EnforceOneRun,
+            )
+            .map_err(|error| match error {
+                ConfigLoadError::Settings(error) => error,
+                ConfigLoadError::Trust(error) => {
+                    SettingsError::IoError(std::io::Error::other(error.to_string()))
+                },
+            })?;
+            let trust = snapshot.evaluate().map_err(|error| {
+                SettingsError::IoError(std::io::Error::other(error.to_string()))
+            })?;
+            Self::merge_project_source(
+                &mut acc,
+                &snapshot,
+                ProjectConfigMode::EnforceOneRun,
+                &trust,
+            )?;
         }
-        paths
+        Self::finish_loaded(acc, profile, no_gate)
     }
 
-    fn merge_settings_file(
-        path: &Path,
+    fn merge_source(
+        source: &SettingsSource,
         acc: &mut SettingsAccumulator,
     ) -> Result<(), SettingsError> {
-        let Some((settings, warnings)) = Self::load_file(path)? else {
-            return Ok(());
-        };
-        Self::validate_profiles(&settings.profiles)?;
-        Self::merge_settings(settings, acc)?;
-        acc.warnings.extend(warnings);
+        Self::validate_profiles(&source.settings.profiles)?;
+        if source.origin == SettingsOrigin::Project && !source.settings.models.is_empty() {
+            return Err(SettingsError::ProjectModelsUnsupported {
+                path: source.path.clone(),
+                names: source
+                    .settings
+                    .models
+                    .iter()
+                    .map(|model| model.name.clone())
+                    .collect(),
+            });
+        }
+        Self::merge_settings(&source.settings, source.origin, &source.path, acc)?;
+        acc.warnings.extend(source.warnings.iter().cloned());
         Ok(())
     }
 
@@ -1139,7 +1440,7 @@ impl SettingsLoader {
         Self::validate_profile_name(name)?;
         let overlays = Self::profile_overlays(name, acc)?;
         for overlay in overlays {
-            acc.apply_profile_overlay(&overlay);
+            acc.apply_profile_overlay(&overlay)?;
         }
         Ok(())
     }
@@ -1154,7 +1455,7 @@ impl SettingsLoader {
     fn profile_overlays(
         name: &str,
         acc: &SettingsAccumulator,
-    ) -> Result<Vec<ProfileSettings>, SettingsError> {
+    ) -> Result<Vec<ProfileOverlay>, SettingsError> {
         acc.profiles.get(name).cloned().ok_or_else(|| {
             let mut available: Vec<_> = acc.profiles.keys().cloned().collect();
             available.sort();
@@ -1221,34 +1522,43 @@ impl SettingsLoader {
     }
 
     fn merge_settings(
-        settings: Settings,
+        settings: &Settings,
+        origin: SettingsOrigin,
+        source_path: &Path,
         acc: &mut SettingsAccumulator,
     ) -> Result<(), SettingsError> {
-        Self::add_models_to_map(&mut acc.models, settings.models)?;
-        acc.gates.merge(settings.gates);
+        Self::add_models_to_map(&mut acc.models, settings.models.clone())?;
+        acc.gates.merge(settings.gates.clone());
         if settings.default_model.is_some() {
-            acc.default_model = settings.default_model;
+            acc.default_model.clone_from(&settings.default_model);
         }
-        for dir in settings.directories {
-            acc.directories.insert(expand_home_str(&dir));
+        for dir in &settings.directories {
+            acc.directories.insert(expand_home_str(dir));
         }
         // `unwrap_or_default` keeps this function at baseline complexity: an
         // absent `[sandbox]` section contributes no grants.
-        let sandbox = settings.sandbox.unwrap_or_default();
+        let sandbox = settings.sandbox.clone().unwrap_or_default();
         acc.sandbox_read_only
             .extend(sandbox.read_only.iter().map(|p| expand_home_str(p)));
         acc.sandbox_writable
             .extend(sandbox.writable.iter().map(|p| expand_home_str(p)));
-        if let Some(settings_skills) = settings.skills {
-            acc.skills = settings_skills;
+        if let Some(settings_skills) = &settings.skills {
+            acc.skills = settings_skills.clone();
         }
         if settings.system_prompt.is_some() {
-            acc.system_prompt = settings.system_prompt;
+            acc.system_prompt.clone_from(&settings.system_prompt);
         }
-        Self::merge_tools_settings(settings.tools, acc);
-        Self::merge_limits(settings.limits, acc);
-        for (name, profile) in settings.profiles {
-            acc.profiles.entry(name).or_default().push(profile);
+        Self::merge_tools_settings(settings.tools.clone(), origin, source_path, acc)?;
+        Self::merge_limits(settings.limits.clone(), acc);
+        for (name, profile) in &settings.profiles {
+            acc.profiles
+                .entry(name.clone())
+                .or_default()
+                .push(ProfileOverlay {
+                    settings: profile.clone(),
+                    origin,
+                    path: source_path.to_path_buf(),
+                });
         }
         Ok(())
     }
@@ -1314,13 +1624,25 @@ impl SettingsLoader {
 
     /// Merge the `[tools]` fields into the accumulator.
     ///
-    /// The enabled list replaces lower-precedence selections when present, so
-    /// a project or profile can narrow a global selection. Bash judge fields
-    /// retain their existing merge behavior.
-    fn merge_tools_settings(tools: Option<ToolsSettings>, acc: &mut SettingsAccumulator) {
+    /// The enabled list replaces lower-precedence selections when present. A
+    /// global selection may name anything; a project selection may only narrow
+    /// the inherited list.
+    fn merge_tools_settings(
+        tools: Option<ToolsSettings>,
+        origin: SettingsOrigin,
+        source_path: &Path,
+        acc: &mut SettingsAccumulator,
+    ) -> Result<(), SettingsError> {
         let Some(ToolsSettings { enabled, bash }) = tools else {
-            return;
+            return Ok(());
         };
+        if origin == SettingsOrigin::Project {
+            Self::validate_project_tool_narrowing(
+                enabled.as_deref(),
+                source_path,
+                acc.tools_enabled.as_deref(),
+            )?;
+        }
         if enabled.is_some() {
             acc.tools_enabled = enabled;
         }
@@ -1331,6 +1653,32 @@ impl SettingsLoader {
             acc.gates.legacy_present |= bash.judge.is_some();
         }
         Self::merge_judge_settings(bash, acc);
+        Ok(())
+    }
+
+    /// Reject a project tool selection that names a tool the inherited list
+    /// does not contain. An absent inherited selection exposes every tool, so
+    /// any list narrows it.
+    fn validate_project_tool_narrowing(
+        requested: Option<&[String]>,
+        source_path: &Path,
+        inherited: Option<&[String]>,
+    ) -> Result<(), SettingsError> {
+        let (Some(requested), Some(inherited)) = (requested, inherited) else {
+            return Ok(());
+        };
+        let added: Vec<String> = requested
+            .iter()
+            .filter(|name| !inherited.iter().any(|existing| existing == *name))
+            .cloned()
+            .collect();
+        if added.is_empty() {
+            return Ok(());
+        }
+        Err(SettingsError::ProjectToolsBroadened {
+            path: source_path.to_path_buf(),
+            added,
+        })
     }
 
     /// Merge `[tools.bash.judge]` fields into the accumulator.
@@ -1462,6 +1810,14 @@ impl SettingsLoader {
     }
 }
 
+/// One profile overlay plus the file and trust class it came from.
+#[derive(Debug, Clone)]
+struct ProfileOverlay {
+    settings: ProfileSettings,
+    origin: SettingsOrigin,
+    path: PathBuf,
+}
+
 /// Mutable merge state shared by [`SettingsLoader`] while combining global,
 /// project, and profile settings.
 #[derive(Default)]
@@ -1475,7 +1831,7 @@ struct SettingsAccumulator {
     sandbox_writable: BTreeSet<String>,
     skills: SkillSettings,
     tools_enabled: Option<Vec<String>>,
-    profiles: HashMap<String, Vec<ProfileSettings>>,
+    profiles: HashMap<String, Vec<ProfileOverlay>>,
     system_prompt: Option<String>,
     judge_model: Option<String>,
     judge_timeout_secs: Option<u64>,
@@ -1502,9 +1858,10 @@ struct SettingsAccumulator {
 
 impl SettingsAccumulator {
     /// Union a profile overlay into the accumulated settings.
-    fn apply_profile_overlay(&mut self, overlay: &ProfileSettings) {
-        self.gates.merge(overlay.gates.clone());
-        if overlay
+    fn apply_profile_overlay(&mut self, overlay: &ProfileOverlay) -> Result<(), SettingsError> {
+        let settings = &overlay.settings;
+        self.gates.merge(settings.gates.clone());
+        if settings
             .tools
             .bash
             .as_ref()
@@ -1514,32 +1871,44 @@ impl SettingsAccumulator {
             // migration purposes, even when no lower-precedence file has one.
             self.gates.legacy_present = true;
         }
-        if let Some(bash) = &overlay.tools.bash
+        if let Some(bash) = &settings.tools.bash
             && let Some(gates) = &bash.gates
         {
             self.gates.selection = Some(gates.clone());
         }
-        if let Some(ref profile_default) = overlay.default_model {
+        if let Some(ref profile_default) = settings.default_model {
             self.default_model = Some(profile_default.clone());
         }
-        self.system_prompt = overlay
+        self.system_prompt = settings
             .system_prompt
             .clone()
             .or_else(|| self.system_prompt.clone());
         self.directories
-            .extend(overlay.directories.iter().map(|d| expand_home_str(d)));
-        if let Some(ref overlay_sandbox) = overlay.sandbox {
+            .extend(settings.directories.iter().map(|d| expand_home_str(d)));
+        if let Some(ref overlay_sandbox) = settings.sandbox {
             self.sandbox_read_only
                 .extend(overlay_sandbox.read_only.iter().map(|p| expand_home_str(p)));
             self.sandbox_writable
                 .extend(overlay_sandbox.writable.iter().map(|p| expand_home_str(p)));
         }
-        self.skills.apply_overlay(overlay.skills.clone());
-        self.apply_tools_overlay(&overlay.tools);
-        SettingsLoader::merge_limits(overlay.limits.clone(), self);
+        self.skills.apply_overlay(settings.skills.clone());
+        self.apply_tools_overlay(&settings.tools, overlay)?;
+        SettingsLoader::merge_limits(settings.limits.clone(), self);
+        Ok(())
     }
 
-    fn apply_tools_overlay(&mut self, overlay: &ToolsSettingsOverlay) {
+    fn apply_tools_overlay(
+        &mut self,
+        overlay: &ToolsSettingsOverlay,
+        source: &ProfileOverlay,
+    ) -> Result<(), SettingsError> {
+        if source.origin == SettingsOrigin::Project {
+            SettingsLoader::validate_project_tool_narrowing(
+                overlay.enabled.as_deref(),
+                &source.path,
+                self.tools_enabled.as_deref(),
+            )?;
+        }
         if overlay.enabled.is_some() {
             self.tools_enabled.clone_from(&overlay.enabled);
         }
@@ -1551,6 +1920,7 @@ impl SettingsAccumulator {
             .and_then(|bash| bash.judge.as_ref())
             .and_then(|judge| judge.typesafe.clone());
         SettingsLoader::merge_typesafe_settings(profile_typesafe, self);
+        Ok(())
     }
 
     /// Convert the accumulated merge state into the final [`LoadedSettings`].

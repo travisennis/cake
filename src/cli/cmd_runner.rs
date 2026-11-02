@@ -1,5 +1,6 @@
 use crate::OutputFormat;
 use crate::config::DataDir;
+use crate::config::trust::ProjectConfigMode;
 
 /// Run-mode options a subcommand may need to mirror the agent run's model and
 /// profile selection.
@@ -17,6 +18,8 @@ pub struct CommandRunOptions<'a> {
     pub profile: Option<&'a str>,
     /// The top-level `--output-format` flag value.
     pub output_format: OutputFormat,
+    /// The effective project-configuration trust mode for this invocation.
+    pub project_config_mode: ProjectConfigMode,
 }
 
 /// A trait representing a command runner.

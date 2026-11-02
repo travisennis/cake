@@ -13,11 +13,46 @@ This document describes Cake's stable shell-facing and machine-facing contracts.
 
 Class `2` is the provider-failure class: authentication (`401`, `403`), rate limiting (`429`), request timeouts (`408`), and transport failures such as connect errors or client timeouts. Retryability is a separate transport-recovery concern and does not decide the class: `409` (lock timeout), `5xx`, and `529` are retried but exit `1`, because the provider answered the request. A tool-level timeout --- a toolbox tool or a hook exceeding its timeout --- is a tool error, `1`; the Bash tool's own wait is a yield window, not a timeout failure. See [ADR 045](adr/045-classify-request-timeouts-as-api-errors.md).
 
+Class `3` includes settings and project-trust failures: an invalid `settings.toml`, a project `[[models]]` definition, and authority-bearing project configuration without a matching trust record all exit `3`.
+
 Provider requests use a ten-minute no-data stall deadline instead of a total wall-clock limit. A turn may run longer than ten minutes as long as data keeps arriving; every received body chunk, including an SSE comment or keep-alive line, resets the window. Ten minutes without a received byte fails the attempt with a request-timeout error that names the model, the stall phase (`connect`, `first byte`, or `mid-body`), the window, and the bytes received. The ten-second connect timeout is unchanged. A stall before response headers is retried under the existing transport retry policy; a stall after a `2xx` response is terminal and is not retried automatically. See [ADR 052](adr/052-bound-provider-requests-by-silence.md).
 
 Human diagnostics go to stderr. Machine-readable stdout must contain only its declared JSON format.
 
-Root agent-run inputs, including a prompt and run-only flags such as `--output-schema`, cannot be combined with a selected subcommand. Cake reports that invalid usage on stderr and exits `3` before dispatching the subcommand. Options explicitly shared with a command, such as `--output-format stream-json replay <uuid>`, remain valid.
+Root agent-run inputs, including a prompt and run-only flags such as `--output-schema`, cannot be combined with a selected subcommand. Cake reports that invalid usage on stderr and exits `3` before dispatching the subcommand. Options explicitly shared with a command, such as `--output-format stream-json replay <uuid>`, remain valid. The one-run project-trust flags `--trust-project` and `--no-project-config` are shared with `debug`, `gates`, and `bash check`, and are rejected on `sessions`, `replay`, `init`, and `trust`.
+
+## Project configuration trust
+
+Project `.cake/` configuration is trusted by capability (ADR 053). Low-authority settings (`default_model` selecting a global model, profiles, narrowing `[tools].enabled`, `[limits]`, project `AGENTS.md`, and default-root project skills) load without a trust record. Authority-bearing settings (`directories`, `[sandbox]`, gates, the legacy judge table, `system_prompt`, `skills.path`), project hook files, and project `.cake/tools` entries require a matching record at `<config>/cake/trust/<project-key>.json`. Project `[[models]]` definitions are a settings error, even after trust.
+
+An untrusted authority-bearing project exits `3` before provider credential resolution, hooks, toolbox discovery, gate startup, tool registration, writable-grant creation, or session creation. `cake trust` writes the record; `cake trust --check` exits `0` for `not_required` or `trusted` and `3` for `untrusted`, `changed`, or `invalid`. `--trust-project` / `CAKE_TRUST_PROJECT=1` and `--no-project-config` / `CAKE_PROJECT_CONFIG=off` are one-run modes that never write state; requesting both is an input error. `cake trust --status` and the other read-only inspection commands exit `0` while reporting an untrusted state.
+
+`cake trust --status --json` emits the diagnostic document with `command: "trust status"`. Its `data` payload is:
+
+```json
+{
+  "state": "untrusted",
+  "project_root": "/Users/example/project",
+  "project_key": "6b2e...",
+  "record_path": "/Users/example/.config/cake/trust/6b2e....json",
+  "authority": [
+    {
+      "path": ".cake/settings.toml",
+      "kind": "settings",
+      "keys": ["[sandbox].writable", "[gates.safety]", "system_prompt"]
+    },
+    { "path": ".cake/hooks.json", "kind": "hooks" },
+    { "path": ".cake/tools/lint", "kind": "toolbox", "executable": true }
+  ],
+  "changes": [
+    { "path": ".cake/settings.toml", "change": "modified" }
+  ]
+}
+```
+
+`state` is one of `not_required`, `trusted`, `untrusted`, `changed`, or `invalid`. `authority` and `changes` are empty when absent; `invalid_reason` is present only for an unusable record. An entry omits `keys` when it has none and omits `executable` when false.
+
+`cake debug models --json` and `cake gates list --json` add an additive `data.project_trust` object with `state`, `authority`, and `changes`. The same state is reported on stderr in text mode. Session telemetry's `telemetry_init` record adds an optional path-free `project_trust` object with `mode`, an optional one-way `project_key`, and `authority_files`; it is omitted when no project report exists. No hook, toolbox, gate, or provider wire shape changes, and the session JSONL format version remains `4`.
 
 `cake init` creates `.cake/settings.toml` (and, with `--hooks`, an inert `.cake/hooks.json.example`) and prints created files to stdout. An existing target is reported on stderr and exits `3` without writing anything.
 
@@ -301,7 +336,7 @@ bump.
 
 A gate is a trusted executable that owns a pre- or post-action policy decision. Cake owns enforcement, context assembly, process lifecycle, composition, and observability. The initial supported phase and action pair is `pre_tool` and `bash.exec`; `post_tool`, Edit, Write, and toolbox gates are deferred. A gate never changes the command, the working directory, or the tool arguments. It can allow, warn, block, or abstain.
 
-Gate executables are trusted configuration, like hooks and toolbox tools. They run outside the Bash sandbox with Cake's ambient authority. A gate must not read the workspace to learn about the action or to resolve sandbox paths; Cake assembles the action evidence so sandbox semantics have one implementation. A gate may read its own rubric and configuration files named in its config, which are policy inputs, not action evidence. See [Security](security.md) for the trust boundary and the no-gate rule.
+Gate executables are trusted configuration, like hooks and toolbox tools. They run outside the Bash sandbox with Cake's ambient authority. A project may select a gate only after `cake trust`; an untrusted project fails closed before any gate starts. A gate must not read the workspace to learn about the action or to resolve sandbox paths; Cake assembles the action evidence so sandbox semantics have one implementation. A gate may read its own rubric and configuration files named in its config, which are policy inputs, not action evidence. See [Security](security.md) for the trust boundary and the no-gate rule.
 
 ### Executable interface
 
@@ -572,7 +607,7 @@ Gate failure classes map to the existing exit classes: `timeout`, `network`, `au
 
 ### Trust boundary
 
-Gate executables are trusted user or project configuration. Cake starts them unsandboxed with a minimal environment plus the declared allowlist, and never passes credentials in JSON. A project `.cake/settings.toml` can name a different command, so a gate is only as trustworthy as the checkout and the user's configuration; this is the same trust already granted to hooks and toolbox executables. With no explicit `gates` list, the implicit `safety` gate resolves `cake-safety-judge` through `PATH`, so treat `PATH` as trusted configuration; `cake gates list` shows the selected command and `cake gates doctor` starts it. Neither verifies a still-later replacement of the binary. Cake validates and bounds every gate frame, sanitizes model-visible text, and never executes gate-supplied text. The OS sandbox still runs the approved command; a gate approval is not a sandbox bypass.
+Gate executables are trusted user or trusted-project configuration. Cake starts them unsandboxed with a minimal environment plus the declared allowlist, and never passes credentials in JSON. A trusted project `.cake/settings.toml` can name a different command, so a gate is only as trustworthy as the reviewed snapshot; an untrusted project cannot start one. This is the same trust already granted to a trusted project's hooks and toolbox executables. With no explicit `gates` list, the implicit `safety` gate resolves `cake-safety-judge` through `PATH`, so treat `PATH` as trusted configuration; `cake gates list` shows the selected command and `cake gates doctor` starts it. Neither verifies a still-later replacement of the binary. Cake validates and bounds every gate frame, sanitizes model-visible text, and never executes gate-supplied text. The OS sandbox still runs the approved command; a gate approval is not a sandbox bypass.
 
 ## Hook protocol
 
@@ -630,7 +665,7 @@ With `TOOLBOX_ACTION=execute`, JSON-described tools receive the raw JSON argumen
 
 The process runs in the session working directory with `AGENT=cake`, `AI_AGENT=cake`, and the session id in `CAKE_THREAD_ID` and `AGENT_THREAD_ID`. Stdout becomes the model tool result. Non-zero status is an error. Execution time, stdout, and stderr are bounded, and timeout or output-cap handling terminates the tool's process group.
 
-Toolbox executables are trusted and run outside the Bash sandbox. Their calls may execute concurrently, and Cake cannot infer mutation targets for same-path serialization.
+Toolbox executables are trusted and run outside the Bash sandbox. Project `.cake/tools` executables are discovered only for a trusted project and are filtered out by `--no-project-config`. Their calls may execute concurrently, and Cake cannot infer mutation targets for same-path serialization.
 
 ## Compatibility changes
 
@@ -644,6 +679,8 @@ An exhausted HTTP `408` request timeout from a provider now exits `2` instead of
 
 `cake --fail-on-error` adds an opt-in strict exit contract for `stream-json` ([ADR 046](adr/046-opt-in-strict-exit-codes-for-stream-json.md)). Exit-code meaning grows, but no default behavior changes: without the flag, an in-stream agent, provider, or tool failure still exits `0`, so every existing consumer keeps working. A consumer that adopts the flag reads a nonzero exit where it previously read `0`, which is the point of opting in.
 
+Project configuration trust (ADR 053) is a breaking change for checkouts that rely on project `[[models]]`, sandbox grants, gates, `system_prompt`, `skills.path`, hooks, or toolbox tools without a trust record. A project `[[models]]` entry now exits `3`; an untrusted authority-bearing project now exits `3` instead of applying that authority. Run `cake trust` after review, `cake --trust-project` in CI, or `--no-project-config` to ignore project configuration. `cake trust` and its `--status`, `--revoke`, and `--check` actions, the one-run flags and their environment variables, and the additive `project_trust` diagnostic/telemetry fields are new surface. The session format version and every hook, toolbox, gate, and provider wire shape are unchanged.
+
 The `cake-gate/1` contract adds `gate_startup`, `gate_decision`, and `gate_evidence` sidecar records and the additive `bash check` fields `data.gate` and `data.stages` ([ADR 049](adr/049-external-policy-gates-with-the-cake-gate-1-protocol.md)). The generic gate records are authoritative, while the compatibility `judge_*` compensation events, document fields, and exit codes keep their meanings. `CAKE_JUDGE=off` remains an alias for `CAKE_GATE=off`. A resolved pipeline with no `bash.exec` pre-tool gate is a configuration failure: `cake bash check` exits `3`, and the Bash tool is not offered at all. There is no in-process fallback; a missing `cake-safety-judge` executable is a startup failure. Consumers should tolerate historical `judge_attempt` and `type_safe_shadow` records in old sidecars and read `gate_decision` for current decisions.
 
 ## Related decisions
@@ -656,3 +693,4 @@ The `cake-gate/1` contract adds `gate_startup`, `gate_decision`, and `gate_evide
 - [ADR 029](adr/029-diagnostic-json-document.md), the diagnostic JSON document.
 - [ADR 044](adr/044-classify-settings-failures-as-input-errors.md), the exit class for a settings load or parse failure.
 - [ADR 049](adr/049-external-policy-gates-with-the-cake-gate-1-protocol.md), external policy gates and the `cake-gate/1` protocol.
+- [ADR 053](adr/053-trust-project-configuration-by-capability.md), capability-based project configuration trust.

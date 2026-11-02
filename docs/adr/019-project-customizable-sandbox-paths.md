@@ -43,6 +43,7 @@ Chosen option: **Option A**, because it gives projects a single, explicit `[sand
 
 ## More Information
 
+- Partially superseded by [ADR 053](053-trust-project-configuration-by-capability.md): the `[sandbox]` schema and merge semantics are unchanged, but project-declared grants now require a matching trust record before they apply. The trust model in this ADR's consequences is historical.
 - Issue 71: Add project-customizable sandbox paths via `[sandbox]` settings.
 - ExecPlan: `docs/exec-plans/completed/project-customizable-sandbox-paths.md`.
 - `docs/configuration.md` (Settings: `[sandbox]`).

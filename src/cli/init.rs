@@ -199,16 +199,23 @@ const DEFAULT_SETTINGS: &str = r#"# Cake project settings, created by `cake init
 # commented out, so this file changes no behavior: it is a reference for the
 # keys Cake supports. Uncomment the keys you need.
 #
+# Authority-bearing settings -- `directories`, `[sandbox]`, gates, the legacy
+# `[tools.bash.judge]` table, `system_prompt`, and `skills.path` -- require an
+# explicit `cake trust` record. Project `[[models]]` definitions are rejected;
+# model endpoints and credentials are user-owned global configuration.
+#
 # The full contract is in docs/configuration.md. `cake --help` is the authority
 # for CLI flags.
 
 # The model used when `--model` is not given. The value is the `name` of a
-# `[[models]]` entry, defined below or in your global settings.
+# `[[models]]` entry defined in your global settings. A project may select a
+# global model by name but may not define one.
 # default_model = "my-model"
 
-# Named models. Each model needs a unique `name` (lowercase letters, numbers,
-# and hyphens), a provider model identifier, a base URL, and the environment
-# variable that holds its API key.
+# Model definitions belong in `~/.config/cake/settings.toml`, not in this file.
+# Each model needs a unique `name` (lowercase letters, numbers, and hyphens), a
+# provider model identifier, a base URL, and the environment variable that
+# holds its API key.
 # [[models]]
 # name = "my-model"
 # model = "provider/model-id"
@@ -280,7 +287,7 @@ const DEFAULT_SETTINGS: &str = r#"# Cake project settings, created by `cake init
 /// the trust boundary by itself. A user who copies the file to `hooks.json` or
 /// `hooks.local.json` activates trusted commands.
 const HOOKS_EXAMPLE: &str = r#"{
-  "_comment": "Cake hook reference, created by `cake init --hooks`. Cake never loads this .example file. To activate hooks, copy it to .cake/hooks.json (shared project hooks) or .cake/hooks.local.json (personal hooks). Hooks are trusted local commands that run outside the model tool sandbox with your full host authority: enable only hook files you trust. See docs/configuration.md and docs/security.md.",
+  "_comment": "Cake hook reference, created by `cake init --hooks`. Cake never loads this .example file. To activate hooks, copy it to .cake/hooks.json (shared project hooks) or .cake/hooks.local.json (personal hooks). Hooks are trusted local commands that run outside the model tool sandbox with your full host authority: a project hook file also requires an explicit `cake trust` record before Cake will load it. Enable only hook files you trust. See docs/configuration.md and docs/security.md.",
   "version": 1,
   "hooks": {
     "SessionStart": [

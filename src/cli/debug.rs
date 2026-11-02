@@ -3,8 +3,9 @@ use crate::cli::{
     settings_warnings,
 };
 use crate::config::model::ApiType;
-use crate::config::settings::LoadedSettings;
+use crate::config::settings::{LoadedSettings, SettingsLoad};
 use crate::config::skills::{discover_skills_with_paths, parse_skill_path_list};
+use crate::config::trust::{ProjectTrustReport, TrustState};
 use crate::config::{DataDir, ModelDefinition, SettingsLoader};
 use clap::{Parser, Subcommand};
 
@@ -67,11 +68,48 @@ impl CmdRunner for DebugCommand {
                 *description_budget,
                 *no_skills,
                 skills.as_deref(),
-                options.profile,
-                options.no_gate,
+                options,
             ),
-            DebugSubcommand::Models { json } => run_models(*json, options.profile, options.no_gate),
+            DebugSubcommand::Models { json } => run_models(*json, options),
         }
+    }
+}
+
+/// Load settings for an inspection command.
+fn load_settings(
+    command: &'static str,
+    json_output: bool,
+    options: &CommandRunOptions<'_>,
+) -> anyhow::Result<SettingsLoad> {
+    let current_dir = std::env::current_dir()
+        .map_err(|error| anyhow::anyhow!("Failed to get current directory: {error}"))?;
+    SettingsLoader::load_with_project_config(
+        &current_dir,
+        options.profile,
+        options.no_gate,
+        &crate::config::config_dir(),
+        options.project_config_mode,
+    )
+    .map_err(|error| {
+        report_failure(
+            json_output,
+            command,
+            CHECK_SETTINGS_LOAD_FAILED,
+            error.into(),
+        )
+    })
+}
+
+/// Tell a human that authority-bearing project configuration was ignored.
+fn print_project_trust_warning(trust: &ProjectTrustReport) {
+    if matches!(
+        trust.state,
+        TrustState::Untrusted | TrustState::Changed | TrustState::Invalid
+    ) {
+        eprintln!(
+            "warning: project configuration is {}; authority-bearing settings were ignored. Run `cake trust` to review.",
+            trust.state.label()
+        );
     }
 }
 
@@ -80,30 +118,24 @@ impl CmdRunner for DebugCommand {
 /// In machine mode the document carries the configured models and the settings
 /// findings, so stderr stays quiet; without `--json` the warnings keep their
 /// existing stderr behavior.
-fn run_models(json: bool, profile: Option<&str>, no_gate: bool) -> anyhow::Result<()> {
-    let current_dir = std::env::current_dir()
-        .map_err(|e| anyhow::anyhow!("Failed to get current directory: {e}"))?;
-    let loaded =
-        SettingsLoader::load_with_profile_and_gate_bypass(Some(&current_dir), profile, no_gate)
-            .map_err(|error| {
-                report_failure(
-                    json,
-                    "debug models",
-                    CHECK_SETTINGS_LOAD_FAILED,
-                    error.into(),
-                )
-            })?;
-    print!("{}", render_models(&loaded, json)?);
+fn run_models(json: bool, options: &CommandRunOptions<'_>) -> anyhow::Result<()> {
+    let load = load_settings("debug models", json, options)?;
+    print!("{}", render_models(&load.settings, &load.trust, json)?);
     Ok(())
 }
 
 /// Render the configured models as the formatted table, or as one diagnostic
 /// document when the machine flag is set.
-fn render_models(loaded: &LoadedSettings, json: bool) -> anyhow::Result<String> {
+fn render_models(
+    loaded: &LoadedSettings,
+    trust: &ProjectTrustReport,
+    json: bool,
+) -> anyhow::Result<String> {
     if json {
-        render_models_json(loaded)
+        render_models_json(loaded, trust)
     } else {
         loaded.print_warnings();
+        print_project_trust_warning(trust);
         Ok(format_models(&loaded.models))
     }
 }
@@ -114,20 +146,20 @@ fn run_skills(
     description_budget: usize,
     no_skills: bool,
     skills: Option<&str>,
-    profile: Option<&str>,
-    no_gate: bool,
+    options: &CommandRunOptions<'_>,
 ) -> anyhow::Result<()> {
-    let current_dir = std::env::current_dir()
-        .map_err(|e| anyhow::anyhow!("Failed to get current directory: {e}"))?;
-    let loaded =
-        SettingsLoader::load_with_profile_and_gate_bypass(Some(&current_dir), profile, no_gate)?;
+    let load = load_settings("debug skills", false, options)?;
+    let loaded = load.settings;
     loaded.print_warnings();
+    print_project_trust_warning(&load.trust);
     let roots = loaded
         .skills
         .path
         .as_deref()
         .map(parse_skill_path_list)
         .unwrap_or_default();
+    let current_dir = std::env::current_dir()
+        .map_err(|error| anyhow::anyhow!("Failed to get current directory: {error}"))?;
     let config = SettingsLoader::resolve_skill_config(no_skills, skills, &loaded.skills);
     let catalog = config.apply(discover_skills_with_paths(&current_dir, &roots));
     for diagnostic in &catalog.diagnostics {
@@ -245,7 +277,10 @@ fn format_row(values: &[&str; 5], widths: &[usize; 5]) -> String {
 
 /// Render the configured models and settings findings as one diagnostic
 /// document.
-fn render_models_json(loaded: &LoadedSettings) -> anyhow::Result<String> {
+fn render_models_json(
+    loaded: &LoadedSettings,
+    trust: &ProjectTrustReport,
+) -> anyhow::Result<String> {
     let models = sorted_models(&loaded.models);
     DiagnosticDocument::new(
         "debug models",
@@ -254,6 +289,11 @@ fn render_models_json(loaded: &LoadedSettings) -> anyhow::Result<String> {
         serde_json::json!({
             "default_model": loaded.default_model,
             "models": models,
+            "project_trust": {
+                "state": trust.state.label(),
+                "authority": trust.authority,
+                "changes": trust.changes,
+            },
         }),
     )
     .render()
@@ -337,7 +377,7 @@ mod tests {
         models.insert("zen".to_string(), model("zen", ApiType::ChatCompletions));
         let loaded = loaded_settings(models, None, Vec::new());
 
-        let output = render_models_json(&loaded).unwrap();
+        let output = render_models_json(&loaded, &trust_report()).unwrap();
 
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
         assert_eq!(parsed["schema_version"], 1);
@@ -354,7 +394,11 @@ mod tests {
         let mut models = std::collections::HashMap::new();
         models.insert("zen".to_string(), model("zen", ApiType::ChatCompletions));
 
-        let output = render_models_json(&loaded_settings(models, Some("zen"), Vec::new())).unwrap();
+        let output = render_models_json(
+            &loaded_settings(models, Some("zen"), Vec::new()),
+            &trust_report(),
+        )
+        .unwrap();
 
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
         assert_eq!(parsed["data"]["default_model"], "zen");
@@ -363,11 +407,10 @@ mod tests {
 
     #[test]
     fn render_models_json_empty() {
-        let output = render_models_json(&loaded_settings(
-            std::collections::HashMap::default(),
-            None,
-            Vec::new(),
-        ))
+        let output = render_models_json(
+            &loaded_settings(std::collections::HashMap::default(), None, Vec::new()),
+            &trust_report(),
+        )
         .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
         assert_eq!(parsed["summary"]["count"], 0);
@@ -381,7 +424,9 @@ mod tests {
         models.insert("zen".to_string(), model("zen", ApiType::ChatCompletions));
         models.insert("alpha".to_string(), model("alpha", ApiType::Responses));
 
-        let output = render_models_json(&loaded_settings(models, None, Vec::new())).unwrap();
+        let output =
+            render_models_json(&loaded_settings(models, None, Vec::new()), &trust_report())
+                .unwrap();
 
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
         let arr = parsed["data"]["models"]
@@ -411,11 +456,10 @@ mod tests {
     #[test]
     fn render_models_json_reports_settings_findings_instead_of_stderr_text() {
         let warnings = vec!["unknown key 'temparature' in .cake/settings.toml".to_string()];
-        let output = render_models_json(&loaded_settings(
-            std::collections::HashMap::default(),
-            None,
-            warnings,
-        ))
+        let output = render_models_json(
+            &loaded_settings(std::collections::HashMap::default(), None, warnings),
+            &trust_report(),
+        )
         .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
 
@@ -428,6 +472,20 @@ mod tests {
             checks[0]["message"],
             "unknown key 'temparature' in .cake/settings.toml"
         );
+    }
+
+    /// A report for a project with no authority-bearing configuration.
+    fn trust_report() -> ProjectTrustReport {
+        ProjectTrustReport {
+            state: TrustState::NotRequired,
+            mode: crate::config::trust::ProjectConfigMode::Inspect,
+            project_root: std::path::PathBuf::from("/tmp/project"),
+            project_key: "key".to_string(),
+            record_path: std::path::PathBuf::from("/tmp/trust/key.json"),
+            authority: Vec::new(),
+            changes: Vec::new(),
+            invalid_reason: None,
+        }
     }
 
     /// A loaded settings value for `--json` rendering tests.

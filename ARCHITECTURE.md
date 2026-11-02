@@ -70,6 +70,7 @@ Persisted sessions are append-only, versioned JSONL logs. Stream-json is a curre
 - Machine-readable stdout contains only its declared JSON format.
 - Provider-specific behavior remains at provider/backend boundaries.
 - Untrusted model actions never acquire the authority of trusted hooks or toolbox executables implicitly.
+- Project configuration authority requires an explicit trust decision: low-authority project settings load without a record, authority-bearing settings and extensions require a matching snapshot record, and project `[[models]]` definitions are global-only (ADR 053).
 
 ## Authorities
 

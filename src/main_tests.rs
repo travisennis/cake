@@ -64,6 +64,75 @@ fn session_with_skill_records() -> Session {
 }
 
 #[test]
+fn test_project_config_surface_by_command() {
+    use crate::config::trust::ProjectConfigUse;
+
+    let cases = [
+        (vec!["cake", "debug", "models"], ProjectConfigUse::Inspect),
+        (vec!["cake", "debug", "skills"], ProjectConfigUse::Inspect),
+        (vec!["cake", "gates", "list"], ProjectConfigUse::Inspect),
+        (vec!["cake", "gates", "doctor"], ProjectConfigUse::Enforce),
+        (
+            vec!["cake", "bash", "check", "--", "git status"],
+            ProjectConfigUse::Enforce,
+        ),
+        (vec!["cake", "sessions", "list"], ProjectConfigUse::Unused),
+        (
+            vec!["cake", "replay", "00000000-0000-0000-0000-000000000000"],
+            ProjectConfigUse::Unused,
+        ),
+        (vec!["cake", "init"], ProjectConfigUse::Unused),
+        (vec!["cake", "trust"], ProjectConfigUse::Unused),
+    ];
+    for (args, expected) in cases {
+        let parsed = CodingAssistant::parse_from(args.clone());
+        assert_eq!(
+            parsed.command.as_ref().unwrap().project_config_use(),
+            expected,
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn test_cli_parsing_project_trust_flags() {
+    let args = CodingAssistant::parse_from([
+        "cake",
+        "--trust-project",
+        "--no-project-config",
+        "test prompt",
+    ]);
+    assert!(args.trust_project);
+    assert!(args.no_project_config);
+}
+
+#[test]
+fn test_cli_parses_trust_subcommand() {
+    let args = CodingAssistant::parse_from(["cake", "trust", "--status", "--json"]);
+    let Some(Commands::Trust(_)) = args.command else {
+        panic!("expected the trust subcommand");
+    };
+    assert!(args.validate_subcommand_options().is_ok());
+}
+
+#[test]
+fn test_trust_subcommand_rejects_one_run_flags() {
+    let args = CodingAssistant::parse_from(["cake", "--trust-project", "trust"]);
+    let error = args.validate_subcommand_options().unwrap_err();
+    assert!(
+        error
+            .downcast_ref::<crate::cli::InvalidSubcommandOptions>()
+            .is_some()
+    );
+}
+
+#[test]
+fn test_sessions_subcommand_rejects_project_config_flags() {
+    let args = CodingAssistant::parse_from(["cake", "--no-project-config", "sessions", "list"]);
+    assert!(args.validate_subcommand_options().is_err());
+}
+
+#[test]
 fn test_cli_parsing_positional_prompt() {
     let args = CodingAssistant::parse_from(["cake", "test prompt"]);
     assert_eq!(args.prompt, Some("test prompt".to_string()));

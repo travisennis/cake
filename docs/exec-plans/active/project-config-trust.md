@@ -17,11 +17,12 @@ This work implements accepted ADR 053, `docs/adr/053-trust-project-configuration
 - [x] (2026-11-02T12:55:30Z) Read task 142, accepted ADR 053, `docs/security.md`, `docs/configuration.md`, `docs/integrations.md`, `src/config/settings.rs`, `src/config/hooks.rs`, `src/config/toolbox.rs`, `src/config/gates.rs`, `src/prompts/mod.rs`, `src/main.rs`, the CLI modules, and the relevant tests.
 - [x] (2026-11-02T12:55:30Z) Confirmed there is no existing trust-record, capability-classification, or project-settings provenance implementation.
 - [x] (2026-11-02T12:55:30Z) Drafted this ExecPlan. No implementation has started.
-- [ ] Milestone 1: trust-record and manifest primitives.
-- [ ] Milestone 2: source-aware settings and global-only model definitions.
-- [ ] Milestone 3: trust enforcement, CLI, and startup order.
-- [ ] Milestone 4: hooks, toolbox, prompts, and sandbox grants consume only validated project data.
-- [ ] Milestone 5: diagnostics, telemetry, documentation, and test-fixture migration.
+- [x] (2026-11-02T18:10:00Z) Reviewed the draft against ADR 053 and the current code. The review required folding one-run trust into the mode decision, keeping inspection commands usable when untrusted, resolving environment modes only for commands that consume project configuration, filtering project toolbox roots for `--no-project-config`, and removing ambient trust variables from test fixtures. Those fixes are incorporated below and in the implementation.
+- [x] (2026-11-02T18:10:00Z) Milestone 1: trust-record and manifest primitives in `src/config/trust.rs`, with focused tests.
+- [x] (2026-11-02T18:10:00Z) Milestone 2: source-aware settings, global-only model definitions, narrowing-only project tool selection, `without_authority`, and authority classification.
+- [x] (2026-11-02T18:10:00Z) Milestone 3: trust enforcement, `cake trust`, root flags and environment modes, and startup ordering.
+- [x] (2026-11-02T18:10:00Z) Milestone 4: hooks parse the hashed bytes, toolbox directories are filtered, project prompts are skipped under `--no-project-config`, and inspection commands report trust.
+- [x] (2026-11-02T18:10:00Z) Milestone 5: diagnostics, telemetry, documentation, and fixture migration.
 - [ ] Final verification and preflight.
 
 ## Surprises & Discoveries
@@ -35,6 +36,11 @@ This work implements accepted ADR 053, `docs/adr/053-trust-project-configuration
 - Observation: `SettingsLoader::load` and its profile variants have five production call sites but 82 test references, and many tests deliberately put `[[models]]` in project settings. The test fixtures must move model definitions to global settings; the production loader can keep test-only convenience wrappers. Evidence: `rg -n "SettingsLoader::load|load_with_profile" src`.
 - Observation: the repository already depends on `sha2` and `serde_json`, so the trust manifest and record require no new crate. Evidence: `src/session_telemetry.rs` uses `sha2`; `Cargo.toml` carries it transitively as a direct dependency.
 - Observation: `SessionMeta` already stores `model`, `model_config`, `tools`, and `system_prompt`; adding provider identity is deliberately deferred to task 052. This plan must not change session format version 4. Evidence: `src/types/session.rs:567-595`.
+- Observation: project `.cake/worktrees/` is a generated checkout, not configuration. Hashing it would make trust depend on unrelated working trees and can be arbitrarily large. The manifest excludes `.cake/worktrees/` while still hashing settings, hook files, hook scripts, rubric files, and toolbox files.
+- Observation: many unit and integration tests used project `[[models]]` as a convenience fixture. They now write model definitions through `TestEnv::write_global_settings` or the source-aware test helper; trust-boundary tests explicitly call `cake trust` or use `--trust-project` instead of an auto-trusting fixture.
+- Observation: `--worktree` plus `CAKE_TOOLBOX=.cake/tools` anchored the explicit directory to the invocation checkout. `--no-project-config` now filters project `.cake` roots for both the invocation and the active worktree, so an explicit toolbox path cannot re-enable project executables.
+- Observation: clap's `requires = "status"` alone did not reject `trust --check --json`; `conflicts_with_all` supplies the missing action conflict.
+- Observation: `ProjectTrustReport::telemetry_mode` must special-case `Ignore`; otherwise `--no-project-config` reports `not_required` because its report has no authority. The telemetry label is now `no_project_config` for that mode.
 
 ## Decision Log
 
@@ -64,9 +70,23 @@ This work implements accepted ADR 053, `docs/adr/053-trust-project-configuration
 
 - Decision: Existing integration tests that stage `[[models]]` in project settings move those definitions to a new global-settings fixture helper. Tests that need project authority explicitly run `cake trust` or use `--trust-project`; the default test helper does not auto-trust. Rationale: auto-trust would make the suite unable to prove the new boundary. Date/Author: 2026-11-02, Cake agent.
 
+- Decision: One-run trust is a mode value (`EnforceOneRun`, `InspectOneRun`), not a separate flag carried beside the mode. Rationale: the trust decision, reporting, inspection behavior, and telemetry all depend on the same distinction, and a separate boolean invited states the evaluator could not represent. Date/Author: 2026-11-02, Cake agent.
+
+- Decision: Inspection mode applies project authority only when the report is `not_required` or `trusted`; it strips authority when untrusted, changed, or invalid. `--trust-project` inspection (`InspectOneRun`) applies the current snapshot. Rationale: the review found that unconditional stripping hid a trusted project's gates and `skills.path` from the very commands that explain configuration. Date/Author: 2026-11-02, Cake agent.
+
+- Decision: Project `.cake/worktrees/` is excluded from the trust manifest. Rationale: it is generated working state, not configuration, and hashing it makes trust depend on unrelated worktrees. Date/Author: 2026-11-02, Cake agent.
+
+- Decision: Non-UTF-8 paths under `.cake/` are skipped with a warning unless they are an authority path; an authority path with a non-UTF-8 name is rejected. Rationale: the manifest is a defensive snapshot of regular files, not a directory inventory, so an unrelated non-UTF-8 file must not block a low-authority project. Date/Author: 2026-11-02, Cake agent.
+
+- Decision: `cake trust` review prints selected gates and hook commands in addition to authority paths and keys. Rationale: trust is code execution; a review that lists only file names is not actionable. The command parses JSON but never runs project code. Date/Author: 2026-11-02, Cake agent.
+
 ## Outcomes & Retrospective
 
-To be completed during implementation. The intended outcome is a fail-closed project-configuration boundary with a small, auditable trust record; unchanged global settings; global-only model definitions; and inspection commands that can explain untrusted configuration without applying it.
+Implemented. The trust boundary is now enforced at the settings-loading step, before AGENTS.md discovery, skill discovery, writable-grant creation, toolbox discovery, provider credential resolution, gate startup, session creation, and hook parsing. The trust record is a deterministic, owner-only JSON manifest keyed to the canonical root; the settings source and every hook file are hashed and parsed from the same bytes. Project `[[models]]` definitions and project tool broadening are settings errors. `cake trust`, `--status`, `--check`, `--revoke`, `--trust-project`, and `--no-project-config` work as specified, including the environment spellings and conflict failures. Inspection commands report trust and apply authority only when the snapshot is trusted; `debug models` and `gates list` carry an additive `project_trust` object, and session telemetry carries a path-free mode, project key, and authority-file count.
+
+The focused suites (`cargo test trust`, `cargo test settings`, `cargo test hooks`, `cargo test toolbox`, `cargo test prompts`, `cargo test gates`, `cargo test --test trust`) pass, as do the full unit and integration suites and strict clippy. Manual scratch-repository checks verified the untrusted failure before side effects, the changed/added/removed invalidation, symlink rejection, one-run and ignore modes, and a new worktree starting untrusted.
+
+Residual risks are unchanged and documented: a trusted project is code execution, project prompt/skill content remains untrusted model input, a concurrent writer can change a trusted file after the check, the external gate remains stochastic, and `PATH` remains trusted configuration.
 
 ## Context and Orientation
 
@@ -247,6 +267,12 @@ Run the security/coverage-sensitive gate because this change adds new functions 
 
 ```
 just check-coverage
+```
+
+Run the complexity ratchet directly when a new function is borderline; `just check` also includes it:
+
+```
+just cc-check
 ```
 
 Run the documentation gate:
@@ -471,3 +497,4 @@ Dependencies: no new crate. Use the existing `sha2` for SHA-256, `serde`/`serde_
 ## Revision Notes
 
 - 2026-11-02: Initial draft for task 142 after accepting ADR 053. It defines the trust snapshot as the single parsed project-settings source, global-only model definitions, narrowing-only project tool selection, inspection versus enforcement modes, a deterministic owner-only manifest, the one-run/ignore modes, and the test-fixture migration from project models to global models. No implementation has started.
+- 2026-11-02: Incorporated review fixes: one-run trust is part of the mode enum; inspection applies trusted authority and strips untrusted authority; environment modes resolve only for commands that consume project configuration; project toolbox roots are filtered for `--no-project-config`; test fixtures remove ambient trust variables; `.cake/worktrees` is excluded from the manifest; non-UTF-8 non-authority paths are skipped; and trust review prints gate and hook commands.

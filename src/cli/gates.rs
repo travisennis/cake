@@ -11,7 +11,8 @@ use crate::cli::{
     settings_warnings,
 };
 use crate::config::gates::GateSettings;
-use crate::config::settings::LoadedSettings;
+use crate::config::settings::{LoadedSettings, SettingsLoad};
+use crate::config::trust::{ProjectTrustReport, TrustState};
 use crate::config::{DataDir, SettingsLoader};
 use crate::gates::composer::GatePipelineError;
 
@@ -56,17 +57,29 @@ impl CmdRunner for GatesCommand {
     }
 }
 
+impl GatesCommand {
+    /// Gate inspection is read-only; starting gates for `doctor` enforces trust.
+    pub(crate) const fn project_config_use(&self) -> crate::config::trust::ProjectConfigUse {
+        match &self.command {
+            GatesSubcommand::List { .. } => crate::config::trust::ProjectConfigUse::Inspect,
+            GatesSubcommand::Doctor { .. } => crate::config::trust::ProjectConfigUse::Enforce,
+        }
+    }
+}
+
 fn load_settings(
     command: &'static str,
     json_output: bool,
     options: &CommandRunOptions<'_>,
-) -> anyhow::Result<(LoadedSettings, std::path::PathBuf)> {
+) -> anyhow::Result<(SettingsLoad, std::path::PathBuf)> {
     let cwd = std::env::current_dir()
         .map_err(|error| anyhow::anyhow!("Failed to get current directory: {error}"))?;
-    let loaded = SettingsLoader::load_with_profile_and_gate_bypass(
-        Some(&cwd),
+    let load = SettingsLoader::load_with_project_config(
+        &cwd,
         options.profile,
         options.no_gate,
+        &crate::config::config_dir(),
+        options.project_config_mode,
     )
     .map_err(|error| {
         report_failure(
@@ -76,16 +89,32 @@ fn load_settings(
             error.into(),
         )
     })?;
-    Ok((loaded, cwd))
+    Ok((load, cwd))
+}
+
+fn print_project_trust_warning(trust: &ProjectTrustReport) {
+    if matches!(
+        trust.state,
+        TrustState::Untrusted | TrustState::Changed | TrustState::Invalid
+    ) {
+        eprintln!(
+            "warning: project configuration is {}; authority-bearing settings were ignored. Run `cake trust` to review.",
+            trust.state.label()
+        );
+    }
 }
 
 fn run_list(json_output: bool, options: &CommandRunOptions<'_>) -> anyhow::Result<()> {
-    let (loaded, _) = load_settings("gates list", json_output, options)?;
-    let (bypassed, gates) = list_gates(&loaded, options.no_gate);
+    let (load, _) = load_settings("gates list", json_output, options)?;
+    let (bypassed, gates) = list_gates(&load.settings, options.no_gate);
     if json_output {
-        print!("{}", render_list_json(&loaded, bypassed, &gates)?);
+        print!(
+            "{}",
+            render_list_json(&load.settings, &load.trust, bypassed, &gates)?
+        );
     } else {
-        loaded.print_warnings();
+        load.settings.print_warnings();
+        print_project_trust_warning(&load.trust);
         print!("{}", render_list_text(bypassed, &gates));
     }
     Ok(())
@@ -108,6 +137,7 @@ fn list_gates(loaded: &LoadedSettings, no_gate: bool) -> (bool, Vec<GateListing>
 
 fn render_list_json(
     loaded: &LoadedSettings,
+    trust: &ProjectTrustReport,
     bypassed: bool,
     gates: &[GateListing],
 ) -> anyhow::Result<String> {
@@ -115,7 +145,15 @@ fn render_list_json(
         "gates list",
         json!({ "count": gates.len(), "bypassed": bypassed }),
         settings_warnings(&loaded.warnings),
-        json!({ "bypassed": bypassed, "gates": gates }),
+        json!({
+            "bypassed": bypassed,
+            "gates": gates,
+            "project_trust": {
+                "state": trust.state.label(),
+                "authority": trust.authority,
+                "changes": trust.changes,
+            },
+        }),
     )
     .render()
 }
@@ -142,7 +180,8 @@ fn render_list_text(bypassed: bool, gates: &[GateListing]) -> String {
 }
 
 async fn run_doctor(json_output: bool, options: &CommandRunOptions<'_>) -> anyhow::Result<()> {
-    let (loaded, cwd) = load_settings("gates doctor", json_output, options)?;
+    let (load, cwd) = load_settings("gates doctor", json_output, options)?;
+    let loaded = load.settings;
     let model = super::bash::selected_model(&loaded, options.model);
     let pipeline = crate::gates::runtime::start(
         &loaded.gates,

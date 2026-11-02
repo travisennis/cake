@@ -56,7 +56,7 @@ pub const GIT_AMBIENT_ENV_VARS: &[&str] = &[
 pub struct TestEnv {
     _root: TempDir,
     pub workspace_dir: PathBuf,
-    home_dir: PathBuf,
+    pub(crate) home_dir: PathBuf,
     pub data_dir: PathBuf,
 }
 
@@ -97,6 +97,10 @@ impl TestEnv {
             cmd.env_remove(var);
         }
         cmd.env_remove("CAKE_TOOLBOX");
+        // A developer's ambient one-run trust mode must not make an untrusted
+        // project pass a test that expects the trust boundary.
+        cmd.env_remove("CAKE_TRUST_PROJECT");
+        cmd.env_remove("CAKE_PROJECT_CONFIG");
         cmd
     }
 
@@ -105,6 +109,14 @@ impl TestEnv {
         fs::create_dir_all(&settings_dir).expect("failed to create .cake directory");
         fs::write(settings_dir.join("settings.toml"), content)
             .expect("failed to write project settings.toml");
+    }
+
+    /// Write the user-owned global settings file inside the isolated config root.
+    pub fn write_global_settings(&self, content: &str) {
+        let settings_dir = self.home_dir.join(".config").join("cake");
+        fs::create_dir_all(&settings_dir).expect("failed to create global config directory");
+        fs::write(settings_dir.join("settings.toml"), content)
+            .expect("failed to write global settings.toml");
     }
 }
 

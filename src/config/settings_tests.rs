@@ -57,9 +57,12 @@ fn grant_summary(loaded: &LoadedSettings) -> String {
 
 #[test]
 fn test_load_single_file() {
-    let dir = create_project_settings(
-        r#"
-[[models]]
+    let dir = create_project_settings("");
+
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
 name = "test-model"
 model = "test/model"
 base_url = "https://example.com"
@@ -67,7 +70,6 @@ api_key_env = "MY_KEY"
 "#,
     );
 
-    let home = create_home_dir();
     let loaded = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load(Some(dir.path()))
     })
@@ -79,27 +81,8 @@ api_key_env = "MY_KEY"
 }
 
 #[test]
-fn test_load_merges_with_override() {
+fn test_project_models_are_rejected() {
     let home = create_home_dir();
-    // Global has "model-a" and "model-b"
-    write_global_settings(
-        home.path(),
-        r#"
-[[models]]
-name = "model-a"
-model = "global/model-a"
-base_url = "https://global.example.com"
-api_key_env = "GLOBAL_KEY"
-
-[[models]]
-name = "model-b"
-model = "global/model-b"
-base_url = "https://global.example.com"
-api_key_env = "GLOBAL_KEY"
-"#,
-    );
-
-    // Project has "model-b" (override) and "model-c" (new)
     let project_dir = create_project_settings(
         r#"
 [[models]]
@@ -116,27 +99,17 @@ api_key_env = "PROJECT_KEY"
 "#,
     );
 
-    let loaded = with_var("HOME", Some(home.path()), || {
+    let error = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load(Some(project_dir.path()))
     })
-    .unwrap();
+    .unwrap_err();
 
-    assert_eq!(loaded.models.len(), 3);
-    // model-a from global
-    assert_eq!(
-        loaded.models.get("model-a").unwrap().model,
-        "global/model-a"
-    );
-    // model-b overridden by project
-    assert_eq!(
-        loaded.models.get("model-b").unwrap().model,
-        "project/model-b"
-    );
-    // model-c from project
-    assert_eq!(
-        loaded.models.get("model-c").unwrap().model,
-        "project/model-c"
-    );
+    assert!(matches!(
+        error,
+        SettingsError::ProjectModelsUnsupported { ref names, .. }
+            if names == &["model-b".to_string(), "model-c".to_string()]
+    ));
+    assert!(error.to_string().contains("global-only"));
 }
 
 #[test]
@@ -160,7 +133,7 @@ api_key_env = "XDG_KEY"
 }
 
 #[test]
-fn test_project_overrides_xdg_global() {
+fn test_project_models_cannot_shadow_a_global_name() {
     let home = create_home_dir();
     write_global_settings(
         home.path(),
@@ -182,12 +155,15 @@ api_key_env = "PROJECT_KEY"
 "#,
     );
 
-    let loaded = with_var("HOME", Some(home.path()), || {
+    let error = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load(Some(project_dir.path()))
     })
-    .unwrap();
+    .unwrap_err();
 
-    assert_eq!(loaded.models.get("shared").unwrap().model, "project/model");
+    assert!(matches!(
+        error,
+        SettingsError::ProjectModelsUnsupported { .. }
+    ));
 }
 
 #[test]
@@ -202,9 +178,12 @@ fn test_load_missing_file_succeeds() {
 
 #[test]
 fn test_duplicate_name_in_file() {
-    let dir = create_project_settings(
-        r#"
-[[models]]
+    let dir = create_project_settings("");
+
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
 name = "dup"
 model = "first"
 base_url = "https://example.com"
@@ -218,7 +197,6 @@ api_key_env = "MY_KEY"
 "#,
     );
 
-    let home = create_home_dir();
     let result = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load(Some(dir.path()))
     });
@@ -227,9 +205,12 @@ api_key_env = "MY_KEY"
 
 #[test]
 fn test_invalid_name_format() {
-    let dir = create_project_settings(
-        r#"
-[[models]]
+    let dir = create_project_settings("");
+
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
 name = "Invalid Name!"
 model = "test"
 base_url = "https://example.com"
@@ -237,7 +218,6 @@ api_key_env = "MY_KEY"
 "#,
     );
 
-    let home = create_home_dir();
     let result = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load(Some(dir.path()))
     });
@@ -249,9 +229,12 @@ api_key_env = "MY_KEY"
 
 #[test]
 fn test_model_definition_all_fields() {
-    let dir = create_project_settings(
-        r#"
-[[models]]
+    let dir = create_project_settings("");
+
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
 name = "minimal"
 model = "test/model"
 base_url = "https://example.com"
@@ -262,7 +245,6 @@ context_window = 200000
 "#,
     );
 
-    let home = create_home_dir();
     let loaded = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load(Some(dir.path()))
     })
@@ -294,9 +276,12 @@ context_window = 200000
 
 #[test]
 fn test_supports_images_parses_and_propagates() {
-    let dir = create_project_settings(
-        r#"
-[[models]]
+    let dir = create_project_settings("");
+
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
 name = "vision"
 model = "test/vision"
 base_url = "https://example.com"
@@ -305,7 +290,6 @@ supports_images = true
 "#,
     );
 
-    let home = create_home_dir();
     let loaded = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load(Some(dir.path()))
     })
@@ -318,9 +302,12 @@ supports_images = true
 
 #[test]
 fn test_top_k_parses_and_propagates() {
-    let dir = create_project_settings(
-        r#"
-[[models]]
+    let dir = create_project_settings("");
+
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
 name = "sampled"
 model = "test/sampled"
 base_url = "https://example.com"
@@ -329,7 +316,6 @@ top_k = 40
 "#,
     );
 
-    let home = create_home_dir();
     let loaded = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load(Some(dir.path()))
     })
@@ -422,7 +408,13 @@ fn test_default_model_valid() {
         r#"
 default_model = "zen"
 
-[[models]]
+"#,
+    );
+
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
 name = "zen"
 model = "glm-5.1"
 base_url = "https://opencode.ai/zen/go/v1/"
@@ -430,7 +422,6 @@ api_key_env = "OPENCODE_ZEN_API_TOKEN"
 "#,
     );
 
-    let home = create_home_dir();
     let loaded = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load(Some(dir.path()))
     })
@@ -446,7 +437,13 @@ fn test_default_model_not_found() {
         r#"
 default_model = "nonexistent"
 
-[[models]]
+"#,
+    );
+
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
 name = "zen"
 model = "glm-5.1"
 base_url = "https://example.com"
@@ -454,7 +451,6 @@ api_key_env = "KEY"
 "#,
     );
 
-    let home = create_home_dir();
     let result = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load(Some(dir.path()))
     });
@@ -466,9 +462,12 @@ api_key_env = "KEY"
 
 #[test]
 fn test_no_default_model() {
-    let dir = create_project_settings(
-        r#"
-[[models]]
+    let dir = create_project_settings("");
+
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
 name = "zen"
 model = "glm-5.1"
 base_url = "https://example.com"
@@ -476,7 +475,6 @@ api_key_env = "KEY"
 "#,
     );
 
-    let home = create_home_dir();
     let loaded = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load(Some(dir.path()))
     })
@@ -498,18 +496,18 @@ name = "global-model"
 model = "global/model"
 base_url = "https://global.example.com"
 api_key_env = "GLOBAL_KEY"
-"#,
-    );
-
-    let project_dir = create_project_settings(
-        r#"
-default_model = "project-model"
 
 [[models]]
 name = "project-model"
 model = "project/model"
 base_url = "https://project.example.com"
 api_key_env = "PROJECT_KEY"
+"#,
+    );
+
+    let project_dir = create_project_settings(
+        r#"
+default_model = "project-model"
 "#,
     );
 
@@ -540,12 +538,6 @@ api_key_env = "KEY"
     let project_dir = create_project_settings(
         r#"
 directories = ["/project/dir1", "/global/dir2"]
-
-[[models]]
-name = "proj"
-model = "proj/model"
-base_url = "https://project.example.com"
-api_key_env = "PROJ_KEY"
 "#,
     );
 
@@ -584,9 +576,12 @@ api_key_env = "KEY"
 
 #[test]
 fn test_directories_empty_by_default() {
-    let dir = create_project_settings(
-        r#"
-[[models]]
+    let dir = create_project_settings("");
+
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
 name = "zen"
 model = "glm-5.1"
 base_url = "https://example.com"
@@ -594,7 +589,6 @@ api_key_env = "KEY"
 "#,
     );
 
-    let home = create_home_dir();
     let loaded = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load(Some(dir.path()))
     })
@@ -620,15 +614,7 @@ api_key_env = "GLOBAL_KEY"
     );
 
     // Project file has no default_model line at all — global should persist.
-    let project_dir = create_project_settings(
-        r#"
-[[models]]
-name = "project-model"
-model = "project/model"
-base_url = "https://project.example.com"
-api_key_env = "PROJECT_KEY"
-"#,
-    );
+    let project_dir = create_project_settings("");
 
     let loaded = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load(Some(project_dir.path()))
@@ -656,15 +642,7 @@ api_key_env = "GLOBAL_KEY"
 "#,
     );
 
-    let project_dir = create_project_settings(
-        r#"
-[[models]]
-name = "project-model"
-model = "project/model"
-base_url = "https://project.example.com"
-api_key_env = "PROJECT_KEY"
-"#,
-    );
+    let project_dir = create_project_settings("");
 
     let loaded = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load(Some(project_dir.path()))
@@ -681,7 +659,13 @@ fn test_skills_path_loads_from_settings() {
 [skills]
 path = "~/my-skills:/shared/team-skills"
 
-[[models]]
+"#,
+    );
+
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
 name = "zen"
 model = "glm-5.1"
 base_url = "https://example.com"
@@ -689,7 +673,6 @@ api_key_env = "KEY"
 "#,
     );
 
-    let home = create_home_dir();
     let loaded = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load(Some(dir.path()))
     })
@@ -722,12 +705,6 @@ api_key_env = "GLOBAL_KEY"
         r#"
 [skills]
 path = "/project/skills"
-
-[[models]]
-name = "project-model"
-model = "project/model"
-base_url = "https://project.example.com"
-api_key_env = "PROJECT_KEY"
 "#,
     );
 
@@ -826,6 +803,12 @@ model = "global-fast/model"
 base_url = "https://global.example.com"
 api_key_env = "KEY"
 
+[[models]]
+name = "project-fast"
+model = "project-fast/model"
+base_url = "https://project.example.com"
+api_key_env = "KEY"
+
 [profiles.fast]
 default_model = "global-fast"
 directories = ["/global/profile"]
@@ -836,12 +819,6 @@ disabled = true
     );
     let project_dir = create_project_settings(
         r#"
-[[models]]
-name = "project-fast"
-model = "project-fast/model"
-base_url = "https://project.example.com"
-api_key_env = "KEY"
-
 [profiles.fast]
 default_model = "project-fast"
 directories = ["/project/profile"]
@@ -1275,9 +1252,12 @@ fn test_resolved_grant_order_snapshot() {
 
 #[test]
 fn test_sandbox_empty_by_default() {
-    let dir = create_project_settings(
-        r#"
-[[models]]
+    let dir = create_project_settings("");
+
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
 name = "zen"
 model = "glm-5.1"
 base_url = "https://example.com"
@@ -1285,7 +1265,6 @@ api_key_env = "KEY"
 "#,
     );
 
-    let home = create_home_dir();
     let loaded = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load(Some(dir.path()))
     })
@@ -1344,9 +1323,12 @@ writable = ["~/.cache/claude"]
 
 #[test]
 fn test_judge_settings_defaults() {
-    let dir = create_project_settings(
-        r#"
-[[models]]
+    let dir = create_project_settings("");
+
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
 name = "zen"
 model = "glm-5.1"
 base_url = "https://example.com"
@@ -1354,7 +1336,6 @@ api_key_env = "KEY"
 "#,
     );
 
-    let home = create_home_dir();
     let loaded = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load(Some(dir.path()))
     })
@@ -1488,7 +1469,7 @@ cutoff = 0.5
 }
 
 #[test]
-fn test_tools_enabled_merge_and_profile_override() {
+fn test_tools_enabled_merge_and_profile_narrowing() {
     let home = create_home_dir();
     write_global_settings(
         home.path(),
@@ -1503,7 +1484,7 @@ enabled = ["Read"]
     let project = create_project_settings(
         r#"
 [tools]
-enabled = ["Read", "Edit"]
+enabled = ["Read"]
 
 [profiles.review.tools]
 enabled = []
@@ -1514,10 +1495,7 @@ enabled = []
         SettingsLoader::load(Some(project.path()))
     })
     .unwrap();
-    assert_eq!(
-        loaded.tools_enabled,
-        Some(vec!["Read".to_string(), "Edit".to_string()])
-    );
+    assert_eq!(loaded.tools_enabled, Some(vec!["Read".to_string()]));
 
     let loaded = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load_with_profile(Some(project.path()), Some("review"))
@@ -1738,14 +1716,19 @@ allowlist = ["git status"]
 #[test]
 fn test_judge_settings_project_only() {
     let home = create_home_dir();
-    let project = create_project_settings(
-        r#"
-[[models]]
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
 name = "project-judge"
 model = "glm-5.1"
 base_url = "https://example.com"
 api_key_env = "KEY"
 
+"#,
+    );
+
+    let project = create_project_settings(
+        r#"
 [tools.bash.judge]
 model = "project-judge"
 "#,
@@ -1835,20 +1818,25 @@ timeout_secs = 0
 #[test]
 fn test_limits_load_from_settings() {
     let dir = create_project_settings(
-        r#"
-[[models]]
+        r"
+[limits]
+max_turns = 10
+max_tool_calls = 50
+",
+    );
+
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
 name = "test-model"
 model = "test/model"
 base_url = "https://example.com"
 api_key_env = "MY_KEY"
 
-[limits]
-max_turns = 10
-max_tool_calls = 50
 "#,
     );
 
-    let home = create_home_dir();
     let loaded = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load(Some(dir.path()))
     })
@@ -1861,9 +1849,12 @@ max_tool_calls = 50
 
 #[test]
 fn test_limits_default_to_unlimited() {
-    let dir = create_project_settings(
-        r#"
-[[models]]
+    let dir = create_project_settings("");
+
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
 name = "test-model"
 model = "test/model"
 base_url = "https://example.com"
@@ -1871,7 +1862,6 @@ api_key_env = "MY_KEY"
 "#,
     );
 
-    let home = create_home_dir();
     let loaded = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load(Some(dir.path()))
     })
@@ -1900,16 +1890,10 @@ max_tool_calls = 50
     );
     // The project section overrides only the keys it sets.
     let project = create_project_settings(
-        r#"
-[[models]]
-name = "test-model"
-model = "test/model"
-base_url = "https://project.example.com"
-api_key_env = "MY_KEY"
-
+        r"
 [limits]
 max_turns = 10
-"#,
+",
     );
 
     let loaded = with_var("HOME", Some(home.path()), || {
@@ -1925,12 +1909,6 @@ max_turns = 10
 fn test_limits_accept_unlimited_string() {
     let dir = create_project_settings(
         r#"
-[[models]]
-name = "test-model"
-model = "test/model"
-base_url = "https://example.com"
-api_key_env = "MY_KEY"
-
 [limits]
 max_turns = "unlimited"
 max_tool_calls = "UNLIMITED"
@@ -1938,6 +1916,17 @@ max_tool_calls = "UNLIMITED"
     );
 
     let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
+name = "test-model"
+model = "test/model"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+
+"#,
+    );
+
     let loaded = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load(Some(dir.path()))
     })
@@ -1953,19 +1942,24 @@ max_tool_calls = "UNLIMITED"
 #[test]
 fn test_limits_reject_zero() {
     let dir = create_project_settings(
-        r#"
-[[models]]
+        r"
+[limits]
+max_turns = 0
+",
+    );
+
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
 name = "test-model"
 model = "test/model"
 base_url = "https://example.com"
 api_key_env = "MY_KEY"
 
-[limits]
-max_turns = 0
 "#,
     );
 
-    let home = create_home_dir();
     let err = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load(Some(dir.path()))
     })
@@ -1996,12 +1990,6 @@ max_turns = 10
     // The project explicitly opts back to unlimited, overriding the global cap.
     let project = create_project_settings(
         r#"
-[[models]]
-name = "test-model"
-model = "test/model"
-base_url = "https://project.example.com"
-api_key_env = "MY_KEY"
-
 [limits]
 max_turns = "unlimited"
 "#,
@@ -2097,13 +2085,7 @@ fn bash_session_limits_resolve_and_reject_unbounded_values() {
 #[test]
 fn test_limits_output_budgets_load_from_settings() {
     let dir = create_project_settings(
-        r#"
-[[models]]
-name = "test-model"
-model = "test/model"
-base_url = "https://example.com"
-api_key_env = "MY_KEY"
-
+        r"
 [limits]
 bash_output_max_bytes = 5000
 bash_read_cap = 10000
@@ -2111,10 +2093,21 @@ read_default_end_line = 50
 read_max_output_bytes = 20000
 read_max_line_bytes = 15000
 hook_output_limit = 1024
-"#,
+",
     );
 
     let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
+name = "test-model"
+model = "test/model"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+
+"#,
+    );
+
     let loaded = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load(Some(dir.path()))
     })
@@ -2158,9 +2151,12 @@ fn read_image_max_bytes_resolves_and_accepts_unlimited() {
 
 #[test]
 fn test_limits_output_budgets_default_to_compiled_values() {
-    let dir = create_project_settings(
-        r#"
-[[models]]
+    let dir = create_project_settings("");
+
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
 name = "test-model"
 model = "test/model"
 base_url = "https://example.com"
@@ -2168,7 +2164,6 @@ api_key_env = "MY_KEY"
 "#,
     );
 
-    let home = create_home_dir();
     let loaded = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load(Some(dir.path()))
     })
@@ -2205,12 +2200,6 @@ api_key_env = "MY_KEY"
 fn test_limits_output_budget_unlimited_disables_cap() {
     let dir = create_project_settings(
         r#"
-[[models]]
-name = "test-model"
-model = "test/model"
-base_url = "https://example.com"
-api_key_env = "MY_KEY"
-
 [limits]
 bash_output_max_bytes = "unlimited"
 read_max_output_bytes = "unlimited"
@@ -2219,6 +2208,17 @@ read_max_line_bytes = "unlimited"
     );
 
     let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
+name = "test-model"
+model = "test/model"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+
+"#,
+    );
+
     let loaded = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load(Some(dir.path()))
     })
@@ -2256,18 +2256,12 @@ read_max_line_bytes = 5000
     );
     // The project section overrides only the keys it sets.
     let project = create_project_settings(
-        r#"
-[[models]]
-name = "test-model"
-model = "test/model"
-base_url = "https://project.example.com"
-api_key_env = "MY_KEY"
-
+        r"
 [limits]
 bash_output_max_bytes = 9000
 bash_session_max = 5
 read_max_line_bytes = 3000
-"#,
+",
     );
 
     let loaded = with_var("HOME", Some(home.path()), || {
@@ -2287,9 +2281,12 @@ read_max_line_bytes = 3000
 
 #[test]
 fn test_unknown_model_key_warns() {
-    let dir = create_project_settings(
-        r#"
-[[models]]
+    let dir = create_project_settings("");
+
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
 name = "zen"
 model = "glm-5.1"
 base_url = "https://example.com"
@@ -2298,7 +2295,6 @@ temparature = 0.7
 "#,
     );
 
-    let home = create_home_dir();
     let loaded = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load(Some(dir.path()))
     })
@@ -2322,12 +2318,6 @@ fn test_unknown_keys_warn_across_sections() {
         r#"
 temparature = 0.5
 
-[[models]]
-name = "zen"
-model = "glm-5.1"
-base_url = "https://example.com"
-api_key_env = "KEY"
-
 [skills]
 only = ["review"]
 disabledd = true
@@ -2350,6 +2340,17 @@ timeout_sec = 25
     );
 
     let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
+name = "zen"
+model = "glm-5.1"
+base_url = "https://example.com"
+api_key_env = "KEY"
+
+"#,
+    );
+
     let loaded = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load(Some(dir.path()))
     })
@@ -2441,23 +2442,6 @@ default_model = "zen"
 system_prompt = "prompts/coding.md"
 directories = ["../shared"]
 
-[[models]]
-name = "zen"
-model = "openai/gpt-5"
-base_url = "https://openrouter.ai/api/v1/"
-api_key_env = "OPENROUTER_API_KEY"
-api_type = "responses"
-provider = "openrouter"
-provider_headers = { http_referer = "https://example.com", x_title = "cake" }
-temperature = 0.7
-top_p = 0.9
-top_k = 40
-max_output_tokens = 8000
-reasoning_effort = "high"
-reasoning_summary = "concise"
-reasoning_max_tokens = 2000
-providers = ["Provider1", "Provider2"]
-
 [skills]
 disabled = false
 only = ["review", "debug"]
@@ -2498,6 +2482,28 @@ allowlist = ["git status", "git diff"]
     );
 
     let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
+name = "zen"
+model = "openai/gpt-5"
+base_url = "https://openrouter.ai/api/v1/"
+api_key_env = "OPENROUTER_API_KEY"
+api_type = "responses"
+provider = "openrouter"
+provider_headers = { http_referer = "https://example.com", x_title = "cake" }
+temperature = 0.7
+top_p = 0.9
+top_k = 40
+max_output_tokens = 8000
+reasoning_effort = "high"
+reasoning_summary = "concise"
+reasoning_max_tokens = 2000
+providers = ["Provider1", "Provider2"]
+
+"#,
+    );
+
     let loaded = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load(Some(dir.path()))
     })

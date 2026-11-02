@@ -149,6 +149,36 @@ fn toolbox_directory_identity(dir: &Path) -> PathBuf {
     std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf())
 }
 
+/// Remove toolbox directories that live inside any checkout's `.cake/` tree.
+///
+/// Used only for `--no-project-config`: an explicit `--toolbox` or
+/// `CAKE_TOOLBOX` entry must not re-enable project executables, including the
+/// checkout cake was invoked from before `--worktree` changed directories.
+#[must_use]
+pub fn filter_project_toolbox_dirs(dirs: Vec<PathBuf>, project_roots: &[&Path]) -> Vec<PathBuf> {
+    let cake_roots: Vec<PathBuf> = project_roots
+        .iter()
+        .map(|root| root.join(".cake"))
+        .collect();
+    let canonical_cake_roots: Vec<PathBuf> = cake_roots
+        .iter()
+        .map(|root| std::fs::canonicalize(root).unwrap_or_else(|_| root.clone()))
+        .collect();
+    dirs.into_iter()
+        .filter(|dir| {
+            // The lexical check catches an explicit `.cake/tools` path that is
+            // itself a symlink; the canonical check catches a directory that
+            // resolves into another root's `.cake/` tree.
+            let lexical_project_path = cake_roots.iter().any(|root| dir.starts_with(root));
+            let identity = toolbox_directory_identity(dir);
+            let canonical_project_path = canonical_cake_roots
+                .iter()
+                .any(|root| identity.starts_with(root));
+            !lexical_project_path && !canonical_project_path
+        })
+        .collect()
+}
+
 /// Scan the given directories for toolbox executables, in order.
 ///
 /// Within a directory, entries are sorted by filename for deterministic

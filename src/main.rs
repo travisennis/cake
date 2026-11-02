@@ -33,6 +33,9 @@ use crate::cli::{
 use crate::clients::resolve_linked_worktree_dirs;
 use crate::clients::{Agent, SandboxPolicy, ToolContext, resolve_sandbox_policy};
 use crate::config::settings::LoadedSettings;
+use crate::config::trust::{
+    HookFileSource, ProjectConfigMode, ProjectConfigUse, ProjectTrustReport,
+};
 use crate::config::{
     AgentsFile, DataDir, DiagnosticLevel, HookSource, HooksLoader, ModelConfig, ModelDefinition,
     ReasoningEffort, ResolvedModelConfig, Session, SettingsLoader, SkillCatalog, discover_skills,
@@ -209,6 +212,23 @@ pub(crate) struct CodingAssistant {
     #[arg(long, global = true)]
     pub no_gate: bool,
 
+    /// Trust the current project `.cake/` snapshot for this invocation only
+    ///
+    /// Authority-bearing project configuration (sandbox grants, gates, hooks,
+    /// toolbox tools, `system_prompt`, `skills.path`) requires an explicit trust
+    /// record. This flag accepts the current snapshot without writing one. The
+    /// equivalent environment variable is `CAKE_TRUST_PROJECT=1`.
+    #[arg(long, global = true)]
+    pub trust_project: bool,
+
+    /// Ignore project `.cake/` configuration for this invocation
+    ///
+    /// Settings, hooks, toolbox tools, and the project system prompt are not
+    /// read. Repository content such as `AGENTS.md` remains untrusted model
+    /// input. The equivalent environment variable is `CAKE_PROJECT_CONFIG=off`.
+    #[arg(long, global = true)]
+    pub no_project_config: bool,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -229,6 +249,9 @@ struct RunInputs {
 
 struct RunResources {
     loaded: LoadedSettings,
+    trust: ProjectTrustReport,
+    project_config_mode: ProjectConfigMode,
+    project_hook_files: Vec<HookFileSource>,
     agents_files: Vec<AgentsFile>,
     skill_catalog: SkillCatalog,
     tool_context: Arc<ToolContext>,
@@ -574,7 +597,7 @@ impl CodingAssistant {
             .collect()
     }
 
-    fn prepare_run(&self) -> anyhow::Result<PreparedRun> {
+    fn prepare_run(&self, project_config_mode: ProjectConfigMode) -> anyhow::Result<PreparedRun> {
         let original_dir = std::env::current_dir()?;
         let additional_dirs = self.resolve_additional_dirs(&original_dir);
         // Validate stdin/content and the output schema before creating the
@@ -589,7 +612,7 @@ impl CodingAssistant {
         // Keep configured relative paths anchored to the invocation directory,
         // but discover the project-local toolbox from the active directory so
         // --worktree selects that worktree's `.cake/tools`.
-        let toolbox_dirs = crate::config::toolbox::toolbox_directories(
+        let mut toolbox_dirs = crate::config::toolbox::toolbox_directories(
             std::env::var(crate::config::toolbox::TOOLBOX_ENV_VAR)
                 .ok()
                 .as_deref(),
@@ -598,6 +621,15 @@ impl CodingAssistant {
             &original_dir,
             &current_dir,
         );
+        if project_config_mode == ProjectConfigMode::Ignore {
+            // `--no-project-config` must not be re-enabled by an explicit
+            // `--toolbox` or `CAKE_TOOLBOX` entry pointing at either checkout's
+            // `.cake/` directory.
+            toolbox_dirs = crate::config::toolbox::filter_project_toolbox_dirs(
+                toolbox_dirs,
+                &[&original_dir, &current_dir],
+            );
+        }
 
         Ok(PreparedRun {
             current_dir,
@@ -619,13 +651,29 @@ impl CodingAssistant {
         })
     }
 
-    fn load_settings(&self, current_dir: &Path) -> anyhow::Result<LoadedSettings> {
-        let loaded = SettingsLoader::load_with_profile_and_gate_bypass(
-            Some(current_dir),
+    /// Resolve the project-configuration mode for this invocation.
+    fn resolve_project_config_mode(
+        &self,
+    ) -> Result<ProjectConfigMode, crate::config::trust::ProjectConfigModeError> {
+        let surface = self
+            .command
+            .as_ref()
+            .map_or(ProjectConfigUse::Enforce, Commands::project_config_use);
+        ProjectConfigMode::resolve(surface, self.trust_project, self.no_project_config)
+    }
+
+    fn load_settings(
+        &self,
+        current_dir: &Path,
+        mode: ProjectConfigMode,
+    ) -> anyhow::Result<crate::config::settings::SettingsLoad> {
+        Ok(SettingsLoader::load_with_project_config(
+            current_dir,
             self.profile.as_deref(),
             self.no_gate,
-        )?;
-        Ok(loaded)
+            &crate::config::config_dir(),
+            mode,
+        )?)
     }
 
     async fn load_run_resources(
@@ -634,8 +682,12 @@ impl CodingAssistant {
         data_dir: &DataDir,
         additional_dirs: Vec<PathBuf>,
         toolbox_dirs: &[PathBuf],
+        project_config_mode: ProjectConfigMode,
     ) -> anyhow::Result<RunResources> {
-        let loaded = self.load_settings(current_dir)?;
+        let load = self.load_settings(current_dir, project_config_mode)?;
+        let loaded = load.settings;
+        let trust = load.trust;
+        let project_hook_files = load.hook_files;
         // Settings files with unrecognized keys load normally but silently
         // drop those keys; surface them on stderr so a typo like `temparature`
         // is seen instead of quietly ignored.
@@ -731,6 +783,9 @@ impl CodingAssistant {
 
         Ok(RunResources {
             loaded,
+            trust,
+            project_config_mode,
+            project_hook_files,
             agents_files,
             skill_catalog,
             tool_context: Arc::new(tool_context),
@@ -871,6 +926,7 @@ impl CodingAssistant {
         session: &Session,
         run_mode: &RunMode,
         output_format: OutputFormat,
+        project_trust: &ProjectTrustReport,
     ) -> Agent {
         if !run_mode.persists_session() {
             return client;
@@ -892,6 +948,15 @@ impl CodingAssistant {
         let invocation_id = uuid::Uuid::new_v4();
         let settings =
             client.session_telemetry_settings(output_format, session.model_config.clone());
+        let project_trust = crate::session_telemetry::ProjectTrustTelemetry {
+            mode: project_trust.telemetry_mode(),
+            project_key: (!matches!(
+                project_trust.state,
+                crate::config::trust::TrustState::NotRequired
+            ))
+            .then(|| project_trust.project_key.clone()),
+            authority_files: project_trust.authority_file_count(),
+        };
         let record = SessionTelemetryRecord::TelemetryInit {
             session_id: session.id.to_string(),
             invocation_id: invocation_id.to_string(),
@@ -902,6 +967,7 @@ impl CodingAssistant {
             output_format,
             tools: client.tool_names(),
             settings,
+            project_trust: Some(project_trust),
         };
 
         if let Err(error) = writer.append(&record) {
@@ -918,11 +984,13 @@ impl CodingAssistant {
 
     fn attach_hooks(
         mut client: Agent,
-        current_dir: &Path,
         hook_context: HookContext,
         hook_output_limit: Option<usize>,
+        project_hook_sources: &[HookFileSource],
     ) -> anyhow::Result<(Agent, Option<Arc<HookRunner>>)> {
-        let hooks = HooksLoader::load(current_dir)?;
+        let global_hooks = crate::config::config_dir().join("cake").join("hooks.json");
+        let hooks =
+            HooksLoader::load_with_project_sources(Some(&global_hooks), project_hook_sources)?;
 
         if hooks.is_empty() {
             return Ok((client, None));
@@ -980,6 +1048,7 @@ impl CodingAssistant {
         let Some(command) = self.command.as_ref() else {
             return Ok(());
         };
+        let rejects_project_trust = command.rejects_project_trust_flags();
 
         let invalid = [
             (self.prompt.is_some(), "prompt"),
@@ -1001,6 +1070,14 @@ impl CodingAssistant {
             (self.skills.is_some(), "--skills"),
             (self.system_prompt.is_some(), "--system-prompt"),
             (self.no_runtime_context, "--no-runtime-context"),
+            (
+                self.trust_project && rejects_project_trust,
+                "--trust-project",
+            ),
+            (
+                self.no_project_config && rejects_project_trust,
+                "--no-project-config",
+            ),
         ]
         .into_iter()
         .filter_map(|(present, option)| present.then_some(option))
@@ -1304,13 +1381,14 @@ impl CmdRunner for CodingAssistant {
             return self.run_subcommand(data_dir, options).await;
         }
 
-        let prepared = self.prepare_run()?;
+        let prepared = self.prepare_run(options.project_config_mode)?;
         let resources = self
             .load_run_resources(
                 &prepared.current_dir,
                 data_dir,
                 prepared.additional_dirs.clone(),
                 &prepared.toolbox_dirs,
+                options.project_config_mode,
             )
             .await?;
         let task_id = uuid::Uuid::new_v4();
@@ -1330,6 +1408,7 @@ impl CmdRunner for CodingAssistant {
             resources.tools_enabled.as_deref(),
             task_id,
             resources.loaded.system_prompt.as_deref(),
+            resources.project_config_mode.loads_project_config(),
         )?;
 
         run_session.agent = run_session
@@ -1360,6 +1439,7 @@ impl CmdRunner for CodingAssistant {
             &session,
             &run_mode,
             self.output_format,
+            &resources.trust,
         );
         let hook_context = HookContext {
             session_id: session.id,
@@ -1374,9 +1454,9 @@ impl CmdRunner for CodingAssistant {
         let hook_output_limit = resources.loaded.limits.tool_limits.hook_output_limit;
         let (client, hook_runner) = Self::attach_hooks(
             client,
-            &prepared.current_dir,
             hook_context,
             hook_output_limit,
+            &resources.project_hook_files,
         )?;
         let output = self.output_sink();
         let mut client = output.attach_callbacks(client);
@@ -1745,6 +1825,10 @@ async fn main() -> std::process::ExitCode {
         model: args.model.as_deref(),
         profile: args.profile.as_deref(),
         output_format: args.output_format,
+        project_config_mode: match args.resolve_project_config_mode() {
+            Ok(mode) => mode,
+            Err(error) => return finish_run(Err(error.into())),
+        },
     };
     finish_run(args.run(&data_dir, &options).await)
 }

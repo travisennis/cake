@@ -235,19 +235,42 @@ pub enum HooksError {
     UnsupportedHookType { path: PathBuf, hook_type: String },
 }
 
+use crate::config::trust::HookFileSource;
+
 pub struct HooksLoader;
 
 impl HooksLoader {
-    pub fn load(project_dir: &Path) -> Result<LoadedHooks, HooksError> {
-        let global_path = Some(crate::config::config_dir().join("cake").join("hooks.json"));
-        let paths = [
-            global_path,
-            Some(project_dir.join(".cake").join("hooks.json")),
-            Some(project_dir.join(".cake").join("hooks.local.json")),
-        ];
-        Self::load_from_paths(paths.iter().flatten().map(PathBuf::as_path))
+    /// Load global hooks plus the project hook files read and hashed by the
+    /// trust snapshot.
+    ///
+    /// The project bytes are parsed exactly as they were hashed; the parser
+    /// never reopens the path.
+    ///
+    /// # Errors
+    ///
+    /// Returns a hook read or parse error for the global file or any project
+    /// source.
+    pub fn load_with_project_sources(
+        global_path: Option<&Path>,
+        project_sources: &[HookFileSource],
+    ) -> Result<LoadedHooks, HooksError> {
+        let mut loaded = LoadedHooks::default();
+        if let Some(path) = global_path
+            && path.exists()
+        {
+            let content = fs::read(path).map_err(|source| HooksError::Read {
+                path: path.to_path_buf(),
+                source,
+            })?;
+            Self::parse_source(path, &content, &mut loaded)?;
+        }
+        for source in project_sources {
+            Self::parse_source(&source.path, &source.bytes, &mut loaded)?;
+        }
+        Ok(loaded)
     }
 
+    #[cfg(test)]
     pub fn load_from_paths(
         paths: impl IntoIterator<Item = impl AsRef<Path>>,
     ) -> Result<LoadedHooks, HooksError> {
@@ -259,72 +282,81 @@ impl HooksLoader {
                 continue;
             }
 
-            let content = fs::read_to_string(path).map_err(|source| HooksError::Read {
+            let content = fs::read(path).map_err(|source| HooksError::Read {
                 path: path.to_path_buf(),
                 source,
             })?;
-            let hook_file: HookFile =
-                serde_json::from_str(&content).map_err(|source| HooksError::Parse {
-                    path: path.to_path_buf(),
-                    source,
-                })?;
-
-            if hook_file.version != 1 {
-                return Err(HooksError::UnsupportedVersion {
-                    path: path.to_path_buf(),
-                    version: hook_file.version,
-                });
-            }
-
-            for (event_name, entries) in hook_file.hooks {
-                let event =
-                    event_name
-                        .parse::<HookEvent>()
-                        .map_err(|()| HooksError::UnknownEvent {
-                            path: path.to_path_buf(),
-                            event: event_name.clone(),
-                        })?;
-
-                for entry in entries {
-                    if entry.matcher.is_some() && !event.has_source() {
-                        return Err(HooksError::MatcherNotSupported {
-                            path: path.to_path_buf(),
-                            event,
-                        });
-                    }
-
-                    let hooks = entry
-                        .hooks
-                        .into_iter()
-                        .map(|hook| {
-                            if hook.hook_type != "command" {
-                                return Err(HooksError::UnsupportedHookType {
-                                    path: path.to_path_buf(),
-                                    hook_type: hook.hook_type,
-                                });
-                            }
-
-                            let timeout = hook.timeout.unwrap_or(60).clamp(1, 600);
-                            Ok(HookCommand {
-                                command: hook.command,
-                                timeout: Duration::from_secs(timeout),
-                                fail_closed: hook.fail_closed.unwrap_or(false),
-                                status_message: hook.status_message,
-                                source_path: path.to_path_buf(),
-                            })
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
-
-                    loaded.groups.push(HookGroup {
-                        event,
-                        matcher: HookMatcher::parse(entry.matcher.as_deref(), event),
-                        hooks,
-                    });
-                }
-            }
+            Self::parse_source(path, &content, &mut loaded)?;
         }
 
         Ok(loaded)
+    }
+
+    fn parse_source(
+        path: &Path,
+        content: &[u8],
+        loaded: &mut LoadedHooks,
+    ) -> Result<(), HooksError> {
+        let hook_file: HookFile =
+            serde_json::from_slice(content).map_err(|source| HooksError::Parse {
+                path: path.to_path_buf(),
+                source,
+            })?;
+
+        if hook_file.version != 1 {
+            return Err(HooksError::UnsupportedVersion {
+                path: path.to_path_buf(),
+                version: hook_file.version,
+            });
+        }
+
+        for (event_name, entries) in hook_file.hooks {
+            let event = event_name
+                .parse::<HookEvent>()
+                .map_err(|()| HooksError::UnknownEvent {
+                    path: path.to_path_buf(),
+                    event: event_name.clone(),
+                })?;
+
+            for entry in entries {
+                if entry.matcher.is_some() && !event.has_source() {
+                    return Err(HooksError::MatcherNotSupported {
+                        path: path.to_path_buf(),
+                        event,
+                    });
+                }
+
+                let hooks = entry
+                    .hooks
+                    .into_iter()
+                    .map(|hook| {
+                        if hook.hook_type != "command" {
+                            return Err(HooksError::UnsupportedHookType {
+                                path: path.to_path_buf(),
+                                hook_type: hook.hook_type,
+                            });
+                        }
+
+                        let timeout = hook.timeout.unwrap_or(60).clamp(1, 600);
+                        Ok(HookCommand {
+                            command: hook.command,
+                            timeout: Duration::from_secs(timeout),
+                            fail_closed: hook.fail_closed.unwrap_or(false),
+                            status_message: hook.status_message,
+                            source_path: path.to_path_buf(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                loaded.groups.push(HookGroup {
+                    event,
+                    matcher: HookMatcher::parse(entry.matcher.as_deref(), event),
+                    hooks,
+                });
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -523,6 +555,25 @@ mod tests {
             let round_tripped: HookSource = serde_json::from_str(&json).unwrap();
             assert_eq!(source, round_tripped, "round-trip failed for {json}");
         }
+    }
+
+    #[test]
+    fn trusted_project_hook_bytes_are_parsed_without_reopening() {
+        let bytes = br#"{"version":1,"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"true"}]}]}}"#;
+        let source = crate::config::trust::HookFileSource {
+            path: PathBuf::from("/missing/.cake/hooks.json"),
+            bytes: bytes.to_vec(),
+        };
+
+        let loaded = HooksLoader::load_with_project_sources(None, &[source]).unwrap();
+
+        assert_eq!(loaded.groups.len(), 1);
+        assert_eq!(loaded.groups[0].event, HookEvent::SessionStart);
+        assert_eq!(loaded.groups[0].hooks[0].command, "true");
+        assert_eq!(
+            loaded.groups[0].hooks[0].source_path,
+            PathBuf::from("/missing/.cake/hooks.json")
+        );
     }
 
     #[test]

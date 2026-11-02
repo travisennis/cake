@@ -112,9 +112,24 @@ fn list_rendering_reports_bypass_and_gate_projection() {
     assert!(render_list_text(true, &gates).contains("bypassed"));
 
     let document: Value =
-        serde_json::from_str(&render_list_json(&loaded, false, &gates).unwrap()).unwrap();
+        serde_json::from_str(&render_list_json(&loaded, &trust_report(), false, &gates).unwrap())
+            .unwrap();
     assert_eq!(document["summary"]["count"], 1);
     assert_eq!(document["data"]["gates"][0]["name"], "safety");
+    assert_eq!(document["data"]["project_trust"]["state"], "not_required");
+}
+
+fn trust_report() -> crate::config::trust::ProjectTrustReport {
+    crate::config::trust::ProjectTrustReport {
+        state: crate::config::trust::TrustState::NotRequired,
+        mode: crate::config::trust::ProjectConfigMode::Inspect,
+        project_root: std::path::PathBuf::from("/tmp/project"),
+        project_key: "key".to_string(),
+        record_path: std::path::PathBuf::from("/tmp/trust/key.json"),
+        authority: Vec::new(),
+        changes: Vec::new(),
+        invalid_reason: None,
+    }
 }
 
 fn startup(

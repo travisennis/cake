@@ -107,6 +107,10 @@ fn classify_typed_error(err: &anyhow::Error) -> Option<u8> {
         return Some(classify_settings_error(settings_err));
     }
 
+    if let Some(class) = classify_project_error(err) {
+        return Some(class);
+    }
+
     // A gate pipeline failure carries the protocol's failure class: provider
     // failures are API errors, configuration failures are input errors, and
     // every other gate failure is an agent error. This preserves the exit
@@ -115,16 +119,7 @@ fn classify_typed_error(err: &anyhow::Error) -> Option<u8> {
         return Some(classify_gate_class(&gate_err.class()));
     }
 
-    // Configuration-state conflicts and root agent-run options combined with a
-    // subcommand are input errors rather than agent errors.
-    if is_cli_input_error(err) {
-        return Some(code::INPUT_ERROR);
-    }
-
-    // Data-directory preparation failures are user-environment problems (an
-    // inaccessible or uncreatable data root, e.g. denied by a sandbox), not
-    // agent errors.
-    if err.downcast_ref::<crate::config::DataDirError>().is_some() {
+    if is_input_configuration_error(err) {
         return Some(code::INPUT_ERROR);
     }
 
@@ -142,6 +137,12 @@ fn classify_typed_error(err: &anyhow::Error) -> Option<u8> {
     }
 
     None
+}
+
+/// Configuration-state conflicts, root agent-run options combined with a
+/// subcommand, and data-directory preparation failures are input errors.
+fn is_input_configuration_error(err: &anyhow::Error) -> bool {
+    is_cli_input_error(err) || err.downcast_ref::<crate::config::DataDirError>().is_some()
 }
 
 fn is_cli_input_error(err: &anyhow::Error) -> bool {
@@ -185,6 +186,22 @@ const fn classify_schema_error(error: &crate::config::OutputSchemaError) -> u8 {
     }
 }
 
+/// Project trust failures are configuration defects: the invocation cannot use
+/// the checkout until the user trusts it or selects an explicit one-run mode,
+/// so they share the settings input-error class.
+fn classify_project_error(err: &anyhow::Error) -> Option<u8> {
+    let is_project_error = err
+        .downcast_ref::<crate::config::trust::TrustError>()
+        .is_some()
+        || err
+            .downcast_ref::<crate::config::trust::ConfigLoadError>()
+            .is_some()
+        || err
+            .downcast_ref::<crate::config::trust::ProjectConfigModeError>()
+            .is_some();
+    is_project_error.then_some(code::INPUT_ERROR)
+}
+
 /// Classify a settings load or parse failure.
 ///
 /// Every variant is a defect in the configuration input --- an unreadable,
@@ -197,6 +214,8 @@ const fn classify_settings_error(error: &SettingsError) -> u8 {
         | SettingsError::DuplicateModelName { .. }
         | SettingsError::InvalidProfileName { .. }
         | SettingsError::ProfileModelsUnsupported { .. }
+        | SettingsError::ProjectModelsUnsupported { .. }
+        | SettingsError::ProjectToolsBroadened { .. }
         | SettingsError::UnknownProfile { .. }
         | SettingsError::DefaultModelNotFound { .. }
         | SettingsError::JudgeModelNotFound { .. }
@@ -582,6 +601,20 @@ mod tests {
                 },
             ),
             (
+                "project models unsupported",
+                SettingsError::ProjectModelsUnsupported {
+                    path: "/tmp/.cake/settings.toml".into(),
+                    names: vec!["attacker".to_string()],
+                },
+            ),
+            (
+                "project tools broadened",
+                SettingsError::ProjectToolsBroadened {
+                    path: "/tmp/.cake/settings.toml".into(),
+                    added: vec!["Bash".to_string()],
+                },
+            ),
+            (
                 "unknown profile",
                 SettingsError::UnknownProfile {
                     name: "missing".to_string(),
@@ -631,6 +664,57 @@ mod tests {
             let err = anyhow::Error::new(error);
             assert_eq!(classify_to_u8(&err), code::INPUT_ERROR, "{name}");
         }
+    }
+
+    // --- Project trust error classification ---
+
+    #[test]
+    fn classify_trust_errors_as_input_errors() {
+        use crate::config::trust::{ConfigLoadError, ProjectConfigModeError, TrustError};
+
+        let trust_errors = [
+            TrustError::Untrusted {
+                detail: "  .cake/settings.toml: [sandbox].writable".to_string(),
+                record_path: "/tmp/trust.json".into(),
+            },
+            TrustError::Changed {
+                detail: "  modified: .cake/settings.toml".to_string(),
+                record_path: "/tmp/trust.json".into(),
+            },
+            TrustError::Invalid {
+                path: "/tmp/trust.json".into(),
+                reason: "wrong version".to_string(),
+            },
+            TrustError::UnsafePath {
+                path: "/tmp/.cake/settings.toml".into(),
+                reason: "is a symlink".to_string(),
+            },
+            TrustError::Io {
+                path: "/tmp/.cake/settings.toml".into(),
+                source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
+            },
+        ];
+        for error in trust_errors {
+            assert_eq!(
+                classify_to_u8(&anyhow::Error::new(error)),
+                code::INPUT_ERROR
+            );
+        }
+
+        let load_error = ConfigLoadError::Settings(SettingsError::UnknownProfile {
+            name: "missing".to_string(),
+            available: String::new(),
+        });
+        assert_eq!(
+            classify_to_u8(&anyhow::Error::new(load_error)),
+            code::INPUT_ERROR
+        );
+        assert_eq!(
+            classify_to_u8(&anyhow::Error::new(
+                ProjectConfigModeError::ConflictingFlags
+            )),
+            code::INPUT_ERROR
+        );
     }
 
     #[test]

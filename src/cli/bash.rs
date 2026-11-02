@@ -77,11 +77,14 @@ async fn run_bash_check_command(
 
     let current_dir = std::env::current_dir()
         .map_err(|error| anyhow::anyhow!("Failed to get current directory: {error}"))?;
-    let loaded = SettingsLoader::load_with_profile_and_gate_bypass(
-        Some(&current_dir),
+    let load = SettingsLoader::load_with_project_config(
+        &current_dir,
         options.profile,
         options.no_gate,
+        &crate::config::config_dir(),
+        options.project_config_mode,
     )?;
+    let loaded = load.settings;
 
     let outcome = run_bash_check(
         &loaded,

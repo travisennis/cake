@@ -9,6 +9,10 @@
 #![cfg(unix)]
 
 mod support;
+#[path = "support/trust.rs"]
+mod trust_helpers;
+#[path = "support/trusted_command.rs"]
+mod trusted_command_helpers;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,10 +23,8 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn write_responses_settings(env: &TestEnv, base_url: &str) {
-    env.write_project_settings(&format!(
+    env.write_global_settings(&format!(
         r#"
-default_model = "test"
-
 [[models]]
 name = "test"
 model = "glm-5.1"
@@ -31,6 +33,7 @@ api_key_env = "TOOLBOX_TEST_KEY"
 api_type = "responses"
 "#
     ));
+    env.write_project_settings("default_model = \"test\"\n");
 }
 
 fn write_executable(dir: &Path, name: &str, content: &str) -> PathBuf {
@@ -238,6 +241,7 @@ async fn project_local_toolbox_is_discovered_without_configuration() {
     let toolbox_dir = env.workspace_dir.join(".cake").join("tools");
     fs::create_dir_all(&toolbox_dir).expect("failed to create project toolbox dir");
     write_greet_tool(&toolbox_dir);
+    env.trust_project();
 
     Mock::given(method("POST"))
         .and(path("/responses"))
@@ -281,6 +285,7 @@ async fn explicit_project_toolbox_path_is_described_once() {
     fs::create_dir_all(&env.data_dir).expect("failed to create data directory");
     let count_file = env.data_dir.join("describe-count");
     fs::write(&count_file, "0").expect("failed to initialize describe counter");
+    env.trust_project();
 
     Mock::given(method("POST"))
         .and(path("/responses"))
@@ -347,7 +352,7 @@ async fn worktree_uses_active_project_local_toolbox() {
         .await;
 
     let output = env
-        .command()
+        .trusted_command()
         .arg("--worktree=toolbox-selection")
         .arg("test prompt")
         .env("TOOLBOX_TEST_KEY", "test-token")
@@ -395,6 +400,7 @@ async fn toolbox_flag_adds_directory_without_env() {
         "greet",
         "Project toolbox should lose.",
     );
+    env.trust_project();
 
     Mock::given(method("POST"))
         .and(path("/responses"))
