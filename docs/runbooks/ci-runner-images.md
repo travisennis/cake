@@ -1,6 +1,6 @@
 # CI Runner Images
 
-Use this runbook when changing a `runs-on` label, renaming a workflow job, changing a job's `name:`, or changing a matrix that expands into job names. Runner labels decide which operating system Cake's platform-specific code is exercised on, and a rename changes the check name that appears in the GitHub UI and in `gh` output. There is no required-check ruleset on `master`, so a rename cannot block a pull request; keep names stable anyway so CI history stays readable.
+Use this runbook when changing a `runs-on` label, renaming a workflow job, changing a job's `name:`, or changing a matrix that expands into job names. Runner labels decide which operating system Cake's platform-specific code is exercised on, and a rename changes the check name that appears in the GitHub UI and in `gh` output. `master` has no required-check ruleset, only a safety-only ruleset that blocks deletion and force-pushes, so a rename cannot block a pull request; keep names stable anyway so CI history stays readable.
 
 ## Job names
 

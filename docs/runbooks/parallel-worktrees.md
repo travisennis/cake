@@ -4,7 +4,7 @@ Carry a change from an idea to `master` on a branch, and run several changes at 
 
 ## Branching Is Optional
 
-`master` has no remote ruleset and there is no local branch guard, so a direct commit and push is allowed. Use a branch when the change needs isolation, review, or a worktree beside other in-flight work. A branch is not a security boundary; it is a way to keep concurrent changes apart.
+`master` has a safety-only remote ruleset ([definition](../../.github/rulesets/default-branch-safety.json)) that blocks deletion and force-pushes; it has no required checks and no local branch guard, so a direct commit and push is allowed. Use a branch when the change needs isolation, review, or a worktree beside other in-flight work. A branch is not a security boundary; it is a way to keep concurrent changes apart.
 
 ## Single change on a branch
 
