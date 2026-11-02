@@ -20,6 +20,7 @@ mod run_mode;
 mod sandbox_grants;
 mod session_factory;
 mod sessions;
+mod trust;
 
 #[doc(inline)]
 pub use bash::BashCommand;
@@ -38,6 +39,7 @@ pub use output::{CliOutputSink, TurnResult};
 pub use persistence::execute_persistence_plan;
 pub use replay::{ReplayCommand, ReplayError};
 pub use sessions::SessionsCommand;
+pub use trust::TrustCommand;
 
 pub use run_mode::{RunMode, SessionPersistencePlan};
 pub use sandbox_grants::{SandboxGrantError, prepare_writable_dirs};
@@ -77,6 +79,8 @@ pub enum Commands {
     Init(InitCommand),
     /// Replay an existing session transcript as stream-json events
     Replay(ReplayCommand),
+    /// Review, inspect, and revoke project configuration trust
+    Trust(TrustCommand),
 }
 
 impl CmdRunner for Commands {
@@ -99,7 +103,29 @@ impl Commands {
             Self::Gates(_) => "gates",
             Self::Init(_) => "init",
             Self::Replay(_) => "replay",
+            Self::Trust(_) => "trust",
         }
+    }
+
+    /// The project-configuration surface this command uses.
+    pub(crate) const fn project_config_use(&self) -> crate::config::trust::ProjectConfigUse {
+        use crate::config::trust::ProjectConfigUse;
+        match self {
+            Self::Debug(_) => ProjectConfigUse::Inspect,
+            Self::Bash(_) => ProjectConfigUse::Enforce,
+            Self::Gates(command) => command.project_config_use(),
+            Self::Sessions(_) | Self::Init(_) | Self::Replay(_) | Self::Trust(_) => {
+                ProjectConfigUse::Unused
+            },
+        }
+    }
+
+    /// Whether the command refuses the one-run project-trust flags.
+    pub(crate) const fn rejects_project_trust_flags(&self) -> bool {
+        matches!(
+            self,
+            Self::Sessions(_) | Self::Init(_) | Self::Replay(_) | Self::Trust(_)
+        )
     }
 
     /// Dispatch to the selected subcommand's [`CmdRunner`].
@@ -118,6 +144,7 @@ impl Commands {
             Self::Gates(command) => command.run(data_dir, options).await,
             Self::Init(command) => command.run(data_dir, options).await,
             Self::Replay(command) => command.run(data_dir, options).await,
+            Self::Trust(command) => command.run(data_dir, options).await,
         }
     }
 }

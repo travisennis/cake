@@ -16,20 +16,42 @@ For model and behavior settings, project values overlay global values. When a pr
 
 Keys in a settings file that Cake does not recognize are ignored and reported as a warning on stderr, so a misspelled key (for example `temparature` instead of `temperature`) is surfaced instead of silently dropped. The warning names the file and the section, for example `unknown key 'temparature' in [[models]] entry 'zen'; ignored`.
 
-Model definitions with the same name are replaced as a unit by the project definition. Additional `directories` are merged. Profiles may select a model and overlay behavior but may not define model providers.
+Model definitions are global-only. A project settings file may select a global `[[models]]` entry by name but may not define one; a project `[[models]]` entry is a settings error even after `cake trust`. Additional `directories` are merged. Profiles may select a model and overlay behavior but may not define model providers.
+
+## Project trust
+
+Project `.cake/` configuration has three trust classes (ADR 053):
+
+- **Low-authority** settings load without a trust record: `default_model` and profile `default_model` naming a global model, profile selection and non-authority profile overlays, `[tools].enabled` when it only narrows, `[limits]`, project `AGENTS.md`, and skills under the default project roots. These can change behavior or cost but cannot add filesystem authority, execute code, read arbitrary host files, or select a new provider endpoint.
+- **Authority-bearing** settings require an explicit trust record: `directories`, `[sandbox].read_only` and `[sandbox].writable`, `[tools.bash].gates`, every `[gates.<name>]` table, the legacy `[tools.bash.judge]` table, `system_prompt`, `skills.path`, `.cake/hooks.json`, `.cake/hooks.local.json`, and every file under `.cake/tools/`. The same keys inside a project profile overlay also require trust.
+- **Model definitions** are user-owned global configuration. A project cannot define a `[[models]]` entry; move it to `<config>/cake/settings.toml` and select it by name.
+
+The trust record is a versioned SHA-256 manifest of the project `.cake/` tree stored at `<config>/cake/trust/<project-key>.json`. It is owner-only (`0600`, parent `0700`), keyed to the canonical project root, and revalidated on every invocation. A changed, added, removed, or executable-bit-changed file invalidates it, so any authority-bearing `.cake/` edit requires `cake trust` again. A new worktree has a different canonical root and starts untrusted. Generated `.cake/worktrees/` directories are not configuration and are excluded from the manifest.
+
+```text
+cake trust                  # review and trust the current snapshot
+cake trust --status         # report state without writing; --json for the diagnostic document
+cake trust --check          # exit 3 unless the snapshot is trusted
+cake trust --revoke         # remove the record for the current root
+```
+
+One-run modes never write a record:
+
+- `--trust-project` or `CAKE_TRUST_PROJECT=1` accepts the current snapshot for one invocation. Use it in CI after reviewing the checkout.
+- `--no-project-config` or `CAKE_PROJECT_CONFIG=off` ignores project `.cake/` settings, hooks, toolbox tools, and the automatic project prompt for one invocation. Repository content such as `AGENTS.md` and default-root skills remains untrusted model input.
+
+The two modes conflict and fail closed. When authority-bearing configuration is present and untrusted, Cake exits `3` before resolving a provider credential, running a hook, describing a toolbox tool, starting a gate, creating a writable grant, registering a tool, or opening a session. Read-only inspection commands (`cake trust --status`, `cake debug models`, `cake debug skills`, `cake gates list`) report the state without applying authority; `cake gates doctor` and `cake bash check` enforce the trust check.
 
 ## Project scaffolding with `cake init`
 
-`cake init` creates explicit, reviewable project scaffolding: `.cake/` and a commented, behavior-preserving `.cake/settings.toml` referencing the keys in this document without changing any behavior. `cake init --hooks` also creates an inert `.cake/hooks.json.example`. If a planned target already exists, the command reports the conflict and exits nonzero without writing anything; re-running after success is a safe refusal. Generated files are references only; the full contracts are here and in `docs/security.md`.
+`cake init` creates explicit, reviewable project scaffolding: `.cake/` and a commented, behavior-preserving `.cake/settings.toml` referencing the keys in this document without changing any behavior. `cake init --hooks` also creates an inert `.cake/hooks.json.example`. If a planned target already exists, the command reports the conflict and exits nonzero without writing anything; re-running after success is a safe refusal. Generated files are references only and need no trust record; a project that adds an authority-bearing setting or activates a hook or toolbox tool must run `cake trust`.
 
 ## Models
 
-Settings files are `<config>/cake/settings.toml` and `.cake/settings.toml`:
+Model definitions belong in the global `<config>/cake/settings.toml`:
 
 ```toml
 default_model = "openrouter"
-directories = ["../shared"]
-system_prompt = "prompts/coding.md"
 
 [[models]]
 name = "openrouter"
@@ -40,14 +62,22 @@ api_type = "chat_completions"
 max_output_tokens = 8000
 context_window = 200000
 reasoning_effort = "high"
+```
+
+A project `.cake/settings.toml` may select a global entry and overlay low-authority behavior. A project `[[models]]` entry is rejected, even after trust:
+
+```toml
+# .cake/settings.toml
+default_model = "openrouter"
 
 [profiles.review]
 default_model = "openrouter"
-directories = ["../standards"]
 
 [profiles.review.skills]
 only = ["review"]
 ```
+
+Migration: move every project `[[models]]` entry to `<config>/cake/settings.toml`, then select it by name from the project.
 
 Every model requires:
 
@@ -61,6 +91,7 @@ Every model requires:
 For a fast local prototype, Cake can reuse a file-backed login created by the Codex CLI:
 
 ```toml
+# <config>/cake/settings.toml
 default_model = "chatgpt"
 
 [[models]]
@@ -172,7 +203,8 @@ enabled = ["Read", "Edit"]
 enabled = ["Read"]
 ```
 
-Names are case-sensitive registered names: `Bash`, `BashSession`, `Read`, `Edit`, `Write`, or a toolbox name such as `tb__run_tests`. Selecting `Bash` also exposes `BashSession` so commands that yield can be read or killed. Selecting `BashSession` alone remains valid, though it cannot start a command. The list replaces lower-precedence global or project values, so a selected profile can narrow the top-level selection. A profile that omits `enabled` inherits the lower-precedence list; there is no `all` value that restores every tool. Unknown or unavailable names are warned about and are never registered. The selection is applied after sandbox filtering; for example, `--sandbox read-only` still removes `Bash`, `BashSession`, `Edit`, `Write`, and toolbox tools. `tools.enabled = []` also causes provider requests to omit tool definitions.
+Names are case-sensitive registered names: `Bash`, `BashSession`, `Read`, `Edit`, `Write`, or a toolbox name such as `tb__run_tests`. Selecting `Bash` also exposes `BashSession` so commands that yield can be read or killed. Selecting `BashSession` alone remains valid, though it cannot start a command. The list replaces lower-precedence global or project values, so a selected profile can narrow the top-level selection. A project list may only narrow the inherited selection: naming a tool absent from the global or higher-precedence list is a settings error, and `--tools` remains a one-run CLI override. A profile that omits `enabled` inherits the lower-precedence list; there is no `all` value that restores every tool. Unknown or unavailable names are warned about and are never registered. The selection is applied after sandbox filtering; for example, `--sandbox read-only` still removes `Bash`, `BashSession`, `Edit`, `Write`, and toolbox tools. `tools.enabled = []` also causes provider
+requests to omit tool definitions.
 
 `--tools name1,name2` selects a one-run allowlist and `--no-tools` exposes no tools for the run, the CLI spelling of `enabled = []`. Both mirror `--skills`/`--no-skills`. Because CLI flags are the highest precedence, either flag replaces the profile and top-level `[tools].enabled` chain instead of unioning with it, and `--no-tools` wins when both flags are passed. Values split on `,`, trim surrounding whitespace, and drop empty entries, so `--tools ""` or `--tools ","` selects no tools, matching `--skills ""`. As with settings, unknown or unavailable names warn and are dropped without failing the run; `--tools` is a usability filter, not a security boundary, and the sandbox and configured policy gates remain the enforcement.
 
@@ -250,7 +282,8 @@ The default pipeline is chosen in this order. An explicit `[tools.bash].gates` l
 
 `CAKE_GATE=off` or `--no-gate` bypasses the whole pipeline for the invocation. Every Bash call while bypassed records one bypass `gate_decision` with `bypassed: true`, and no gate process starts. `CAKE_JUDGE=off` is an alias for `CAKE_GATE=off` for one release. `--no-gate` wins over the environment variable, and `CAKE_GATE` wins over the deprecated `CAKE_JUDGE`. Only the exact value `off` disables the pipeline; other values are ignored, matching the existing `CAKE_JUDGE` behavior. A bypass is unsafe and is never the default.
 
-When both `[tools.bash].gates` and `[tools.bash.judge]` are present, `gates` wins and the legacy table is ignored, including its `enabled` flag; use `CAKE_GATE=off` or `--no-gate` for a bypass. With no explicit `gates` list, the translated legacy table configures the implicit `safety` gate: `enabled = false` or `CAKE_JUDGE=off` is the global bypass, `allowlist` becomes that gate's allowlist, `timeout_secs` and `retry_budget_secs` are summed into its per-check timeout, and `rubric_file`, `model`, and `[tools.bash.judge.typesafe]` become its `config` table. The legacy `[tools.bash.judge].allowlist` keeps its union-across-precedence behavior. The legacy table is not a source of external-gate configuration when `[gates.safety]` is explicitly selected: that table's `config` and `env` own the rubric, TypeSafe settings, and `TYPESAFE_AI_API_KEY`. A project settings file may set any of these, so treat project settings as trusted input.
+When both `[tools.bash].gates` and `[tools.bash.judge]` are present, `gates` wins and the legacy table is ignored, including its `enabled` flag; use `CAKE_GATE=off` or `--no-gate` for a bypass. With no explicit `gates` list, the translated legacy table configures the implicit `safety` gate: `enabled = false` or `CAKE_JUDGE=off` is the global bypass, `allowlist` becomes that gate's allowlist, `timeout_secs` and `retry_budget_secs` are summed into its per-check timeout, and `rubric_file`, `model`, and `[tools.bash.judge.typesafe]` become its `config` table. The legacy `[tools.bash.judge].allowlist` keeps its union-across-precedence behavior. The legacy table is not a source of external-gate configuration when `[gates.safety]` is explicitly selected: that table's `config` and `env` own the rubric, TypeSafe settings, and `TYPESAFE_AI_API_KEY`. An untrusted project cannot set any of these; a trusted project settings file may set any of them, so treat a trusted project as code-execution
+authority.
 
 Profile overlays follow the ordinary settings rules. `[profiles.<name>.tools.bash] gates` replaces the list; `[profiles.<name>.gates.<name>]` merges field by field, and its `config` table merges key by key rather than replacing the whole table. A profile may set `mode = "off"` to drop one gate without editing the global list; if that leaves no enforce gate for `bash.exec`, the no-gate rule applies.
 
@@ -289,7 +322,7 @@ read_only = ["~/.local/bin/claude"]   # read + execute
 writable = ["~/.claude", "~/.cache/claude"]  # read + write + execute
 ```
 
-`read_only` entries may be files or directories and grant read plus execute access (enough to run a single binary such as `~/.local/bin/claude` without opening its whole directory). `writable` entries grant read, write, and execute access to directories. Both keys accept absolute paths, relative paths, and `~` expansion, and merge as a union across global settings, project settings, and the selected profile; the merged list is deduplicated and sorted, so resolved grants are stable across runs.
+`read_only` entries may be files or directories and grant read plus execute access (enough to run a single binary such as `~/.local/bin/claude` without opening its whole directory). `writable` entries grant read, write, and execute access to directories. Both keys accept absolute paths, relative paths, and `~` expansion, and merge as a union across global settings, trusted project settings, and the selected profile; the merged list is deduplicated and sorted, so resolved grants are stable across runs. Project `directories`, `[sandbox].read_only`, and `[sandbox].writable` require trust.
 
 During writable agent-run initialization (including `danger-full-access`), Cake creates missing `directories` and `[sandbox].writable` targets and any missing parents before tools start. Automatic creation produces a warning in the log file; failures stop startup with the setting, target, and filesystem error. Existing nondirectory writable targets are ignored with a log warning. Only the configured target receives a writable grant, not its parents or siblings. Settings inspection and help do not create grant directories. Under `--sandbox read-only`, existing writable targets are demoted to read-only and missing ones are ignored with a log warning, without creating them. Missing `read_only` entries are also ignored with a log warning.
 
@@ -305,7 +338,7 @@ These are security decisions. See [Security](security.md) before expanding acces
 
 Skills are directories containing `SKILL.md` with YAML `name` and `description` frontmatter. Cake discovers project and user skills plus configured roots, lists their metadata to the model, and lets the model read the full instructions on demand.
 
-Default roots are `<working-directory>/.agents/skills/` for project skills and `~/.agents/skills/` for user skills. Configured `skills.path` roots are scanned between them. When names collide, project skills win, then configured roots in path order, then user skills.
+Default roots are `<working-directory>/.agents/skills/` for project skills and `~/.agents/skills/` for user skills. Configured `skills.path` roots are scanned between them. When names collide, project skills win, then configured roots in path order, then user skills. A project `skills.path` requires trust because configured roots become read-only path grants. Project default-root skills remain untrusted model input and need no trust record.
 
 ```toml
 [skills]
@@ -347,11 +380,13 @@ The system prompt uses the first readable source in this order:
 
 1. `--system-prompt <PATH>`
 2. `.cake/system.md`
-3. `system_prompt` from resolved settings/profile
+3. `system_prompt` from resolved settings/profile (a project value requires trust)
 4. `<config>/cake/system.md`
 5. the prompt embedded in the binary
 
 An override replaces the built-in prompt; it is not appended. The selected system prompt is stored when a session is created and reused on resume. Mutable AGENTS.md, skill, and environment context is rebuilt for each invocation.
+
+`.cake/system.md` is project prompt content, not authority: it remains untrusted model input. `--no-project-config` skips it, and a symlinked `.cake/system.md` is skipped rather than followed. A project `system_prompt` path is authority-bearing because it can read an arbitrary host file into the provider request, so it requires trust.
 
 `--no-runtime-context` suppresses only the mutable process-environment Developer message that reports the working directory, date, platform, architecture, shell, and terminal. The system prompt, AGENTS.md context, skill catalog, tool list, output schema, and session persistence are unchanged. It is intended for tool-less or transcript-only subcalls, not as a sandbox or security control: commands still inherit their normal environment.
 
@@ -360,8 +395,8 @@ An override replaces the built-in prompt; it is not appended. The selected syste
 Hooks are trusted commands configured in:
 
 1. `<config>/cake/hooks.json`
-2. `.cake/hooks.json`
-3. `.cake/hooks.local.json`
+2. `.cake/hooks.json` (requires project trust)
+3. `.cake/hooks.local.json` (requires project trust)
 
 Files are appended in that order and must declare `"version": 1`. Missing files are ignored; malformed files stop startup. Project-local hooks should normally be committed only when every project user is expected to trust them.
 
@@ -396,7 +431,7 @@ Hook commands run outside the model tool sandbox with the project root as their 
 
 Toolbox directories are scanned in this order: entries from `CAKE_TOOLBOX`, the repeated `--toolbox` arguments, and the active project's `.cake/tools` directory. When `CAKE_TOOLBOX` is unset, Cake scans `<config>/cake/tools` before the explicit and project-local directories; a non-empty value replaces that global default, while an explicitly empty value suppresses only the global/default scan. Earlier directories win name conflicts. Relative `CAKE_TOOLBOX` and `--toolbox` entries resolve from the invocation directory. With `--worktree`, project-local discovery uses the active worktree's `.cake/tools` directory.
 
-Each executable implements a describe and execute protocol. Valid tools are registered for the model with a `tb__` prefix. Project-local `.cake/tools` executables are trusted project configuration and are discovered automatically; inspect or remove them before running a cloned repository with a writable sandbox. Broken tools are skipped with a warning rather than blocking startup.
+Each executable implements a describe and execute protocol. Valid tools are registered for the model with a `tb__` prefix. Project-local `.cake/tools` executables are trusted project configuration, are discovered automatically only after the project trust record matches, and are filtered out by `--no-project-config`; inspect or remove them before running a trusted checkout with a writable sandbox. Broken tools are skipped with a warning rather than blocking startup.
 
 Toolbox executables are trusted and unsandboxed. Under `read-only`, Cake skips toolbox discovery entirely so even the describe action cannot mutate the workspace. See [Integrations](integrations.md) for the protocol and [Security](security.md) for the trust boundary.
 

@@ -36,23 +36,26 @@ async fn settings_filter_provider_tools_prompt_and_session_metadata() {
         .mount(&mock_server)
         .await;
 
-    env.write_project_settings(&format!(
-        r#"
-default_model = "test"
-
-[[models]]
+    env.write_global_settings(&format!(
+        r#"[[models]]
 name = "test"
 model = "test-model"
 base_url = "{}"
 api_key_env = "{}"
 api_type = "responses"
 
-[tools]
-enabled = ["Read", "NoSuchTool"]
 "#,
         mock_server.uri(),
         TEST_KEY
     ));
+    env.write_project_settings(
+        r#"
+default_model = "test"
+
+[tools]
+enabled = ["Read", "NoSuchTool"]
+"#,
+    );
 
     let output = env
         .command()
@@ -115,23 +118,26 @@ async fn empty_tool_selection_omits_provider_tool_fields() {
         .mount(&mock_server)
         .await;
 
-    env.write_project_settings(&format!(
-        r#"
-default_model = "test"
-
-[[models]]
+    env.write_global_settings(&format!(
+        r#"[[models]]
 name = "test"
 model = "test-model"
 base_url = "{}"
 api_key_env = "{}"
 api_type = "responses"
 
-[tools]
-enabled = []
 "#,
         mock_server.uri(),
         TEST_KEY
     ));
+    env.write_project_settings(
+        r#"
+default_model = "test"
+
+[tools]
+enabled = []
+"#,
+    );
 
     let output = env
         .command()
@@ -168,23 +174,26 @@ async fn selected_tool_description_omits_disabled_tools() {
         .mount(&mock_server)
         .await;
 
-    env.write_project_settings(&format!(
-        r#"
-default_model = "test"
-
-[[models]]
+    env.write_global_settings(&format!(
+        r#"[[models]]
 name = "test"
 model = "test-model"
 base_url = "{}"
 api_key_env = "{}"
 api_type = "responses"
 
-[tools]
-enabled = ["Bash"]
 "#,
         mock_server.uri(),
         TEST_KEY
     ));
+    env.write_project_settings(
+        r#"
+default_model = "test"
+
+[tools]
+enabled = ["Bash"]
+"#,
+    );
 
     let output = env
         .command()
@@ -243,23 +252,26 @@ async fn bash_only_selection_discloses_the_skill_catalog() {
     )
     .expect("skill file");
 
-    env.write_project_settings(&format!(
-        r#"
-default_model = "test"
-
-[[models]]
+    env.write_global_settings(&format!(
+        r#"[[models]]
 name = "test"
 model = "test-model"
 base_url = "{}"
 api_key_env = "{}"
 api_type = "responses"
 
-[tools]
-enabled = ["Bash"]
 "#,
         mock_server.uri(),
         TEST_KEY
     ));
+    env.write_project_settings(
+        r#"
+default_model = "test"
+
+[tools]
+enabled = ["Bash"]
+"#,
+    );
 
     let output = env
         .command()
@@ -322,23 +334,26 @@ async fn bash_only_run_loads_a_skill_body_with_cat() {
     )
     .expect("skill file");
 
-    env.write_project_settings(&format!(
-        r#"
-default_model = "test"
-
-[[models]]
+    env.write_global_settings(&format!(
+        r#"[[models]]
 name = "test"
 model = "test-model"
 base_url = "{}"
 api_key_env = "{}"
 api_type = "responses"
 
-[tools]
-enabled = ["Bash"]
 "#,
         mock_server.uri(),
         TEST_KEY
     ));
+    env.write_project_settings(
+        r#"
+default_model = "test"
+
+[tools]
+enabled = ["Bash"]
+"#,
+    );
 
     // The model answers the catalog by reading the skill with the Bash reader
     // the instructions describe.
@@ -450,23 +465,26 @@ async fn cli_tools_override_settings() {
         .mount(&mock_server)
         .await;
 
-    env.write_project_settings(&format!(
-        r#"
-default_model = "test"
-
-[[models]]
+    env.write_global_settings(&format!(
+        r#"[[models]]
 name = "test"
 model = "test-model"
 base_url = "{}"
 api_key_env = "{}"
 api_type = "responses"
 
-[tools]
-enabled = ["Bash"]
 "#,
         mock_server.uri(),
         TEST_KEY
     ));
+    env.write_project_settings(
+        r#"
+default_model = "test"
+
+[tools]
+enabled = ["Bash"]
+"#,
+    );
 
     let output = env
         .command()
@@ -513,23 +531,26 @@ async fn cli_tools_override_profile_selection() {
         .mount(&mock_server)
         .await;
 
-    env.write_project_settings(&format!(
-        r#"
-default_model = "test"
-
-[[models]]
+    env.write_global_settings(&format!(
+        r#"[[models]]
 name = "test"
 model = "test-model"
 base_url = "{}"
 api_key_env = "{}"
 api_type = "responses"
 
-[profiles.review.tools]
-enabled = ["Read"]
 "#,
         mock_server.uri(),
         TEST_KEY
     ));
+    env.write_project_settings(
+        r#"
+default_model = "test"
+
+[profiles.review.tools]
+enabled = ["Read"]
+"#,
+    );
 
     let output = env
         .command()
@@ -572,11 +593,8 @@ async fn no_tools_omits_provider_fields_and_records_empty_selection() {
         .mount(&mock_server)
         .await;
 
-    env.write_project_settings(&format!(
-        r#"
-default_model = "test"
-
-[[models]]
+    env.write_global_settings(&format!(
+        r#"[[models]]
 name = "test"
 model = "test-model"
 base_url = "{}"
@@ -586,6 +604,12 @@ api_type = "responses"
         mock_server.uri(),
         TEST_KEY
     ));
+    env.write_project_settings(
+        r#"
+default_model = "test"
+
+"#,
+    );
 
     let output = env
         .command()
@@ -623,11 +647,8 @@ async fn cli_unknown_tool_name_warns_and_is_not_registered() {
         .mount(&mock_server)
         .await;
 
-    env.write_project_settings(&format!(
-        r#"
-default_model = "test"
-
-[[models]]
+    env.write_global_settings(&format!(
+        r#"[[models]]
 name = "test"
 model = "test-model"
 base_url = "{}"
@@ -637,6 +658,12 @@ api_type = "responses"
         mock_server.uri(),
         TEST_KEY
     ));
+    env.write_project_settings(
+        r#"
+default_model = "test"
+
+"#,
+    );
 
     let output = env
         .command()
@@ -678,11 +705,8 @@ async fn read_only_sandbox_filters_cli_tool_selection() {
         .mount(&mock_server)
         .await;
 
-    env.write_project_settings(&format!(
-        r#"
-default_model = "test"
-
-[[models]]
+    env.write_global_settings(&format!(
+        r#"[[models]]
 name = "test"
 model = "test-model"
 base_url = "{}"
@@ -692,6 +716,12 @@ api_type = "responses"
         mock_server.uri(),
         TEST_KEY
     ));
+    env.write_project_settings(
+        r#"
+default_model = "test"
+
+"#,
+    );
 
     let output = env
         .command()

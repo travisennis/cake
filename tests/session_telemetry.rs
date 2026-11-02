@@ -128,10 +128,8 @@ fn write_responses_settings_with_window(
     let window = context_window
         .map(|tokens| format!("context_window = {tokens}\n"))
         .unwrap_or_default();
-    env.write_project_settings(&format!(
+    env.write_global_settings(&format!(
         r#"
-default_model = "test"
-
 [[models]]
 name = "test"
 model = "glm-5.1"
@@ -140,6 +138,7 @@ api_key_env = "SESSION_TELEMETRY_TEST_KEY"
 api_type = "responses"
 {window}"#
     ));
+    env.write_project_settings("default_model = \"test\"\n");
 }
 
 fn only_file_in(dir: &std::path::Path) -> std::path::PathBuf {

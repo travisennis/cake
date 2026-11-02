@@ -5,6 +5,8 @@
     reason = "shared test fixtures use expect for setup"
 )]
 mod support;
+#[path = "support/trust.rs"]
+mod trust_helpers;
 
 use std::fs;
 use support::TestEnv;
@@ -26,22 +28,24 @@ async fn sandbox_grants_bootstrap_tilde_and_relative_paths_only_for_writable_run
         .expect(2)
         .mount(&server)
         .await;
-    let settings = format!(
-        r#"default_model = "test"
+    let settings = r#"default_model = "test"
 directories = ["../legacy/parent/state"]
-[[models]]
+[sandbox]
+writable = ["~/.cache/cake", "~/.local/share/cake"]
+read_only = ["../absent-read-only"]
+"#;
+    env.write_global_settings(&format!(
+        r#"[[models]]
 name = "test"
 model = "test"
 base_url = "{}"
 api_key_env = "GRANTS_TEST_KEY"
 api_type = "responses"
-[sandbox]
-writable = ["~/.cache/cake", "~/.local/share/cake"]
-read_only = ["../absent-read-only"]
 "#,
         server.uri()
-    );
-    env.write_project_settings(&settings);
+    ));
+    env.write_project_settings(settings);
+    env.trust_project();
     for args in [
         vec!["--help"],
         vec!["debug", "models", "--json"],
@@ -93,6 +97,7 @@ read_only = ["../absent-read-only"]
         "writable = [\"~/.cache/cake\", \"~/.local/share/cake\"]",
         "writable = [\"dangling/state\"]",
     ));
+    env.trust_project();
     let output = env
         .command()
         .args(["--sandbox", "workspace-write", "inspect"])

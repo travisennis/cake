@@ -82,6 +82,19 @@ pub struct SessionTelemetrySettings {
     pub base_url: Option<String>,
 }
 
+/// Path-free project trust metadata for one invocation.
+///
+/// Records the effective mode, a one-way project key, and the number of
+/// authority-bearing files. It never carries the project root, a file path, a
+/// settings key, or file content.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectTrustTelemetry {
+    pub mode: &'static str,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_key: Option<String>,
+    pub authority_files: usize,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionTelemetryContext {
     pub session_id: String,
@@ -827,6 +840,8 @@ pub enum SessionTelemetryRecord {
         output_format: OutputFormat,
         tools: Vec<String>,
         settings: SessionTelemetrySettings,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project_trust: Option<ProjectTrustTelemetry>,
     },
     ApiAttemptInFlight {
         session_id: String,
@@ -2200,6 +2215,27 @@ mod tests {
     /// byte bound, and an unparsable value serializes as null instead of the
     /// raw string.
     #[test]
+    fn telemetry_init_project_trust_is_additive_and_path_free() {
+        let value = serde_json::to_value(telemetry_init(None)).unwrap();
+        assert!(value.get("project_trust").is_none());
+
+        let mut record = telemetry_init(None);
+        let SessionTelemetryRecord::TelemetryInit { project_trust, .. } = &mut record else {
+            panic!("expected a telemetry init record");
+        };
+        *project_trust = Some(ProjectTrustTelemetry {
+            mode: "one_run",
+            project_key: Some("abc123".to_string()),
+            authority_files: 3,
+        });
+        let value = serde_json::to_value(&record).unwrap();
+        assert_eq!(value["project_trust"]["mode"], "one_run");
+        assert_eq!(value["project_trust"]["project_key"], "abc123");
+        assert_eq!(value["project_trust"]["authority_files"], 3);
+        assert!(!value.to_string().contains("/tmp/"));
+    }
+
+    #[test]
     fn telemetry_init_omits_working_directory_and_sanitizes_endpoint() {
         let canary = "sk-canary-credential";
         let record = serde_json::to_string(&telemetry_init(Some(format!(
@@ -2252,6 +2288,7 @@ mod tests {
                 model_config: Some("test".to_string()),
                 base_url,
             },
+            project_trust: None,
         }
     }
 }

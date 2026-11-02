@@ -17,7 +17,7 @@ use crate::config::toolbox::ToolboxTool;
 use crate::config::{
     AgentsFile, DataDir, ModelDefinition, ResolvedModelConfig, Session, SkillCatalog,
 };
-use crate::prompts::build_initial_prompt_messages_with_enabled_tools;
+use crate::prompts::build_initial_prompt_messages_with_project;
 use crate::types::SessionRecord;
 
 /// A fully assembled agent, session, and persistence plan ready for execution.
@@ -274,6 +274,7 @@ impl crate::CodingAssistant {
         enabled_tools: Option<&[String]>,
         task_id: uuid::Uuid,
         loaded_system_prompt: Option<&str>,
+        include_project_prompt: bool,
     ) -> anyhow::Result<RunSession> {
         let inputs = RunInputs {
             current_dir,
@@ -289,6 +290,7 @@ impl crate::CodingAssistant {
             toolbox_tools,
             tools_enabled: enabled_tools,
             include_runtime_context: !self.no_runtime_context,
+            include_project_prompt,
             task_id,
         };
         match run_mode {
@@ -420,6 +422,7 @@ struct RunInputs<'a> {
     toolbox_tools: &'a [ToolboxTool],
     tools_enabled: Option<&'a [String]>,
     include_runtime_context: bool,
+    include_project_prompt: bool,
     task_id: uuid::Uuid,
 }
 
@@ -430,7 +433,7 @@ impl RunInputs<'_> {
     /// model capabilities: a model that does not accept image input never
     /// advertises `ReadImage`.
     fn initial_messages(&self, supports_images: bool) -> Vec<(crate::types::Role, String)> {
-        build_initial_prompt_messages_with_enabled_tools(
+        build_initial_prompt_messages_with_project(
             &self.current_dir,
             self.config_dir,
             self.cli_system_prompt,
@@ -442,6 +445,7 @@ impl RunInputs<'_> {
             self.tools_enabled,
             supports_images,
             self.include_runtime_context,
+            self.include_project_prompt,
         )
     }
 }
@@ -632,6 +636,7 @@ mod tests {
                     None,
                     uuid::Uuid::new_v4(),
                     None,
+                    true,
                 )
                 .expect("session construction should succeed");
 
@@ -850,6 +855,7 @@ mod tests {
             None,
             uuid::Uuid::new_v4(),
             None,
+            true,
         )
     }
 

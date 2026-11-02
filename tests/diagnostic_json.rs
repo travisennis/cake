@@ -98,10 +98,8 @@ fn write_session(env: &TestEnv, session_id: &str, timestamp: &str, prompt: &str)
 #[test]
 fn debug_models_json_is_one_versioned_document() {
     let env = cake_env();
-    env.write_project_settings(
+    env.write_global_settings(
         r#"
-default_model = "zen"
-
 [[models]]
 name = "zen"
 model = "glm-5.1"
@@ -111,6 +109,7 @@ api_type = "responses"
 top_k = 40
 "#,
     );
+    env.write_project_settings("default_model = \"zen\"\n");
 
     let output = env
         .command()
@@ -161,7 +160,12 @@ const DEBUG_MODELS_GOLDEN: &str = r#"{
         "top_k": 40,
         "top_p": null
       }
-    ]
+    ],
+    "project_trust": {
+      "authority": [],
+      "changes": [],
+      "state": "not_required"
+    }
   }
 }
 "#;
@@ -169,7 +173,7 @@ const DEBUG_MODELS_GOLDEN: &str = r#"{
 #[test]
 fn debug_models_json_orders_models_by_name() {
     let env = cake_env();
-    env.write_project_settings(
+    env.write_global_settings(
         r#"
 [[models]]
 name = "zen"
@@ -201,10 +205,8 @@ api_key_env = "ALPHA_TOKEN"
 #[test]
 fn debug_models_json_reports_the_profile_default_model() {
     let env = cake_env();
-    env.write_project_settings(
+    env.write_global_settings(
         r#"
-default_model = "zen"
-
 [[models]]
 name = "zen"
 model = "provider/zen"
@@ -216,6 +218,11 @@ name = "alpha"
 model = "provider/alpha"
 base_url = "https://alpha.example.com/v1"
 api_key_env = "ALPHA_TOKEN"
+"#,
+    );
+    env.write_project_settings(
+        r#"
+default_model = "zen"
 
 [profiles.review]
 default_model = "alpha"
@@ -599,7 +606,7 @@ const BASH_CHECK_BYPASS_GOLDEN: &str = r#"{
 #[test]
 fn bash_check_json_reports_settings_findings_in_the_document() {
     let env = cake_env();
-    env.write_project_settings(
+    env.write_global_settings(
         r"
 [tools.bash.judge]
 not_a_real_key = 0.1
@@ -646,7 +653,7 @@ not_a_real_key = 0.1
 #[test]
 fn bash_check_text_mode_keeps_settings_findings_on_stderr() {
     let env = cake_env();
-    env.write_project_settings(
+    env.write_global_settings(
         r"
 [tools.bash.judge]
 not_a_real_key = 0.1

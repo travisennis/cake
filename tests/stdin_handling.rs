@@ -101,10 +101,8 @@ fn test_version_works() {
 #[test]
 fn test_positional_prompt_parsing() {
     let env = cake_env();
-    env.write_project_settings(
+    env.write_global_settings(
         r#"
-default_model = "test"
-
 [[models]]
 name = "test"
 model = "glm-5.1"
@@ -112,6 +110,7 @@ base_url = "https://example.com"
 api_key_env = "POSITIONAL_PROMPT_TEST_KEY"
 "#,
     );
+    env.write_project_settings("default_model = \"test\"\n");
 
     let output = env
         .command()
@@ -260,7 +259,10 @@ fn test_worktree_closed_output_runs_guard_cleanup() {
     env.write_project_settings(
         r#"
  default_model = "test"
-
+ "#,
+    );
+    env.write_global_settings(
+        r#"
  [[models]]
  name = "test"
  model = "test-model"
@@ -460,10 +462,8 @@ fn test_no_session_flag_in_help() {
 #[test]
 fn test_stdin_under_size_limit_is_accepted() {
     let env = cake_env();
-    env.write_project_settings(
+    env.write_global_settings(
         r#"
-default_model = "test"
-
 [[models]]
 name = "test"
 model = "glm-5.1"
@@ -471,6 +471,7 @@ base_url = "not-a-url"
 api_key_env = "STDIN_SIZE_TEST_KEY"
 "#,
     );
+    env.write_project_settings("default_model = \"test\"\n");
 
     let mut child = env
         .command()
@@ -511,10 +512,8 @@ fn test_stdin_exceeds_size_limit_error() {
     const MB: usize = 1024 * 1024;
 
     let env = cake_env();
-    env.write_project_settings(
+    env.write_global_settings(
         r#"
-default_model = "test"
-
 [[models]]
 name = "test"
 model = "glm-5.1"
@@ -522,6 +521,7 @@ base_url = "not-a-url"
 api_key_env = "STDIN_OVERSIZE_TEST_KEY"
 "#,
     );
+    env.write_project_settings("default_model = \"test\"\n");
 
     let mut child = env
         .command()
@@ -565,10 +565,8 @@ api_key_env = "STDIN_OVERSIZE_TEST_KEY"
 #[test]
 fn test_no_session_prevents_session_save() {
     let env = cake_env();
-    env.write_project_settings(
+    env.write_global_settings(
         r#"
-default_model = "test"
-
 [[models]]
 name = "test"
 model = "glm-5.1"
@@ -576,6 +574,7 @@ base_url = "not-a-url"
 api_key_env = "NO_SESSION_TEST_KEY"
 "#,
     );
+    env.write_project_settings("default_model = \"test\"\n");
 
     let output = env
         .command()
@@ -620,10 +619,8 @@ fn captured_stderr_carries_no_program_status_report() {
     // path that reports `blocked` while it waits must leave a captured stderr
     // free of OSC 7501 sequences.
     let env = cake_env();
-    env.write_project_settings(
+    env.write_global_settings(
         r#"
-default_model = "test"
-
 [[models]]
 name = "test"
 model = "glm-5.1"
@@ -631,6 +628,7 @@ base_url = "not-a-url"
 api_key_env = "PROGRAM_STATUS_TEST_KEY"
 "#,
     );
+    env.write_project_settings("default_model = \"test\"\n");
 
     let mut child = env
         .command()

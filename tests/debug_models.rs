@@ -3,6 +3,8 @@
 #![expect(clippy::expect_used, reason = "test code uses expect for assertions")]
 
 mod support;
+#[path = "support/trust.rs"]
+mod trust_helpers;
 
 use std::process::Stdio;
 
@@ -99,7 +101,7 @@ fn debug_skills_respects_profiles_and_cli_filters_without_a_model() {
 #[test]
 fn debug_models_prints_project_models_without_api_key_value() {
     let env = cake_env();
-    env.write_project_settings(
+    env.write_global_settings(
         r#"
 [[models]]
 name = "zen"
@@ -190,6 +192,7 @@ fn debug_models_no_gate_accepts_invalid_gate_configuration() {
 gates = ["missing"]
 "#,
     );
+    env.trust_project();
 
     let output = env.command().args(["debug", "models"]).output().unwrap();
     assert_eq!(output.status.code(), Some(3));

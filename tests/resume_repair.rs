@@ -29,10 +29,8 @@ fn success_response() -> serde_json::Value {
 }
 
 fn write_responses_settings(env: &TestEnv, base_url: &str) {
-    env.write_project_settings(&format!(
+    env.write_global_settings(&format!(
         r#"
-default_model = "test"
-
 [[models]]
 name = "test"
 model = "glm-5.1"
@@ -41,6 +39,11 @@ api_key_env = "RESUME_REPAIR_TEST_KEY"
 api_type = "responses"
 "#
     ));
+    env.write_project_settings(
+        r#"
+default_model = "test"
+"#,
+    );
 }
 
 /// Write a session file whose last record is a `function_call` with no output.

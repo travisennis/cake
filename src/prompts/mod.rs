@@ -168,6 +168,7 @@ fn read_prompt_override(path: &Path, source: PromptSource) -> Option<String> {
     clippy::too_many_arguments,
     reason = "prompt resolution naturally requires many inputs"
 )]
+#[cfg(test)]
 pub fn resolve_system_prompt(
     working_dir: &Path,
     config_dir: &Path,
@@ -178,6 +179,40 @@ pub fn resolve_system_prompt(
     enabled_tools: Option<&[String]>,
     supports_images: bool,
 ) -> String {
+    resolve_system_prompt_with_project(
+        working_dir,
+        config_dir,
+        cli_system_prompt,
+        settings_system_prompt,
+        sandbox_policy,
+        toolbox_tools,
+        enabled_tools,
+        supports_images,
+        true,
+    )
+}
+
+/// Resolve the system prompt, optionally skipping automatic project content.
+///
+/// `include_project_prompt` is false under `--no-project-config`. The automatic
+/// `.cake/system.md` source is also skipped when it is a symlink, even in a
+/// trusted project, so project prompt content cannot read a host file through a
+/// link.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "prompt resolution naturally requires many inputs"
+)]
+pub fn resolve_system_prompt_with_project(
+    working_dir: &Path,
+    config_dir: &Path,
+    cli_system_prompt: Option<&Path>,
+    settings_system_prompt: Option<&Path>,
+    sandbox_policy: SandboxPolicy,
+    toolbox_tools: &[ToolboxTool],
+    enabled_tools: Option<&[String]>,
+    supports_images: bool,
+    include_project_prompt: bool,
+) -> String {
     // 1. --system-prompt CLI flag
     if let Some(path) = cli_system_prompt
         && let Some(prompt) = read_prompt_override(path, PromptSource::Cli)
@@ -186,10 +221,7 @@ pub fn resolve_system_prompt(
     }
 
     // 2. Project-level file: .cake/system.md
-    let project_path = working_dir.join(".cake").join("system.md");
-    if project_path.exists()
-        && let Some(prompt) = read_prompt_override(&project_path, PromptSource::Project)
-    {
+    if include_project_prompt && let Some(prompt) = read_project_prompt(working_dir) {
         return prompt;
     }
 
@@ -209,6 +241,49 @@ pub fn resolve_system_prompt(
     }
 
     debug!("Using built-in system prompt (no override found)");
+    builtin_prompt(
+        sandbox_policy,
+        toolbox_tools,
+        enabled_tools,
+        supports_images,
+    )
+}
+
+/// Read the automatic project prompt, skipping a symlink rather than following
+/// it into an arbitrary host path.
+fn read_project_prompt(working_dir: &Path) -> Option<String> {
+    let project_path = working_dir.join(".cake").join("system.md");
+    match std::fs::symlink_metadata(&project_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            warn!(
+                path = %project_path.display(),
+                "skipping symlinked project system prompt"
+            );
+            None
+        },
+        Ok(metadata) if metadata.is_file() => {
+            read_prompt_override(&project_path, PromptSource::Project)
+        },
+        Ok(_) => None,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            warn!(
+                path = %project_path.display(),
+                error = %error,
+                "could not inspect project system prompt"
+            );
+            None
+        },
+    }
+}
+
+/// Render the built-in prompt, filling the tool list when the template has it.
+fn builtin_prompt(
+    sandbox_policy: SandboxPolicy,
+    toolbox_tools: &[ToolboxTool],
+    enabled_tools: Option<&[String]>,
+    supports_images: bool,
+) -> String {
     let builtin = BUILTIN_SYSTEM_PROMPT.trim().to_string();
     if builtin.contains("{{AVAILABLE_TOOLS}}") {
         builtin.replace(
@@ -238,6 +313,7 @@ pub fn resolve_system_prompt(
     clippy::too_many_arguments,
     reason = "prompt construction naturally requires many inputs"
 )]
+#[cfg(test)]
 pub fn build_initial_prompt_messages_with_enabled_tools(
     working_dir: &Path,
     config_dir: &Path,
@@ -251,9 +327,44 @@ pub fn build_initial_prompt_messages_with_enabled_tools(
     supports_images: bool,
     include_runtime_context: bool,
 ) -> Vec<(Role, String)> {
+    build_initial_prompt_messages_with_project(
+        working_dir,
+        config_dir,
+        cli_system_prompt,
+        settings_system_prompt,
+        agents_files,
+        skill_catalog,
+        sandbox_policy,
+        toolbox_tools,
+        enabled_tools,
+        supports_images,
+        include_runtime_context,
+        true,
+    )
+}
+
+/// Build initial prompt messages, optionally skipping automatic project content.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "prompt construction naturally requires many inputs"
+)]
+pub fn build_initial_prompt_messages_with_project(
+    working_dir: &Path,
+    config_dir: &Path,
+    cli_system_prompt: Option<&Path>,
+    settings_system_prompt: Option<&Path>,
+    agents_files: &[AgentsFile],
+    skill_catalog: &SkillCatalog,
+    sandbox_policy: SandboxPolicy,
+    toolbox_tools: &[ToolboxTool],
+    enabled_tools: Option<&[String]>,
+    supports_images: bool,
+    include_runtime_context: bool,
+    include_project_prompt: bool,
+) -> Vec<(Role, String)> {
     let mut messages = vec![(
         Role::System,
-        resolve_system_prompt(
+        resolve_system_prompt_with_project(
             working_dir,
             config_dir,
             cli_system_prompt,
@@ -262,6 +373,7 @@ pub fn build_initial_prompt_messages_with_enabled_tools(
             toolbox_tools,
             enabled_tools,
             supports_images,
+            include_project_prompt,
         ),
     )];
     let context = format_agents_context(agents_files);
@@ -526,6 +638,57 @@ mod tests {
             true,
         );
         assert_eq!(prompt, "Project prompt");
+    }
+
+    #[test]
+    fn resolve_skips_project_prompt_when_project_config_is_disabled() {
+        let working_dir = TempDir::new().unwrap();
+        let config_dir = TempDir::new().unwrap();
+
+        let cake_dir = working_dir.path().join(".cake");
+        std::fs::create_dir_all(&cake_dir).unwrap();
+        std::fs::write(cake_dir.join("system.md"), "Project prompt").unwrap();
+        std::fs::write(config_dir.path().join("system.md"), "User prompt").unwrap();
+
+        let prompt = resolve_system_prompt_with_project(
+            working_dir.path(),
+            config_dir.path(),
+            None,
+            None,
+            SandboxPolicy::WorkspaceWrite,
+            &[],
+            None,
+            true,
+            false,
+        );
+        assert_eq!(prompt, "User prompt");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_skips_a_symlinked_project_prompt() {
+        let working_dir = TempDir::new().unwrap();
+        let config_dir = TempDir::new().unwrap();
+        let external = TempDir::new().unwrap();
+        let target = external.path().join("host-prompt.md");
+        std::fs::write(&target, "Host prompt").unwrap();
+        let cake_dir = working_dir.path().join(".cake");
+        std::fs::create_dir_all(&cake_dir).unwrap();
+        std::os::unix::fs::symlink(&target, cake_dir.join("system.md")).unwrap();
+        std::fs::write(config_dir.path().join("system.md"), "User prompt").unwrap();
+
+        let prompt = resolve_system_prompt_with_project(
+            working_dir.path(),
+            config_dir.path(),
+            None,
+            None,
+            SandboxPolicy::WorkspaceWrite,
+            &[],
+            None,
+            true,
+            true,
+        );
+        assert_eq!(prompt, "User prompt");
     }
 
     #[test]

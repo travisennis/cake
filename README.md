@@ -37,7 +37,7 @@ Then export the API key named by `api_key_env`:
 export OPENROUTER_API_KEY="..."
 ```
 
-Project settings may be placed in `.cake/settings.toml`. See [Configuration](docs/configuration.md) for model fields, precedence, profiles, skills, prompts, hooks, and toolbox tools.
+Model definitions are global-only. Project settings may be placed in `.cake/settings.toml`, but a project may only select a global model by name; a project `[[models]]` entry is rejected. Low-authority project settings load without a trust record; authority-bearing settings (sandbox grants, gates, `system_prompt`, `skills.path`), project hooks, and project toolbox executables require `cake trust`. Run `cake trust` after reviewing a checkout, or use `--trust-project` for one CI invocation and `--no-project-config` to ignore project `.cake/` configuration. See [Configuration](docs/configuration.md#project-trust) for the trust classes, model fields, precedence, profiles, skills, prompts, hooks, and toolbox tools.
 
 ## Use cake
 
@@ -99,7 +99,7 @@ cake --output-schema result.schema.json "Return structured findings"
 
 Model-generated Bash commands use `workspace-write` sandboxing by default. Select `read-only`, `workspace-write`, `workspace-write-interactive` (macOS app launching and automation), or `danger-full-access` with `--sandbox`.
 
-The sandbox is a filesystem boundary, not a network boundary. Hooks and toolbox executables are trusted extensions and run outside the Bash sandbox. Read [Security](docs/security.md) before changing permissions or enabling extensions.
+The sandbox is a filesystem boundary, not a network boundary. Trusted hooks and toolbox executables run outside the Bash sandbox; project hooks and project toolbox executables require an explicit trust record. Read [Security](docs/security.md) before changing permissions or enabling extensions.
 
 ## Project instructions and extensions
 

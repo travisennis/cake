@@ -24,6 +24,7 @@ pub mod session_jsonl;
 pub mod settings;
 pub mod skills;
 pub mod toolbox;
+pub mod trust;
 pub mod worktree;
 
 use std::path::PathBuf;
