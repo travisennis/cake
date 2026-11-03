@@ -41,6 +41,8 @@ fn meta_record(session_id: &str, model: Option<&str>) -> SessionRecord {
         model_config: model.map(|_| "test".to_string()),
         tools: vec!["bash".to_string()],
         cake_version: None,
+        build_commit: None,
+        build_dirty: None,
         system_prompt: None,
         git: GitState::default(),
     }

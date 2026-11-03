@@ -374,6 +374,8 @@ fn session_meta_record(session: &Session, tools: Vec<String>) -> SessionRecord {
         model_config: session.model_config.clone(),
         tools,
         cake_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        build_commit: crate::build_info::commit(),
+        build_dirty: crate::build_info::dirty(),
         system_prompt: session.system_prompt.clone(),
         git: session
             .git
@@ -491,6 +493,20 @@ mod tests {
         assert!(meta["git"]["repository_url"].is_null());
         assert!(meta["git"]["branch"].is_null());
         assert!(meta["git"]["commit_hash"].is_null());
+    }
+
+    #[test]
+    fn session_meta_includes_optional_build_identity() {
+        let session = Session::new(uuid::Uuid::new_v4(), PathBuf::from("/work"));
+        let meta = serde_json::to_value(session_meta_record(&session, Vec::new())).unwrap();
+        match crate::build_info::commit() {
+            Some(commit) => assert_eq!(meta["build_commit"], commit),
+            None => assert!(meta.get("build_commit").is_none()),
+        }
+        match crate::build_info::dirty() {
+            Some(dirty) => assert_eq!(meta["build_dirty"], dirty),
+            None => assert!(meta.get("build_dirty").is_none()),
+        }
     }
 
     #[test]

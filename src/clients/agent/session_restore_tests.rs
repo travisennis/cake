@@ -58,6 +58,8 @@ fn session_meta() -> SessionRecord {
             "Edit".to_string(),
         ],
         cake_version: None,
+        build_commit: None,
+        build_dirty: None,
         system_prompt: Some("scripted system prompt".to_string()),
         git: GitState::default(),
     }

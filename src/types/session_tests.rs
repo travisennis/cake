@@ -1134,6 +1134,8 @@ fn snapshot_session_json_session_meta() {
         model_config: Some("test".to_string()),
         tools: vec!["bash".to_string(), "read".to_string(), "edit".to_string()],
         cake_version: Some("1.2.3-test".to_string()),
+        build_commit: None,
+        build_dirty: None,
         system_prompt: Some("You are cake.".to_string()),
         git: GitState {
             repository_url: Some("https://example.com/cake.git".to_string()),
@@ -1564,6 +1566,8 @@ fn snapshot_stream_record_json_session_meta() {
         model_config: Some("test".to_string()),
         tools: vec!["bash".to_string(), "read".to_string(), "edit".to_string()],
         cake_version: Some("1.2.3-test".to_string()),
+        build_commit: None,
+        build_dirty: None,
         system_prompt: Some("You are cake.".to_string()),
         git: GitState {
             repository_url: Some("https://example.com/cake.git".to_string()),
@@ -1668,6 +1672,8 @@ fn session_record_to_stream_record_preserves_json() {
             model_config: Some("test".to_string()),
             tools: vec!["bash".to_string()],
             cake_version: Some("1.2.3-test".to_string()),
+            build_commit: None,
+            build_dirty: None,
             system_prompt: Some("You are cake.".to_string()),
             git: GitState::default(),
         },

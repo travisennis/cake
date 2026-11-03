@@ -297,6 +297,8 @@ mod tests {
             model_config: Some("test".to_string()),
             tools: vec!["bash".to_string(), "read".to_string()],
             cake_version: None,
+            build_commit: None,
+            build_dirty: None,
             system_prompt: None,
             git: GitState::default(),
         })

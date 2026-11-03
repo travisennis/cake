@@ -12,6 +12,9 @@ import dashboard
 
 LABELS = ('com.cake.metrics.refresh', 'com.cake.metrics.reminder')
 PYTHON_FALLBACKS = ('/opt/homebrew/bin/python3', '/usr/local/bin/python3', '/usr/bin/python3')
+RUNTIME_FILES = ('dashboard.py', 'dashboard.html', 'dashboard_report.py',
+                 'dashboard_sections.py', 'dashboard_render.py', 'cakelib.py',
+                 'install_dashboard.py', 'metrics_job.sh')
 
 
 def python_candidates(python):
@@ -71,8 +74,7 @@ def main():
     runtime = root / 'runtime'
     runtime.mkdir(exist_ok=True, mode=0o700)
     source = Path(__file__).resolve().parent
-    for name in ('dashboard.py', 'dashboard.html', 'cakelib.py', 'install_dashboard.py',
-                 'metrics_job.sh'):
+    for name in RUNTIME_FILES:
         shutil.copy2(source / name, runtime / name)
     sessions = dashboard.cakelib.resolve_sessions_dir(ns).expanduser().resolve()
     telemetry = dashboard.cakelib.resolve_telemetry_dir(ns).expanduser().resolve()
