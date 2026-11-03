@@ -48,6 +48,8 @@ The dashboard is now the overview report. `index.html` renders provenance, headl
 
 Follow-up (2026-11-03): the uncapped full-detail default produced a 61 MB `index.html` and froze Chrome. The dashboard now caps any table above `--detail-limit` (default 200) and reports the full row count; the duplicate per-call tables were removed from the time section. The session and telemetry sources still hold every record, and `--detail-limit 0` restores the uncapped page. This supersedes the no-truncation rule for the default view.
 
+Follow-up (2026-11-03): filter groups with more than eight values collapse behind a native `<details>` disclosure, so the 28-model and 149-project lists no longer dominate the nav. The count stays visible in the summary, and expanded links wrap; no JavaScript is involved.
+
 Build identity is recorded additively in `session_meta` and `telemetry_init` as `build_commit` plus `build_dirty`. Existing format version 4 files remain valid, and older records fall back to `cake_version`. Transcript records are attributed to the invocation interval that contains their timestamp, with the session's creation build as the fallback; telemetry records use the invocation's own build.
 
 The retained daily history and `dashboard.aggregate()` stayed unchanged, and the headline window is pinned to `summary.py` by tests. Per-session raw record pages and commit-filter pages remain future work; the aggregate page stays metadata-only as decided.

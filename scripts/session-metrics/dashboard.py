@@ -16,6 +16,7 @@ import dashboard_report
 
 DEFAULT_OUTPUT = Path.home() / 'Library/Application Support/cake-metrics'
 SCHEMA_VERSION = 2
+FILTER_GROUP_COLLAPSE_AT = 8
 
 
 def bucket(rows, day, model, project):
@@ -192,7 +193,8 @@ def nav_groups(values, current):
         links = [{'label': value, 'href': f'{key}-{slug(value)}.html'}
                  for value in values.get(key) or []]
         if links:
-            groups.append({'label': label, 'links': links})
+            groups.append({'label': label, 'links': links,
+                           'collapsible': len(links) > FILTER_GROUP_COLLAPSE_AT})
     for group in groups:
         for link in group['links']:
             link['active'] = link['href'] == current

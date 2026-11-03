@@ -63,8 +63,11 @@ p { margin: 6px 0; }
 }
 .toc a { text-decoration: none; font-size: 13px; }
 .toc a:hover { text-decoration: underline; }
-.filter-group { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+div.filter-group { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
 .filter-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+details.filter-group > summary { cursor: pointer; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--line); }
+details.filter-group[open] { flex-basis: 100%; }
+.filter-links { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .filters a { text-decoration: none; padding: 2px 7px; border-radius: 999px; border: 1px solid transparent; }
 .filters a:hover { border-color: var(--line); }
 .filters a.active { background: var(--surface-2); border-color: var(--accent); color: var(--accent); }

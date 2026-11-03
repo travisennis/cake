@@ -438,6 +438,18 @@ class DashboardTests(unittest.TestCase):
             self.assertTrue(payload['attribution'])
             self.assertTrue(payload['rows'])
 
+    def test_filter_nav_collapses_long_groups(self):
+        groups = dashboard.nav_groups(
+            {'model': [f'model-{i:02d}' for i in range(9)],
+             'project': ['/projects/alpha'],
+             'version': ['1.0.0']}, 'index.html')
+        nav = dashboard_render.render_filter_nav(groups, 'index.html')
+        self.assertIn('<details class="filter-group">', nav)
+        self.assertIn('<summary class="filter-label">Models (9)</summary>', nav)
+        self.assertIn('<div class="filter-links">', nav)
+        self.assertIn('<span class="filter-label">Projects</span>', nav)
+        self.assertIn('<span class="filter-label">Versions</span>', nav)
+
     def test_empty_report_renders_every_section(self):
         now = ts('2026-10-19')
         report = dashboard_report.build_report(

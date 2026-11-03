@@ -98,16 +98,31 @@ def render_toc(sections: list[dict]) -> str:
     return f'<nav class="toc" aria-label="Sections">{links}</nav>'
 
 
+def _render_filter_links(group: dict, current: str) -> str:
+    links = []
+    for link in group.get("links") or []:
+        active = ' class="active"' if link.get("href") == current else ""
+        links.append(f'<a href="{escape(link["href"])}"{active}>{escape(link["label"])}</a>')
+    return " ".join(links)
+
+
 def render_filter_nav(groups: list[dict], current: str) -> str:
     parts = ['<nav class="filters" aria-label="Filters">']
     for group in groups:
-        parts.append(f'<div class="filter-group"><span class="filter-label">{escape(group["label"])}</span>')
-        links = []
-        for link in group.get("links") or []:
-            active = ' class="active"' if link.get("href") == current else ""
-            links.append(f'<a href="{escape(link["href"])}"{active}>{escape(link["label"])}</a>')
-        parts.append(" ".join(links))
-        parts.append("</div>")
+        links = _render_filter_links(group, current)
+        if group.get("collapsible"):
+            parts.append(
+                '<details class="filter-group">'
+                f'<summary class="filter-label">{escape(group["label"])} '
+                f'({len(group.get("links") or [])})</summary>'
+                f'<div class="filter-links">{links}</div>'
+                '</details>'
+            )
+        else:
+            parts.append(
+                f'<div class="filter-group"><span class="filter-label">{escape(group["label"])}</span>'
+                f'{links}</div>'
+            )
     parts.append("</nav>")
     return "".join(parts)
 
