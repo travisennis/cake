@@ -770,6 +770,8 @@ mod tests {
             model_config: session.model_config.clone(),
             tools: vec!["bash".to_string(), "read".to_string()],
             cake_version: Some("test".to_string()),
+            build_commit: None,
+            build_dirty: None,
             system_prompt: Some("test system prompt".to_string()),
             git: GitState {
                 repository_url: Some("https://example.com/repo.git".to_string()),

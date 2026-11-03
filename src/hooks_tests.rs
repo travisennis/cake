@@ -354,6 +354,8 @@ async fn post_tool_use_persists_hook_record_while_session_locked() {
         model_config: Some("test".to_string()),
         tools: Vec::new(),
         cake_version: Some("test".to_string()),
+        build_commit: None,
+        build_dirty: None,
         system_prompt: None,
         git: GitState {
             repository_url: None,

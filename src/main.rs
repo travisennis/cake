@@ -1,6 +1,7 @@
 //! cake - AI coding assistant CLI
 
 mod auth;
+mod build_info;
 mod cli;
 mod clients;
 mod concurrency;
@@ -967,6 +968,8 @@ impl CodingAssistant {
             output_format,
             tools: client.tool_names(),
             settings,
+            build_commit: crate::build_info::commit(),
+            build_dirty: crate::build_info::dirty(),
             project_trust: Some(project_trust),
         };
 

@@ -583,6 +583,10 @@ pub enum SessionRecord {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cake_version: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        build_commit: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        build_dirty: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         system_prompt: Option<String>,
         #[serde(default)]
         git: GitState,
@@ -676,6 +680,10 @@ pub enum StreamRecord {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cake_version: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        build_commit: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        build_dirty: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         system_prompt: Option<String>,
         #[serde(default)]
         git: GitState,
@@ -755,6 +763,8 @@ impl From<StreamRecord> for SessionRecord {
                 model_config,
                 tools,
                 cake_version,
+                build_commit,
+                build_dirty,
                 system_prompt,
                 git,
             } => Self::SessionMeta {
@@ -766,6 +776,8 @@ impl From<StreamRecord> for SessionRecord {
                 model_config,
                 tools,
                 cake_version,
+                build_commit,
+                build_dirty,
                 system_prompt,
                 git,
             },
@@ -836,6 +848,8 @@ impl From<SessionRecord> for StreamRecord {
                 model_config,
                 tools,
                 cake_version,
+                build_commit,
+                build_dirty,
                 system_prompt,
                 git,
             } => Self::SessionMeta {
@@ -847,6 +861,8 @@ impl From<SessionRecord> for StreamRecord {
                 model_config,
                 tools,
                 cake_version,
+                build_commit,
+                build_dirty,
                 system_prompt,
                 git,
             },

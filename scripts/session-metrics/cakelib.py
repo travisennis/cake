@@ -145,6 +145,8 @@ class Session:
     # populated by load_sessions
     model: str = "unknown"
     cake_version: str = "unknown"
+    build_commit: str | None = None
+    build_dirty: bool | None = None
     working_directory: str = "unknown"
     format_version: int | None = None
     parse_errors: int = 0
@@ -214,6 +216,11 @@ class Session:
             if rec.get("type") == "task_complete"
         }
         return last.get("task_id") not in completed
+
+    @property
+    def build_identity(self) -> str:
+        """A short display identity for the cake build that created the session."""
+        return build_identity(self.build_commit, self.build_dirty, self.cake_version)
 
     def final_task_start(self) -> dict | None:
         """The final task_start record, or None when the session has none."""
@@ -320,6 +327,9 @@ class Invocation:
     # Telemetry init records stopped carrying the absolute path, so an
     # invocation without one borrows the value from its session's transcript.
     transcript_working_directory: str | None = None
+    transcript_cake_version: str | None = None
+    transcript_build_commit: str | None = None
+    transcript_build_dirty: bool | None = None
 
     @property
     def model(self) -> str:
@@ -335,6 +345,40 @@ class Invocation:
             or self.transcript_working_directory
             or "unknown"
         )
+
+    @property
+    def build_commit(self) -> str | None:
+        """The cake commit that ran this invocation.
+
+        The init record is written once per invocation, so a resumed session
+        is attributed to the build that actually ran it. Historical sidecars
+        that predate the field fall back to the session's creation build.
+        """
+        return (self.init or {}).get("build_commit") or self.transcript_build_commit
+
+    @property
+    def build_dirty(self) -> bool | None:
+        """Whether the invocation's build had tracked changes at compile time.
+
+        When the init record carries a build commit, its dirty state is the
+        authoritative pair; a missing dirty value is unknown rather than a
+        borrowed session-creation flag.
+        """
+        init = self.init or {}
+        if "build_commit" in init:
+            value = init.get("build_dirty")
+            return value if isinstance(value, bool) else None
+        return self.transcript_build_dirty
+
+    @property
+    def cake_version(self) -> str | None:
+        """The session's cake package version, from the transcript metadata."""
+        return self.transcript_cake_version
+
+    @property
+    def build_identity(self) -> str:
+        """A short display identity for the build that ran this invocation."""
+        return build_identity(self.build_commit, self.build_dirty, self.cake_version)
 
     @property
     def last_activity(self) -> datetime | None:
@@ -410,8 +454,9 @@ def load(ns: argparse.Namespace) -> Dataset:
     # Project identity for new-format sidecars comes from the transcript, and
     # it must not depend on the report's filters: a `--model` filter that
     # excludes a session would otherwise hide the working directory its
-    # sidecar borrows.
+    # sidecar borrows. Build identity follows the same rule.
     session_working_directories = {s.id: s.working_directory for s in sessions}
+    sessions_by_id = {s.id: s for s in sessions}
     sessions = [s for s in sessions if _session_matches(s, ns.model, ns.project)]
     invocations, telemetry_errors = load_telemetry(
         telemetry_dir,
@@ -419,6 +464,7 @@ def load(ns: argparse.Namespace) -> Dataset:
         ns.model,
         ns.project,
         session_working_directories,
+        sessions_by_id=sessions_by_id,
     )
     if ns.session:
         sessions = [s for s in sessions if s.id == ns.session]
@@ -492,6 +538,9 @@ def load_sessions(
                 session.format_version = rec.get("format_version", session.format_version)
                 if t == "session_meta":
                     session.cake_version = rec.get("cake_version", session.cake_version)
+                    session.build_commit = rec.get("build_commit")
+                    dirty = rec.get("build_dirty")
+                    session.build_dirty = dirty if isinstance(dirty, bool) else None
                 break
 
         # Window membership is by record activity, not file mtime: a file
@@ -515,6 +564,7 @@ def load_telemetry(
     model_filter: str | None = None,
     project_filter: str | None = None,
     session_working_directories: dict[str, str] | None = None,
+    sessions_by_id: dict[str, "Session"] | None = None,
 ) -> tuple[list[Invocation], int]:
     """Load telemetry sidecars into invocations.
 
@@ -522,9 +572,12 @@ def load_telemetry(
     its transcript records. Telemetry init records no longer carry the absolute
     path, so an invocation borrows the transcript value for project filters and
     per-project reports; a sidecar that carries its own value (historical
-    records) keeps it.
+    records) keeps it. `sessions_by_id` supplies the same transcript metadata
+    for cake version and build identity, so an invocation that predates the
+    build fields still has a sensible fallback.
     """
     session_working_directories = session_working_directories or {}
+    sessions_by_id = sessions_by_id or {}
     grouped: dict[tuple[str, str], Invocation] = {}
     parse_errors = 0
 
@@ -575,6 +628,10 @@ def load_telemetry(
     for inv in grouped.values():
         if not (inv.init or {}).get("working_directory"):
             inv.transcript_working_directory = session_working_directories.get(inv.session_id)
+        if session := sessions_by_id.get(inv.session_id):
+            inv.transcript_cake_version = session.cake_version
+            inv.transcript_build_commit = session.build_commit
+            inv.transcript_build_dirty = session.build_dirty
         if model_filter and model_filter not in inv.model:
             continue
         if project_filter and project_filter not in inv.working_directory:
@@ -899,6 +956,20 @@ def print_header(title: str) -> None:
 def fmt_utc(moment: datetime) -> str:
     """A UTC instant with second precision, for provenance stamps."""
     return moment.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def build_identity(commit: str | None, dirty: bool | None, version: str | None) -> str:
+    """A stable label for the cake build that produced a record.
+
+    A build commit is the primary identity because local development builds
+    commonly share a package version. The full commit is retained so two
+    builds cannot collapse to the same short prefix. Dirty state is part of
+    the label so a local build is never mistaken for the commit it started
+    from.
+    """
+    if commit:
+        return f"{commit}{' + dirty' if dirty else ''}"
+    return version or "unknown"
 
 
 def fmt_age(seconds: float) -> str:

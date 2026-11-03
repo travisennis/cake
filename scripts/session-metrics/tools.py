@@ -48,7 +48,7 @@ JUDGE_OUTCOME_LABELS = dict(JUDGE_OUTCOMES)
 JUDGE_OUTCOME_HEADERS = tuple(label for _key, label in JUDGE_OUTCOMES)
 
 
-def bash_reason_coverage(data: cakelib.Dataset) -> list[list]:
+def bash_reason_coverage(data: cakelib.Dataset, start=None, end=None) -> list[list]:
     """Share of Bash calls that carry a parsed, non-empty `reason`, per model.
 
     Returns rows of [model, calls, with_reason, coverage] ordered by call
@@ -58,7 +58,7 @@ def bash_reason_coverage(data: cakelib.Dataset) -> list[list]:
     """
     per_model: dict[str, list] = {}
     for s in data.sessions:
-        for c in s.tool_calls_in_window(data.cutoff):
+        for c in s.tool_calls_in_window(data.cutoff if start is None else start, end):
             if c.name != "Bash":
                 continue
             stats = per_model.setdefault(s.model, [0, 0])
@@ -78,7 +78,7 @@ def bash_reason_coverage(data: cakelib.Dataset) -> list[list]:
     return rows
 
 
-def bash_judge_outcomes(data: cakelib.Dataset) -> tuple[list[list], dict]:
+def bash_judge_outcomes(data: cakelib.Dataset, start=None, end=None) -> tuple[list[list], dict]:
     """Judge outcomes for Bash calls with and without a `reason`, per model.
 
     Pairing is deterministic and order-independent: the raw `call_id` on the
@@ -118,7 +118,7 @@ def bash_judge_outcomes(data: cakelib.Dataset) -> tuple[list[list], dict]:
     groups: dict[tuple[str, str], Counter] = {}
     facts: list[tuple[tuple[str, str], tuple[str, str] | None]] = []
     for s in data.sessions:
-        for c in s.tool_calls_in_window(data.cutoff):
+        for c in s.tool_calls_in_window(data.cutoff if start is None else start, end):
             if c.name != "Bash":
                 continue
             group = (s.model, "with reason" if c.reason else "without reason")

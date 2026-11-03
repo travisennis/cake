@@ -841,6 +841,10 @@ pub enum SessionTelemetryRecord {
         tools: Vec<String>,
         settings: SessionTelemetrySettings,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        build_commit: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        build_dirty: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         project_trust: Option<ProjectTrustTelemetry>,
     },
     ApiAttemptInFlight {
@@ -2269,6 +2273,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn telemetry_init_serializes_additive_build_identity() {
+        let mut record = telemetry_init(None);
+        let SessionTelemetryRecord::TelemetryInit {
+            build_commit,
+            build_dirty,
+            ..
+        } = &mut record
+        else {
+            panic!("expected a telemetry init record");
+        };
+        *build_commit = Some("abc123".to_string());
+        *build_dirty = Some(true);
+        let value = serde_json::to_value(&record).unwrap();
+        assert_eq!(value["build_commit"], "abc123");
+        assert_eq!(value["build_dirty"], true);
+
+        let value = serde_json::to_value(telemetry_init(None)).unwrap();
+        assert!(value.get("build_commit").is_none());
+        assert!(value.get("build_dirty").is_none());
+    }
+
     fn telemetry_init(base_url: Option<String>) -> SessionTelemetryRecord {
         SessionTelemetryRecord::TelemetryInit {
             session_id: "session".to_string(),
@@ -2288,6 +2314,8 @@ mod tests {
                 model_config: Some("test".to_string()),
                 base_url,
             },
+            build_commit: None,
+            build_dirty: None,
             project_trust: None,
         }
     }

@@ -313,7 +313,7 @@ pub struct ProfileSettings {
 ///
 /// Settings are loaded via [`SettingsLoader::load_with_project_config`],
 /// which merges global and trusted project settings under a
-/// [`ProjectConfigMode`](crate::config::trust::ProjectConfigMode).
+/// [`ProjectConfigMode`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default)]
