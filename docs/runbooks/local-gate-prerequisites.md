@@ -34,4 +34,4 @@ Several gates need no compiled artefact, no coverage pass, and no network. When 
 
 ## Step 4: Report it
 
-State the exact command, the exact error line, and the narrower checks that did run, and hand the recovery command to the operator when it needs privileges the agent lacks. Do not report a gate as passed when it never reached the crate, and do not silently drop a gate from the list: an unrun gate belongs in the handoff and in the pull request with its reason.
+State the exact command, the exact error line, and the narrower checks that did run, and hand the recovery command to the operator when it needs privileges the agent lacks. Do not report a gate as passed when it never reached the crate, and do not silently drop a gate from the list: an unrun gate belongs in the handoff, and in the pull request when one exists, with its reason.

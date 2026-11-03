@@ -10,7 +10,7 @@ This guardrail governs the evidence an instruction change requires. It does not 
 
 Every instruction costs context on every session that loads it, and the corpus only grows if adding is cheaper than removing. So the evidence requirement falls on additions:
 
-- Name the observed failure the instruction prevents, citing a session, commit, or GitHub issue, in the pull request or the commit message.
+- Name the observed failure the instruction prevents, citing a session, commit, or GitHub issue, in the commit message or pull request.
 - State the behavior an agent will exhibit that it does not exhibit today.
 
 An instruction that restates what a linked document already says is not an addition worth making. Route to the authority instead.

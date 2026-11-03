@@ -4,7 +4,7 @@ Carry a change from an idea to `master` on a branch, and run several changes at 
 
 ## Branching Is Optional
 
-`master` has a safety-only remote ruleset ([definition](../../.github/rulesets/default-branch-safety.json)) that blocks deletion and force-pushes; it has no required checks and no local branch guard, so a direct commit and push is allowed. Use a branch when the change needs isolation, review, or a worktree beside other in-flight work. A branch is not a security boundary; it is a way to keep concurrent changes apart.
+`master` has a safety-only remote ruleset ([definition](../../.github/rulesets/default-branch-safety.json)) that blocks deletion and force-pushes; it has no required checks and no local branch guard, so a direct commit and push is allowed. Use a branch when the change needs isolation or a worktree beside other in-flight work. Maintainers integrate locally and push `master`; a branch is not a required review step. A branch is not a security boundary; it is a way to keep concurrent changes apart.
 
 ## Single change on a branch
 
@@ -30,19 +30,19 @@ The gate covers the checked-out branch rather than the branch being pushed. The 
 
 `scripts/test-classify-changes.sh` fixture-tests the classifier. It runs in CI's `changes` job and locally via `just test-classify-changes`.
 
-### 3. Open the pull request (optional)
+### 3. Integrate locally
 
-For direct integration, push `master` after the acceptance notes, routed verification, documentation assessment, and any ExecPlan archival are complete. When the change needs review, open the pull request only after that work is complete. Use the pull request template, complete the ahm task before the final implementing commit, and reference its id in the body. The local task lifecycle is independent of GitHub closing keywords.
+After the acceptance notes, routed verification, documentation assessment, and any ExecPlan archival are complete, integrate the branch into `master` and push. Fast-forward when the branch is current and its commits are the history you want; squash-merge when the branch history is noise, using a Conventional Commit subject.
 
 ```bash
-git push -u origin HEAD
-# Labels and a body file; task records the PR URL on the local ahm task:
-just pr labels="type:feature,area:cli" body=pr-body.md task=001
-# Or plain, which fills title and body from the commits:
-just pr
+git switch master && git pull --ff-only
+git merge --ff-only feat/turn-limits
+# Or, for a noisy branch:
+# git merge --squash feat/turn-limits && git commit
+git push origin master
 ```
 
-`just pr` runs `gh pr create --base master`, with `--label`, `--body-file`, `--title`, or `--fill` added from its arguments. It checks labels against `.github/labels.yml` before creating. With no body file, gh fills from commits; confirm that the generated PR body references the task id. CI runs the same routed checks that `just pre-push` runs locally. Merge only after explicit user approval and successful review/checks; after integration, record the delivered/verified summary with `ahm task comment <id> <text>`.
+Do not open a GitHub pull request unless the user explicitly asks for one. External contributors push the branch and open a pull request instead; see [CONTRIBUTING.md](../../CONTRIBUTING.md#integration-and-pull-requests). A pull request is opened after the same records and checks are complete, uses `just pr` for labels, body, and task recording, and is merged only after explicit user approval and successful review/checks. After integration, record the delivered/verified summary with `ahm task comment <id> <text>`.
 
 ### 4. Clean up
 
@@ -72,7 +72,7 @@ The recipe also copies the untracked local files a fresh checkout does not carry
 cd .cake/worktrees/feat/turn-limits
 ```
 
-Cake can create its own worktree instead, with `cake --worktree <name>`. That path uses the same `.cake/worktrees/` location and reads `.worktreeinclude`, but names the branch `worktree-<name>`, which does not carry a Conventional Commit type prefix. Prefer `just worktree` when the work will become a pull request.
+Cake can create its own worktree instead, with `cake --worktree <name>`. That path uses the same `.cake/worktrees/` location and reads `.worktreeinclude`, but names the branch `worktree-<name>`, which does not carry a Conventional Commit type prefix. Prefer `just worktree` when the branch name should follow the Conventional Commit prefix convention.
 
 Git hooks live in the shared `.git` directory, so prek hooks are active in every worktree with no extra installation. `mise` may ask you to trust the configuration the first time you enter a new worktree path.
 
