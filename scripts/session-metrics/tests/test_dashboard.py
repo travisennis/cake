@@ -101,7 +101,10 @@ def rich_dataset(now=None):
                                turn_index=i, attempt=1)]
         inv.judge_attempts = [dict(
             timestamp=moment, terminal_class='verdict' if i % 2 == 0 else 'timeout',
-            total_ms=30 + i, call_id='0' * 64)]
+            total_ms=30 + i, call_id='0' * 64,
+            retry_ordinal=1 if i % 3 == 0 else 0,
+            retry_reason='request_timeout' if i % 3 == 0 else None,
+            retry_delay_ms=100 + i if i % 3 == 0 else None)]
         inv.compensations = [dict(kind='judge_verdict', detail='block:test',
                                   timestamp=moment, latency_ms=30 + i)]
         inv.summary = dict(timestamp=moment, success=(i % 2 == 0),

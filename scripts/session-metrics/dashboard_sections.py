@@ -540,8 +540,8 @@ def _judge_rows(data: cakelib.Dataset, start: datetime, end: datetime) -> dict:
                            cakelib.fmt_int(usage["output"]), cakelib.fmt_int(usage["reasoning"]),
                            cakelib.fmt_int(usage["total"])])
     retries = [attempt for stats in by_model.values() for attempt in stats["retry_attempts"]]
-    retry_rows = [[attempt.get("retry_reason", "?"), cakelib.fmt_int(count)]
-                  for attempt, count in Counter(attempt.get("retry_reason", "?")
+    retry_rows = [[reason, cakelib.fmt_int(count)]
+                  for reason, count in Counter(attempt.get("retry_reason", "?")
                                                for attempt in retries).most_common()]
     delays = [attempt.get("retry_delay_ms", 0) for attempt in retries]
     ratios = [ratio for stats in by_model.values() for ratio in stats["deadline_ratio"]]
