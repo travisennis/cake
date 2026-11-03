@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a private, offline, full-detail dashboard from local cake sessions."""
+"""Generate a private, offline dashboard from local cake sessions."""
 import argparse
 import hashlib
 import json
@@ -199,8 +199,8 @@ def nav_groups(values, current):
     return groups
 
 
-def _page(data, href, title, subtitle, values, start, end, now):
-    report = dashboard_report.build_report(data, start, end, now)
+def _page(data, href, title, subtitle, values, start, end, now, detail_limit):
+    report = dashboard_report.build_report(data, start, end, now, detail_limit=detail_limit)
     return dashboard_render.render_page(
         title=title,
         subtitle=subtitle,
@@ -214,23 +214,28 @@ def _page(data, href, title, subtitle, values, start, end, now):
     )
 
 
-def _write_views(data, values, start, end, now, output):
+def _write_views(data, values, start, end, now, output, detail_limit):
     detail = (f'Detail window {cakelib.fmt_utc(start)} to {cakelib.fmt_utc(end)}. '
               'Owner-only local report; no network requests.')
     atomic_write(output / 'index.html', _page(
         data, 'index.html', 'Cake metrics',
-        'All models, projects, and builds. ' + detail, values, start, end, now))
+        'All models, projects, and builds. ' + detail, values, start, end, now,
+        detail_limit))
     for dimension, folder in (('model', 'model'), ('project', 'project'), ('version', 'version')):
         for value in values.get(dimension) or []:
             filtered = filter_dataset(data, **{dimension: value})
             href = f'{folder}-{slug(value)}.html'
             atomic_write(output / href, _page(
                 filtered, href, f'Cake metrics — {dimension}: {value}',
-                f'Filtered to {dimension} {value}. ' + detail, values, start, end, now))
+                f'Filtered to {dimension} {value}. ' + detail, values, start, end, now,
+                detail_limit))
 
 
 def generate(ns, now=None):
     now = now or datetime.now(timezone.utc)
+    detail_limit = getattr(ns, 'detail_limit', dashboard_report.DEFAULT_DETAIL_LIMIT)
+    if detail_limit < 0:
+        raise SystemExit('--detail-limit must be zero or greater.')
     # Today stays visible, but week comparisons use complete UTC days.
     end = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
     start = end - timedelta(days=31)
@@ -265,7 +270,7 @@ def generate(ns, now=None):
                    newest_activity=max((s.last_activity.isoformat() for s in data.sessions), default=None),
                    filters=values, attribution=attribution, rows=retained)
     atomic_write(output / 'metrics.json', json.dumps(payload))
-    _write_views(data, values, start, end, now, output)
+    _write_views(data, values, start, end, now, output, detail_limit)
     print(output / 'index.html')
 
 
@@ -274,5 +279,8 @@ if __name__ == '__main__':
     parser.add_argument('--sessions-dir', type=Path)
     parser.add_argument('--telemetry-dir', type=Path)
     parser.add_argument('--output', type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument('--detail-limit', type=int,
+                        default=dashboard_report.DEFAULT_DETAIL_LIMIT,
+                        help='Maximum rows per table; 0 keeps every row. Default 200.')
     parser.set_defaults(days=0, model=None, project=None, session=None, invocation=None)
     generate(parser.parse_args())

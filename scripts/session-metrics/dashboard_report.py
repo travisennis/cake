@@ -1,9 +1,9 @@
-"""Full-detail report builders for the local session-metrics dashboard.
+"""Report builders for the local session-metrics dashboard.
 
 The terminal report remains the text authority. This module reuses its
 classifiers and aggregation helpers where they are already exposed, and builds
-one ordered list of sections for the HTML dashboard. Every table keeps every
-row; no builder applies a top-N cut.
+one ordered list of sections for the HTML dashboard. Builders keep every row;
+`build_report` applies the configurable detail limit as a final display cap.
 
 All functions are pure: they read a `cakelib.Dataset` and a half-open UTC
 window, and return dictionaries of display strings. The HTML renderer lives in
@@ -18,6 +18,9 @@ from datetime import datetime, timedelta, timezone
 import cakelib
 import outcomes
 import tools
+
+
+DEFAULT_DETAIL_LIMIT = 200
 
 
 # ---------------------------------------------------------------------------
@@ -1167,7 +1170,7 @@ def tools_section(data: cakelib.Dataset, start: datetime, end: datetime) -> dict
 
     return _section(
         "tools", "Tool calls",
-        "Every tool, every failure category, every Bash judge outcome, retry recovery, durations, output sizes, and the full individual call list.",
+        "Every tool, every failure category, every Bash judge outcome, retry recovery, durations, output sizes, and the slowest individual calls.",
         tables=[
             _table("Per tool (transcripts)", ["tool", "calls", "failures", "failure rate"],
                    tool_rows, numeric=[1, 2, 3],
@@ -1198,15 +1201,15 @@ def tools_section(data: cakelib.Dataset, start: datetime, end: datetime) -> dict
                    project_rows, numeric=[2, 3, 4]),
             _table("Tool failures by build identity", ["identity", "tool", "calls", "failures", "failure rate"],
                    identity_rows, numeric=[2, 3, 4]),
-            _table("Every tool call (slowest first)", ["tool", "session", "invocation", "started",
-                                                       "duration", "output", "error", "turn", "attempt"],
+            _table("Tool calls (slowest first)", ["tool", "session", "invocation", "started",
+                                                  "duration", "output", "error", "turn", "attempt"],
                    _slowest_tool_rows(data, start, end), numeric=[4, 5, 7, 8],
-                   note="All telemetry tool calls in the window, sorted by duration. This table can be long; it scrolls rather than truncates."),
+                   note="Telemetry tool calls in the window, sorted by duration."),
         ],
         notes=[
             "Transcript counts and telemetry counts are separate sources. A transcript call has no duration; a telemetry call has no paired output body. They are not silently merged.",
             "The Bash judge matrix joins by the SHA-256 digest of the transcript call id within one session. A retried judge call contributes one outcome.",
-            "Every table keeps all rows. No top-N cut is applied.",
+            "Tables above the dashboard detail limit are capped and state the full row count; raise --detail-limit for more.",
         ],
     )
 
@@ -1215,8 +1218,29 @@ def tools_section(data: cakelib.Dataset, start: datetime, end: datetime) -> dict
 # Assembly
 # ---------------------------------------------------------------------------
 
+def _apply_detail_limit(sections: list[dict], limit: int) -> list[dict]:
+    """Cap every table at `limit` rows and record the full count in its note.
+
+    A limit of zero or less leaves the tables untouched, which is the explicit
+    opt-in for a full-detail page. The builders themselves never truncate.
+    """
+    if limit <= 0:
+        return sections
+    for section in sections:
+        for table in section["tables"]:
+            total = len(table["rows"])
+            if total <= limit:
+                continue
+            table["rows"] = table["rows"][:limit]
+            table["total_rows"] = total
+            note = (f"Showing {limit:,} of {total:,} rows. "
+                    "Raise --detail-limit for more.")
+            table["note"] = f"{table['note']} {note}" if table.get("note") else note
+    return sections
+
+
 def build_report(data: cakelib.Dataset, start: datetime, end: datetime,
-                 now: datetime) -> dict:
+                 now: datetime, detail_limit: int = DEFAULT_DETAIL_LIMIT) -> dict:
     """Build every dashboard section for one half-open window."""
     from dashboard_sections import (
         api_section, cache_section, compensations_section, definitions_section,
@@ -1251,6 +1275,7 @@ def build_report(data: cakelib.Dataset, start: datetime, end: datetime,
         sessions_section(data, start, end),
         definitions_section(),
     ]
+    sections = _apply_detail_limit(sections, detail_limit)
     return {
         "schema_version": 2,
         "measured": cakelib.fmt_utc(now),

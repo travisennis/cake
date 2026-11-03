@@ -1,8 +1,8 @@
-"""Server-side HTML rendering for the full session-metrics dashboard.
+"""Server-side HTML rendering for the session-metrics dashboard.
 
 The page is a static file opened from disk. It contains no script, no external
-asset, and no network request. Every table is rendered in full inside a
-scrollable container; long tables are never truncated.
+asset, and no network request. Tables sit inside scrollable containers; the
+report applies its configurable detail limit before rendering.
 """
 
 from __future__ import annotations

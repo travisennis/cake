@@ -44,7 +44,9 @@ The two product decisions are settled: cake records its build commit and dirty s
 
 ## Outcomes & Retrospective
 
-The dashboard is now the full-detail report. `index.html` renders provenance, headline metrics, build attribution, outcomes, tools, API, tokens, cache, gates, historical judge, time, hooks, compensations, sessions/invocations, and a data dictionary. Static `model-*.html`, `project-*.html`, and `version-*.html` views reuse the same builders, so every number is covered by the Python suite and the page works offline from `file://`.
+The dashboard is now the overview report. `index.html` renders provenance, headline metrics, build attribution, outcomes, tools, API, tokens, cache, gates, historical judge, time, hooks, compensations, sessions/invocations, and a data dictionary. Static `model-*.html`, `project-*.html`, and `version-*.html` views reuse the same builders, so every number is covered by the Python suite and the page works offline from `file://`.
+
+Follow-up (2026-11-03): the uncapped full-detail default produced a 61 MB `index.html` and froze Chrome. The dashboard now caps any table above `--detail-limit` (default 200) and reports the full row count; the duplicate per-call tables were removed from the time section. The session and telemetry sources still hold every record, and `--detail-limit 0` restores the uncapped page. This supersedes the no-truncation rule for the default view.
 
 Build identity is recorded additively in `session_meta` and `telemetry_init` as `build_commit` plus `build_dirty`. Existing format version 4 files remain valid, and older records fall back to `cake_version`. Transcript records are attributed to the invocation interval that contains their timestamp, with the session's creation build as the fallback; telemetry records use the invocation's own build.
 

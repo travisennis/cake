@@ -177,7 +177,7 @@ def api_section(data: cakelib.Dataset, start: datetime, end: datetime) -> dict:
             _table("Status codes", ["status", "attempts", "share"], facts["status_rows"],
                    numeric=[1, 2]),
             _table("Error variants", ["error", "count"], facts["error_rows"], numeric=[1],
-                   note="Error text is shown as recorded, with no top-N cut."),
+                   note="Error text is shown as recorded."),
             _table("Termination classification", ["classification", "attempts", "share"],
                    facts["termination_rows"], numeric=[1, 2]),
             _table("Latency by model (request_ms)", ["model", "attempts", "p50", "p90", "p99", "max", "n"],
@@ -196,12 +196,12 @@ def api_section(data: cakelib.Dataset, start: datetime, end: datetime) -> dict:
             _table("API failures by build identity", ["identity", "attempts", "failures", "failure rate"],
                    _api_failures_by(attempts, lambda inv, attempt: (inv.build_identity,)),
                    numeric=[1, 2, 3]),
-            _table("Every API attempt (slowest first)", ["session", "invocation", "model", "project",
-                                                         "identity", "started", "turn", "attempt",
-                                                         "status", "failed", "total", "request",
-                                                         "input", "output", "error"],
+            _table("API attempts (slowest first)", ["session", "invocation", "model", "project",
+                                                    "identity", "started", "turn", "attempt",
+                                                    "status", "failed", "total", "request",
+                                                    "input", "output", "error"],
                    facts["attempt_rows"], numeric=[6, 7, 8, 10, 11, 12, 13],
-                   note="All provider attempts in the window, sorted by total time. This table scrolls rather than truncating."),
+                   note="Provider attempts in the window, sorted by total time."),
         ],
         notes=[
             "API failure means a recorded error or a status other than 200. A missing status is not a failure by itself.",
@@ -351,7 +351,7 @@ def cache_section(data: cakelib.Dataset, start: datetime, end: datetime) -> dict
                   in sorted(causes.items(), key=lambda item: -len(item[1]))]
     return _section(
         "cache", "Prompt-cache breaks",
-        "Detected cache misses above the 1,024-token noise floor, with the likely cause and every individual miss.",
+        "Detected cache misses above the 1,024-token noise floor, with the likely cause and individual misses.",
         cards=[
             {"label": "Misses", "value": cakelib.fmt_int(scan.miss_count), "detail": "above the noise floor"},
             {"label": "Missed prompt tokens", "value": cakelib.fmt_int(scan.missed_tokens),
@@ -361,10 +361,10 @@ def cache_section(data: cakelib.Dataset, start: datetime, end: datetime) -> dict
         tables=[
             _table("Misses by likely cause", ["cause", "misses", "missed tokens", "share"],
                    cause_rows, numeric=[1, 2, 3]),
-            _table("Every cache miss", ["session", "invocation", "identity", "model", "cause",
-                                        "missed tokens", "idle", "timestamp", "turn"],
+            _table("Cache misses", ["session", "invocation", "identity", "model", "cause",
+                                   "missed tokens", "idle", "timestamp", "turn"],
                    rows, numeric=[5, 6, 8],
-                   note="All detected misses in the loaded window. The scan never reads prompt text."),
+                   note="Detected misses in the loaded window. The scan never reads prompt text."),
         ],
         notes=[
             "The scan orders usage-bearing turns per session. It latches on the first cache activity, so a provider that never reports cache data does not produce false misses.",
@@ -691,24 +691,10 @@ def time_section(data: cakelib.Dataset, start: datetime, end: datetime) -> dict:
     hook_time = sum(record.get("duration_ms") or 0
                     for session in data.sessions
                     for record in session.records_in_window(start, "hook_event", end=end))
-    slow_tool_rows = []
-    for call in sorted(tel_calls, key=lambda call: -(call.get("duration_ms") or 0)):
-        slow_tool_rows.append([call.get("name", "?"), _duration(call.get("duration_ms")),
-                               cakelib.fmt_bytes(call.get("output_bytes") or 0),
-                               call.get("session_id", "?"), call.get("invocation_id", "?"),
-                               cakelib.fmt_utc(_record_ts(call, None)) if _record_ts(call, None) else "-"])
-    slow_api_rows = []
-    for inv, attempt in sorted(_window_attempts(data, start, end),
-                               key=lambda item: -(item[1].get("total_ms") or 0)):
-        moment = _record_ts(attempt, inv.mtime)
-        slow_api_rows.append([inv.model, _duration(attempt.get("total_ms")),
-                              cakelib.fmt_int((attempt.get("usage") or {}).get("input_tokens") or 0),
-                              inv.session_id, inv.invocation_id,
-                              moment and cakelib.fmt_utc(moment) or "-"])
 
     return _section(
         "time", "Time breakdown",
-        "Exclusive wall-time attribution per invocation where spans exist, cumulative work totals, turn pacing, think time, and every slow call.",
+        "Exclusive wall-time attribution per invocation where spans exist, cumulative work totals, turn pacing, and think time.",
         cards=[
             {"label": "Complete invocation wall time", "value": _duration(wall),
              "detail": f"{cakelib.fmt_int(len(complete))} complete invocations"},
@@ -725,7 +711,7 @@ def time_section(data: cakelib.Dataset, start: datetime, end: datetime) -> dict:
                                                           *time_breakdown.TIMELINE_CATEGORIES,
                                                           "missing spans"],
                    _timeline_rows(data, start, end), numeric=[4, *range(5, 5 + len(time_breakdown.TIMELINE_CATEGORIES))],
-                   note="Every complete invocation is shown. Parallel activity is counted once; unobserved time includes setup and unmeasured waits."),
+                   note="Complete invocations in the window. Parallel activity is counted once; unobserved time includes setup and unmeasured waits."),
             _table("Aggregate recorded activity", ["activity", "duration", "interpretation"],
                    [["model API (request+parse)", _duration(api), "cumulative per attempt"],
                     ["  of which response parsing", _duration(parse), "subset of API"],
@@ -745,12 +731,6 @@ def time_section(data: cakelib.Dataset, start: datetime, end: datetime) -> dict:
                    [["gap", _duration(_p50(gaps)), _duration(_p90(gaps)),
                      _duration(max(gaps)) if gaps else "-", cakelib.fmt_int(len(gaps))]],
                    numeric=[1, 2, 3, 4]),
-            _table("Every tool call (slowest first)", ["tool", "duration", "output", "session",
-                                                       "invocation", "started"],
-                   slow_tool_rows, numeric=[1, 2]),
-            _table("Every API attempt (slowest first)", ["model", "duration", "input tokens",
-                                                         "session", "invocation", "started"],
-                   slow_api_rows, numeric=[1, 2]),
         ],
         notes=[
             "Aggregate durations are cumulative work and cannot be subtracted from wall time. Use the per-invocation timeline for exclusive attribution when span records exist.",
@@ -838,17 +818,17 @@ def hooks_section(data: cakelib.Dataset, start: datetime, end: datetime) -> dict
                      _duration(max(durations)) if durations else "-", cakelib.fmt_int(len(durations))]],
                    numeric=[1, 2, 3, 4]),
             _table("Hook commands", ["command", "count"], command_rows, numeric=[1]),
-            _table("Every hook event", ["timestamp", "session", "model", "event", "decision",
-                                        "resolved", "tool", "input", "exit", "fail closed",
-                                        "duration", "command"],
+            _table("Hook events", ["timestamp", "session", "model", "event", "decision",
+                                  "resolved", "tool", "input", "exit", "fail closed",
+                                  "duration", "command"],
                    event_rows_detail, numeric=[8, 10],
-                   note="All hook events in the window, not a top-N sample."),
+                   note="Hook events in the window, in record order."),
             _table("Skills available", ["metric", "value"],
                    [["sessions with a skill catalog", cakelib.fmt_int(with_catalog)],
                     ["sessions activating at least one skill", cakelib.fmt_int(sessions_using)]],
                    numeric=[1]),
             _table("Skill activations", ["skill", "activations"], skill_count_rows, numeric=[1]),
-            _table("Every skill activation", ["session", "model", "timestamp", "skill", "path"],
+            _table("Skill activation records", ["session", "model", "timestamp", "skill", "path"],
                    skill_rows),
         ],
         notes=[
@@ -1110,7 +1090,7 @@ def _configuration_tables(data: cakelib.Dataset, start: datetime, end: datetime)
 def sessions_section(data: cakelib.Dataset, start: datetime, end: datetime) -> dict:
     return _section(
         "sessions", "Sessions and invocations",
-        "Every session transcript and every invocation sidecar in the window, with counts, identity, and outcome. Raw prompts and tool output stay in the session files.",
+        "Session transcripts and invocation sidecars in the window, with counts, identity, and outcome. Raw prompts and tool output stay in the session files.",
         tables=[
             *_configuration_tables(data, start, end),
             _table("Sessions", ["session", "created", "last activity", "model", "project",
@@ -1118,13 +1098,13 @@ def sessions_section(data: cakelib.Dataset, start: datetime, end: datetime) -> d
                                 "assistant msgs", "tool calls", "tasks", "incomplete",
                                 "invocations", "tokens", "completion"],
                    _session_rows(data, start, end), numeric=[7, 8, 9, 10, 11, 12, 14, 15, 16],
-                   note="All sessions in the window. `completion` is over completed tasks in the window."),
+                   note="Sessions in the window. `completion` is over completed tasks in the window."),
             _table("Invocations", ["session", "invocation", "started", "last activity", "model",
                                    "project", "identity", "mode", "api type", "output format",
                                    "attempts", "tools", "retries", "gate decisions",
                                    "judge attempts", "summary", "duration", "turns", "tokens"],
                    _invocation_rows(data, start, end), numeric=[10, 11, 12, 13, 14, 16, 17, 18],
-                   note="Every invocation active in the window. A missing session_summary is shown as `no summary`."),
+                   note="Invocations active in the window. A missing session_summary is shown as `no summary`."),
         ],
         notes=[
             "Session IDs and project paths are local identifiers. This page is private and owner-only.",
@@ -1175,47 +1155,3 @@ def definitions_section() -> dict:
         tables=[_table("Definitions", ["metric", "definition", "source", "caveat"], rows)],
         notes=["Definitions are visible on the page, not hidden behind a tooltip."],
     )
-
-
-# ---------------------------------------------------------------------------
-# Assembly
-# ---------------------------------------------------------------------------
-
-def build_report(data: cakelib.Dataset, start: datetime, end: datetime,
-                 now: datetime) -> dict:
-    """Build every dashboard section for one half-open window."""
-    headline = headline_metrics(data, now)
-    headline_section = _section(
-        "headline", "Headline metrics",
-        "The last seven complete UTC days against the preceding seven. Every metric keeps its sample and denominator.",
-        tables=[headline["table"]],
-        notes=[
-            "No metric is suppressed for a small sample. Use the sample column and the full detail sections to judge whether a difference is material.",
-            "Today's partial activity is excluded from this comparison and appears in the detail window and daily tables.",
-        ],
-    )
-    sections = [
-        provenance_section(data, start, end, now),
-        headline_section,
-        attribution_section(data, start, end),
-        outcomes_section(data, start, end),
-        tools_section(data, start, end),
-        api_section(data, start, end),
-        tokens_section(data, start, end),
-        cache_section(data, start, end),
-        gates_section(data, start, end),
-        judge_section(data, start, end),
-        time_section(data, start, end),
-        hooks_section(data, start, end),
-        compensations_section(data, start, end),
-        sessions_section(data, start, end),
-        definitions_section(),
-    ]
-    return {
-        "schema_version": 2,
-        "measured": cakelib.fmt_utc(now),
-        "window": {"start": cakelib.fmt_utc(start), "end": cakelib.fmt_utc(end)},
-        "headline": headline,
-        "attribution": change_attribution(data, start, end),
-        "sections": sections,
-    }

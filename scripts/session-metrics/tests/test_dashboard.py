@@ -357,6 +357,25 @@ class DashboardTests(unittest.TestCase):
         statuses = {row[0] for row in status_table['rows']}
         self.assertTrue({500 + i for i in range(12)} <= statuses)
 
+    def test_detail_limit_caps_tables_and_records_the_total(self):
+        now = ts('2026-10-19')
+        data = rich_dataset(now)
+        start, end = now - timedelta(days=31), now + timedelta(days=1)
+        report = dashboard_report.build_report(data, start, end, now, detail_limit=5)
+        tools_section = next(section for section in report['sections']
+                             if section['id'] == 'tools')
+        calls = next(table for table in tools_section['tables']
+                     if table['title'] == 'Tool calls (slowest first)')
+        self.assertEqual(len(calls['rows']), 5)
+        self.assertEqual(calls['total_rows'], 12)
+        self.assertIn('Showing 5 of 12 rows', calls['note'])
+        full = dashboard_report.build_report(data, start, end, now, detail_limit=0)
+        full_calls = next(table for table in next(
+            section for section in full['sections'] if section['id'] == 'tools'
+        )['tables'] if table['title'] == 'Tool calls (slowest first)')
+        self.assertEqual(len(full_calls['rows']), 12)
+        self.assertNotIn('total_rows', full_calls)
+
     def test_headline_facts_match_summary(self):
         now = ts('2026-10-19')
         data = rich_dataset(now)
@@ -406,7 +425,7 @@ class DashboardTests(unittest.TestCase):
                 dashboard.generate(ns, now)
             index = (output / 'index.html').read_text()
             self.assertIn('Change attribution', index)
-            self.assertIn('Every API attempt', index)
+            self.assertIn('API attempts (slowest first)', index)
             self.assertIn('Data dictionary', index)
             self.assertIn('Tool11', index)
             self.assertTrue(list(output.glob('model-*.html')))
