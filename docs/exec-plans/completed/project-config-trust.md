@@ -23,7 +23,7 @@ This work implements accepted ADR 053, `docs/adr/053-trust-project-configuration
 - [x] (2026-11-02T18:10:00Z) Milestone 3: trust enforcement, `cake trust`, root flags and environment modes, and startup ordering.
 - [x] (2026-11-02T18:10:00Z) Milestone 4: hooks parse the hashed bytes, toolbox directories are filtered, project prompts are skipped under `--no-project-config`, and inspection commands report trust.
 - [x] (2026-11-02T18:10:00Z) Milestone 5: diagnostics, telemetry, documentation, and fixture migration.
-- [ ] Final verification and preflight.
+- [x] (2026-11-03T00:31:31Z) Final verification and preflight. The focused suites, full unit and integration suites, `just check`, `just check-coverage`, `just docs-check`, and CI were green. Archival preflight found no further changes needed. PR 774 merged as 3225063, and the plan was archived.
 
 ## Surprises & Discoveries
 
@@ -87,6 +87,8 @@ Implemented. The trust boundary is now enforced at the settings-loading step, be
 The focused suites (`cargo test trust`, `cargo test settings`, `cargo test hooks`, `cargo test toolbox`, `cargo test prompts`, `cargo test gates`, `cargo test --test trust`) pass, as do the full unit and integration suites and strict clippy. Manual scratch-repository checks verified the untrusted failure before side effects, the changed/added/removed invalidation, symlink rejection, one-run and ignore modes, and a new worktree starting untrusted.
 
 Residual risks are unchanged and documented: a trusted project is code execution, project prompt/skill content remains untrusted model input, a concurrent writer can change a trusted file after the check, the external gate remains stochastic, and `PATH` remains trusted configuration.
+
+The plan was archived on 2026-11-03 after PR 774 merged as 3225063. Task 142's plan reference now points to `docs/exec-plans/completed/project-config-trust.md`.
 
 ## Context and Orientation
 
@@ -498,3 +500,4 @@ Dependencies: no new crate. Use the existing `sha2` for SHA-256, `serde`/`serde_
 
 - 2026-11-02: Initial draft for task 142 after accepting ADR 053. It defines the trust snapshot as the single parsed project-settings source, global-only model definitions, narrowing-only project tool selection, inspection versus enforcement modes, a deterministic owner-only manifest, the one-run/ignore modes, and the test-fixture migration from project models to global models. No implementation has started.
 - 2026-11-02: Incorporated review fixes: one-run trust is part of the mode enum; inspection applies trusted authority and strips untrusted authority; environment modes resolve only for commands that consume project configuration; project toolbox roots are filtered for `--no-project-config`; test fixtures remove ambient trust variables; `.cake/worktrees` is excluded from the manifest; non-UTF-8 non-authority paths are skipped; and trust review prints gate and hook commands.
+- 2026-11-03: Marked final verification and preflight complete, recorded the merged implementation, and archived the plan in `docs/exec-plans/completed/project-config-trust.md` under task 142.
