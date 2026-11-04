@@ -195,6 +195,30 @@ impl ConversationState {
         self.history.extend(items);
     }
 
+    /// Remove every inline image from the conversation, returning how many were
+    /// dropped.
+    ///
+    /// A provider that cannot read one image rejects the whole request, and the
+    /// error never identifies which image it was. Dropping all of them is the
+    /// only recovery that makes the next request independent of the offending
+    /// pixels; the text of each result stays, so the conversation keeps the tool
+    /// outputs that carried them.
+    pub(super) fn drop_images(&mut self) -> usize {
+        let mut dropped = 0;
+        for item in &mut self.history {
+            let images = match item {
+                ConversationItem::Message { images, .. }
+                | ConversationItem::FunctionCallOutput { images, .. } => images,
+                ConversationItem::FunctionCall { .. } | ConversationItem::Reasoning { .. } => {
+                    continue;
+                },
+            };
+            dropped += images.len();
+            images.clear();
+        }
+        dropped
+    }
+
     pub(super) fn push_tool_output(
         &mut self,
         call_id: String,
@@ -388,6 +412,54 @@ mod tests {
             timestamp: None,
             images: Vec::new(),
         }
+    }
+
+    fn image() -> ImagePart {
+        ImagePart {
+            media_type: "image/jpeg".to_string(),
+            data_base64: "AAAA".to_string(),
+        }
+    }
+
+    #[test]
+    fn drop_images_clears_message_and_tool_output_images() {
+        let mut state = ConversationState::new(&[(Role::System, "sys".to_string())]);
+        state.extend_turn_items(vec![
+            ConversationItem::Message {
+                role: Role::User,
+                content: "look".to_string(),
+                id: None,
+                status: None,
+                timestamp: None,
+                images: vec![image()],
+            },
+            ConversationItem::FunctionCallOutput {
+                call_id: "call-1".to_string(),
+                output: "ReadImage /tmp/a.jpg".to_string(),
+                timestamp: None,
+                images: vec![image(), image()],
+            },
+            assistant_message("seen"),
+        ]);
+
+        assert_eq!(state.drop_images(), 3);
+        assert_eq!(state.drop_images(), 0);
+
+        let images: Vec<usize> = state
+            .history()
+            .iter()
+            .filter_map(|item| match item {
+                ConversationItem::Message { images, .. }
+                | ConversationItem::FunctionCallOutput { images, .. } => Some(images.len()),
+                ConversationItem::FunctionCall { .. } | ConversationItem::Reasoning { .. } => None,
+            })
+            .collect();
+        assert_eq!(images, vec![0, 0, 0, 0]);
+        assert_eq!(
+            state.history().len(),
+            4,
+            "dropping images must not remove the text they accompanied"
+        );
     }
 
     #[test]

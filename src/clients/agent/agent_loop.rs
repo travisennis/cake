@@ -211,9 +211,7 @@ impl Agent {
                 usage,
                 termination,
                 ..
-            } = self
-                .complete_turn_with_output_schema_fallback(turn_mode)
-                .await?;
+            } = self.complete_turn_with_image_recovery(turn_mode).await?;
 
             // Classify before persisting or streaming the turn's items and
             // before dispatching any returned tools, so a discarded response
@@ -887,6 +885,58 @@ impl Agent {
         Ok(())
     }
 
+    /// Complete one turn, recovering from a provider that rejects the
+    /// conversation's images.
+    ///
+    /// One image the provider cannot read rejects the whole request, so a turn
+    /// that fails that way drops every image, tells the model, and asks again.
+    /// The retry is bounded to one per turn: a second rejection after the
+    /// images are gone is not about pixels and stays terminal.
+    async fn complete_turn_with_image_recovery(
+        &mut self,
+        turn_mode: TurnMode,
+    ) -> anyhow::Result<TurnResult> {
+        let mut images_dropped = false;
+        loop {
+            match self
+                .complete_turn_with_output_schema_fallback(turn_mode)
+                .await
+            {
+                Ok(turn) => return Ok(turn),
+                Err(error) if !images_dropped && is_image_rejection(&error) => {
+                    images_dropped = true;
+                    self.recover_from_image_rejection(&error)?;
+                },
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    /// Recover from a provider that rejected the conversation's images.
+    ///
+    /// Nothing else in the request can be repaired by removing pixels, so the
+    /// recovery drops every image and tells the model why the visuals are
+    /// gone. The note streams and persists like any other conversation item, so
+    /// a resumed session carries the same explanation the model saw.
+    fn recover_from_image_rejection(&mut self, error: &anyhow::Error) -> anyhow::Result<()> {
+        let dropped = self.conversation.drop_images();
+        let detail = image_rejection_detail(error);
+        tracing::warn!(
+            target: "cake",
+            dropped,
+            detail,
+            "Provider rejected an image; retrying the turn without images"
+        );
+        let note = format!(
+            "The provider rejected this conversation's images: {detail}\n\n\
+             cake removed {dropped} image(s) from the conversation and is retrying without \
+             them. Do not read the same image again as-is: crop or downscale it first, or \
+             continue from the text you already have."
+        );
+        let item = self.conversation.push_user_message(note);
+        self.stream_item(&item)
+    }
+
     /// Execute a single API turn with retry logic.
     ///
     /// Correction turns offer no tools — the model must answer with the final
@@ -1051,6 +1101,57 @@ fn tool_definitions_for_turn(tools: &ToolRegistry, turn_mode: TurnMode) -> &[Too
     } else {
         tools.definitions()
     }
+}
+
+/// Whether a provider rejected the request because it could not read an image.
+///
+/// Providers report an unreadable image through a generic invalid-request
+/// status, so the status alone cannot single it out: the body must also name an
+/// image and a rejection. Requiring both keeps an unrelated 400 from silently
+/// costing the run the pixels it can still use. A typed input overflow is never
+/// an image rejection: dropping pixels is not what makes the input fit, and the
+/// compaction owner must see the verdict unchanged (ADR 047).
+fn is_image_rejection(error: &anyhow::Error) -> bool {
+    let Some(api_error) = error.downcast_ref::<crate::exit_code::ApiError>() else {
+        return false;
+    };
+    if api_error.input_overflow.is_some() || api_error.body_read_failure.is_some() {
+        return false;
+    }
+    if !matches!(api_error.status, 400 | 413 | 415 | 422) {
+        return false;
+    }
+    let body = api_error.body.to_ascii_lowercase();
+    body.contains("image")
+        && [
+            "unsupported",
+            "invalid",
+            "not supported",
+            "decode",
+            "format",
+            "too large",
+            "exceeds",
+        ]
+        .iter()
+        .any(|marker| body.contains(marker))
+}
+
+/// The provider's own rejection text, bounded so the recovery note stays small.
+fn image_rejection_detail(error: &anyhow::Error) -> String {
+    const MAX_CHARS: usize = 400;
+    let detail = error
+        .downcast_ref::<crate::exit_code::ApiError>()
+        .map_or_else(|| error.to_string(), |api_error| api_error.body.clone());
+    let detail = detail.trim();
+    if detail.chars().count() <= MAX_CHARS {
+        return detail.to_string();
+    }
+    let end = detail
+        .char_indices()
+        .nth(MAX_CHARS)
+        .map_or(detail.len(), |(index, _)| index);
+    let truncated = detail.get(..end).unwrap_or(detail);
+    format!("{truncated}…")
 }
 
 fn final_output_constraint_for_turn(

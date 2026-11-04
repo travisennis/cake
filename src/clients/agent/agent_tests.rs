@@ -5319,3 +5319,7 @@ mod output_schema_constraint_tests {
 #[cfg(test)]
 #[path = "termination_tests.rs"]
 mod termination_tests;
+
+#[cfg(test)]
+#[path = "image_recovery_tests.rs"]
+mod image_recovery_tests;
