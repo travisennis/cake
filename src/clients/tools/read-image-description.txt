@@ -4,7 +4,8 @@ Behavior:
 - Requires an absolute path to a file inside the working directory, a temp directory, or a directory added with --add-dir.
 - Detects the format from the file's leading bytes, not its extension. Files that are not images are rejected with a message pointing at Read for text files.
 - Rejects files larger than the configured read_image_max_bytes cap (default 5 MiB) with a clear error instead of sending them, so an oversized image never reaches the provider.
-- Returns the image inline as a base64 data URL; there is no upload step and no transcoding.
+- Returns the image inline as a base64 data URL; there is no upload step.
+- Downscales an image whose longest edge exceeds 2048 px before sending it, so a large screenshot or photo still reaches the provider. A downscaled PNG stays PNG and anything else becomes JPEG, except that transparency forces PNG; a downscaled GIF becomes a single frame. Images inside the cap are sent byte for byte.
 
 Guidance:
 - Use ReadImage when a screenshot, diagram, chart, or photo is part of the question; Read rejects binary files.
