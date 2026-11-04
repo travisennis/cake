@@ -154,6 +154,23 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets --all-features --message-format=short -- -D warnings
 
+  # License surface of the dependency graph. Reads Cargo.lock and the allowlist
+  # in deny.toml, so it needs no build and finishes in under a minute; a new
+  # transitive crate with an unlisted license fails here instead of shipping.
+  licenses:
+    name: Licenses
+    needs: linux-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2
+      - run: cargo deny check licenses
+
   test:
     name: Test
     needs: linux-check

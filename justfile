@@ -288,9 +288,10 @@ lint-module-size:
 lint-domain-glossary:
     python3 scripts/lint-domain-glossary.py
 
-# Check for denied/advisory dependencies (requires cargo-deny)
+# Check for denied/advisory dependencies and disallowed licenses (requires cargo-deny)
 check-deps:
     cargo deny check advisories
+    cargo deny check licenses
 
 # Build documentation with warnings denied
 doc:

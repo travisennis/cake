@@ -18,16 +18,16 @@ Cake ships a binary that executes model-generated commands on a user's machine. 
 
 Each version-bearing input belongs to one surface, and the owning surface determines where the pin lives.
 
-  | Input                            | Owning file               | Enforcement                         |
-  | -------------------------------- | ------------------------- | ----------------------------------- |
-  | Crate compatibility requirements | `Cargo.toml`              | `cargo deny check advisories`       |
-  | Concrete crate selections        | `Cargo.lock`, committed   | `just check` builds against it      |
-  | Rust toolchain version           | `rust-toolchain.toml`     | `scripts/check-rust-toolchain.sh`   |
-  | Local toolchain bootstrap        | `.mise.toml`              | none; see [Toolchains](#toolchains) |
-  | Cargo-installed developer tools  | `justfile` `setup` recipe | none                                |
-  | CI tool versions                 | `.github/workflows/`      | none                                |
-  | GitHub Actions versions          | `.github/workflows/`      | Dependabot                          |
-  | License and advisory policy      | `deny.toml`               | `just check-deps`                   |
+  | Input                            | Owning file               | Enforcement                          |
+  | -------------------------------- | ------------------------- | ------------------------------------ |
+  | Crate compatibility requirements | `Cargo.toml`              | `cargo deny check advisories`        |
+  | Concrete crate selections        | `Cargo.lock`, committed   | `just check` builds against it       |
+  | Rust toolchain version           | `rust-toolchain.toml`     | `scripts/check-rust-toolchain.sh`    |
+  | Local toolchain bootstrap        | `.mise.toml`              | none; see [Toolchains](#toolchains)  |
+  | Cargo-installed developer tools  | `justfile` `setup` recipe | none                                 |
+  | CI tool versions                 | `.github/workflows/`      | none                                 |
+  | GitHub Actions versions          | `.github/workflows/`      | Dependabot                           |
+  | License and advisory policy      | `deny.toml`               | `just check-deps`; CI `Licenses` job |
 
 `Cargo.lock` is committed because Cake is a binary crate: the lockfile is the record of what a released binary was built from, not an over-constraint on downstream users.
 
@@ -43,7 +43,9 @@ The MSRV job in `.github/workflows/scheduled.yml` is the one deliberate exceptio
 
 Direct dependencies are the enforceable policy boundary. Understand a transitive set through its direct roots rather than allowlisting individual transitive packages, and treat a direct dependency that pulls in a large or unfamiliar subtree as a cost of that dependency rather than a separate problem.
 
-`deny.toml` records the license allowlist, banned crates, and advisory configuration. `just check-deps` runs `cargo deny check advisories`, and the weekly scheduled workflow runs the same check plus `cargo outdated` and `cargo udeps`.
+`deny.toml` records the license allowlist, banned crates, and advisory configuration. `just check-deps` runs `cargo deny check advisories` and `cargo deny check licenses`. The CI `Licenses` job runs the license half on every push and pull request, so a new transitive crate with an unlisted license fails a pull request; the weekly scheduled workflow runs the advisory check together with `cargo outdated` and `cargo udeps`.
+
+An allowlist entry is a legal judgment about a license Cake ships, not a formality. Add one with a comment naming the crate that forces it, the obligation it carries, and why that obligation is acceptable for the distributed binary; that comment is what a later reviewer uses to re-evaluate the entry when the crate leaves the graph or changes license.
 
 Known-vulnerability scanning complements dependency judgment but does not replace it. An advisory database reports what is already known about a package; it says nothing about whether the package should be a dependency. A crate with no advisories can still be unmaintained, overbroad, or a poor fit.
 
