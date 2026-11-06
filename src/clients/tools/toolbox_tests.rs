@@ -356,3 +356,34 @@ mod subprocess {
         );
     }
 }
+
+#[cfg(unix)]
+mod registry_intent {
+    use super::*;
+
+    #[tokio::test]
+    async fn registry_strips_intent_before_toolbox_stdin() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_executable(dir.path(), "echo_stdin", "#!/bin/sh\ncat\n");
+        let tool = fixture_tool(path, ToolboxFormat::Json);
+        let mut registry = crate::clients::tools::default_tool_registry();
+        registry.push_entry(toolbox_tool_entry(tool, uuid::Uuid::nil()));
+        let context =
+            std::sync::Arc::new(crate::clients::tools::ToolContext::from_current_process());
+
+        let result = registry
+            .execute(
+                context,
+                "tb__fixture",
+                "call-1",
+                r#"{"key":"value","intent":"Reading the fixture"}"#,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&result.output).unwrap(),
+            serde_json::json!({ "key": "value" })
+        );
+    }
+}
