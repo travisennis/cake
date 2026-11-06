@@ -45,7 +45,7 @@ expression: value
       "type": "message"
     }
   ],
-  "instructions": "You are cake. You are running as a coding agent in a CLI on the user's computer.\n\n## Available tools\n\n- **Bash**: Execute a shell command in the host machine's terminal.\n- **BashSession**: Read, list, or kill Bash commands still running in this Cake run.\n- **Edit**: Edit text in files using literal search-and-replace.\n- **Read**: Read a file's contents.\n- **ReadImage**: Read an image file and return it to you as an image you can actually see.\n- **Write**: Create a new file or overwrite an existing one with the given content.\n\nOnly these tools are available. There is no Glob, Grep, or LS tool.",
+  "instructions": "You are cake. You are running as a coding agent in a CLI on the user's computer.\n\n## Available tools\n\n- **Bash**: Execute a shell command in the host machine's terminal.\n- **BashSession**: Read, list, or kill Bash commands still running in this Cake run.\n- **Edit**: Edit text in files using literal search-and-replace.\n- **Read**: Read a file's contents.\n- **ReadImage**: Read an image file and return it to you as an image you can actually see.\n- **Write**: Create a new file or overwrite an existing one with the given content.\n\nEvery tool call may include an optional `intent` string: one short, present-progressive sentence describing what the call does, written for the user. Include it on every call when you can.\n\nOnly these tools are available. There is no Glob, Grep, or LS tool.",
   "model": "test-responses-model",
   "temperature": 0.20000000298023224,
   "tool_choice": "auto",
@@ -65,6 +65,10 @@ expression: value
           },
           "cwd": {
             "description": "Optional working directory for this command. Relative paths resolve from the invocation working directory. The directory must be the invocation working directory or a directory the sandbox already grants (`--add-dir`, settings, or a skill directory).",
+            "type": "string"
+          },
+          "intent": {
+            "description": "Optional. One short, user-facing sentence in the present progressive describing what this call does, for example \"Reading the parser tests\". Shown to the user instead of the raw arguments.",
             "type": "string"
           },
           "reason": {
@@ -94,6 +98,10 @@ expression: value
               "kill",
               "list"
             ],
+            "type": "string"
+          },
+          "intent": {
+            "description": "Optional. One short, user-facing sentence in the present progressive describing what this call does, for example \"Reading the parser tests\". Shown to the user instead of the raw arguments.",
             "type": "string"
           },
           "session": {
@@ -143,6 +151,10 @@ expression: value
             "minItems": 1,
             "type": "array"
           },
+          "intent": {
+            "description": "Optional. One short, user-facing sentence in the present progressive describing what this call does, for example \"Reading the parser tests\". Shown to the user instead of the raw arguments.",
+            "type": "string"
+          },
           "path": {
             "description": "The path of the file to edit",
             "type": "string"
@@ -165,6 +177,10 @@ expression: value
             "description": "Last line to read (1-indexed, inclusive). Default: the configured read_default_end_line window (200 out of the box; start_line+window-1 when start_line given)",
             "type": "integer"
           },
+          "intent": {
+            "description": "Optional. One short, user-facing sentence in the present progressive describing what this call does, for example \"Reading the parser tests\". Shown to the user instead of the raw arguments.",
+            "type": "string"
+          },
           "path": {
             "description": "Absolute path to the file to read",
             "type": "string"
@@ -186,6 +202,10 @@ expression: value
       "name": "ReadImage",
       "parameters": {
         "properties": {
+          "intent": {
+            "description": "Optional. One short, user-facing sentence in the present progressive describing what this call does, for example \"Reading the parser tests\". Shown to the user instead of the raw arguments.",
+            "type": "string"
+          },
           "path": {
             "description": "Absolute path to the image file to read (PNG, JPEG, GIF, or WebP)",
             "type": "string"
@@ -205,6 +225,10 @@ expression: value
         "properties": {
           "content": {
             "description": "The full content to write to the file",
+            "type": "string"
+          },
+          "intent": {
+            "description": "Optional. One short, user-facing sentence in the present progressive describing what this call does, for example \"Reading the parser tests\". Shown to the user instead of the raw arguments.",
             "type": "string"
           },
           "path": {

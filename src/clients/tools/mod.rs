@@ -258,7 +258,11 @@ pub(super) fn argument_compensation_events(
             ));
         }
     }
-    if was_error && registered && name == "Edit" && edit::arguments_are_invalid(arguments) {
+    if was_error
+        && registered
+        && name == "Edit"
+        && edit::arguments_are_invalid(&strip_intent(arguments))
+    {
         events.push(CompensationEventTelemetry::new(
             CompensationKind::EditInvalidArguments,
             None,
@@ -621,6 +625,73 @@ pub struct Tool {
     pub(super) parameters: serde_json::Value,
 }
 
+/// Name of the optional, display-only field every tool schema advertises.
+const INTENT_PROPERTY: &str = "intent";
+
+/// Schema description for [`INTENT_PROPERTY`].
+const INTENT_PROPERTY_DESCRIPTION: &str = "Optional. One short, user-facing sentence in the present progressive describing what this \
+     call does, for example \"Reading the parser tests\". Shown to the user instead of the raw \
+     arguments.";
+
+/// Add the optional, display-only `intent` property to one tool schema.
+///
+/// Every tool definition, including toolbox tools, advertises the same field
+/// so the model has one consistent place to describe a call. A tool that
+/// already declares `intent` keeps its own schema.
+fn add_intent_property(parameters: &mut serde_json::Value) {
+    let Some(schema) = parameters.as_object_mut() else {
+        return;
+    };
+    let object_schema = schema
+        .get("type")
+        .is_none_or(|value| value.as_str() == Some("object"))
+        || schema.contains_key("properties");
+    if !object_schema {
+        return;
+    }
+    if !schema.contains_key("properties") {
+        schema.insert("properties".to_string(), serde_json::json!({}));
+    }
+    let Some(properties) = schema
+        .get_mut("properties")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    properties
+        .entry(INTENT_PROPERTY.to_string())
+        .or_insert_with(|| {
+            serde_json::json!({
+                "type": "string",
+                "description": INTENT_PROPERTY_DESCRIPTION,
+            })
+        });
+}
+
+/// Remove the display-only `intent` field before a tool parses its arguments.
+///
+/// Tool schemas advertise `intent` centrally, but it is call metadata for the
+/// user interface, not tool input: strict parsers such as Edit's
+/// `deny_unknown_fields` and toolbox processes must never see it. Arguments
+/// that do not parse as a JSON object, or that contain no `intent`, are
+/// returned unchanged so the tool's own error reporting still describes the
+/// model's payload.
+fn strip_intent(arguments: &str) -> String {
+    if !arguments.contains(INTENT_PROPERTY) {
+        return arguments.to_string();
+    }
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(arguments) else {
+        return arguments.to_string();
+    };
+    let Some(object) = value.as_object_mut() else {
+        return arguments.to_string();
+    };
+    if object.remove(INTENT_PROPERTY).is_none() {
+        return arguments.to_string();
+    }
+    serde_json::to_string(&value).unwrap_or_else(|_| arguments.to_string())
+}
+
 /// Return whether raw file bytes contain a NUL byte.
 ///
 /// Read and Edit use the same conservative binary-file signal while keeping
@@ -840,11 +911,12 @@ impl ToolRegistry {
     /// Build a registry from explicit entries.
     #[cfg(test)]
     pub(super) fn new(entries: Vec<ToolEntry>) -> Self {
-        let definitions = entries.iter().map(|e| e.definition.clone()).collect();
-        Self {
+        let mut registry = Self {
             entries,
-            definitions,
-        }
+            definitions: Vec::new(),
+        };
+        registry.refresh_definitions();
+        registry
     }
 
     /// Return an empty registry, useful for tests that do not expose tools.
@@ -927,6 +999,7 @@ impl ToolRegistry {
                     &definition.description,
                     &available_names,
                 );
+                add_intent_property(&mut definition.parameters);
                 definition
             })
             .collect();
@@ -958,7 +1031,8 @@ impl ToolRegistry {
             return Err(ToolError::new(format!("Unknown tool: {name}")));
         };
 
-        (entry.execute)(context, call_id.to_string(), arguments.to_string()).await
+        let arguments = strip_intent(arguments);
+        (entry.execute)(context, call_id.to_string(), arguments).await
     }
 
     /// Return whether a tool with `name` is registered.
@@ -1476,7 +1550,15 @@ pub fn format_tool_list_section(
             .trim_end_matches('.');
         _ = writeln!(s, "- **{name}**: {first_sentence}.");
     }
-    append_tool_availability_footer(&mut s, has_any_enabled_tools(&registry, has_toolbox_tools));
+    let has_tools = has_any_enabled_tools(&registry, has_toolbox_tools);
+    if has_tools {
+        s.push_str(
+            "\nEvery tool call may include an optional `intent` string: one short, \
+             present-progressive sentence describing what the call does, written for the user. \
+             Include it on every call when you can.\n",
+        );
+    }
+    append_tool_availability_footer(&mut s, has_tools);
     s
 }
 
@@ -1575,11 +1657,12 @@ pub(super) fn default_tool_registry() -> ToolRegistry {
             .repairs_arguments()
             .mutates_path(write::mutating_target),
     ];
-    let definitions = entries.iter().map(|e| e.definition.clone()).collect();
-    ToolRegistry {
+    let mut registry = ToolRegistry {
         entries,
-        definitions,
-    }
+        definitions: Vec::new(),
+    };
+    registry.refresh_definitions();
+    registry
 }
 
 /// Returns a registry containing only the Read tool.
@@ -2548,5 +2631,160 @@ mod tests {
         let arguments = "{\"a\":\"\t";
         let events = argument_compensation_events("Write", arguments, true, true, true);
         assert!(events.is_empty());
+    }
+
+    // ── intent metadata ──
+
+    #[test]
+    fn every_builtin_definition_advertises_intent() {
+        let registry = default_tool_registry();
+        for definition in registry.definitions() {
+            let intent = &definition.parameters["properties"][INTENT_PROPERTY];
+            assert_eq!(
+                intent["type"], "string",
+                "{} has no string intent property",
+                definition.name
+            );
+            assert!(
+                intent["description"]
+                    .as_str()
+                    .is_some_and(|d| !d.is_empty()),
+                "{} has no intent description",
+                definition.name
+            );
+        }
+
+        let edit = registry
+            .definitions()
+            .iter()
+            .find(|definition| definition.name == "Edit")
+            .unwrap();
+        assert_eq!(edit.parameters["additionalProperties"], false);
+        assert!(
+            !edit.parameters["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|required| required == INTENT_PROPERTY),
+            "intent must stay optional"
+        );
+    }
+
+    #[test]
+    fn toolbox_definition_advertises_intent() {
+        let mut registry = default_tool_registry();
+        registry.push_entry(toolbox_tool_entry(
+            fixture_toolbox_tool(),
+            uuid::Uuid::nil(),
+        ));
+
+        let definition = registry
+            .definitions()
+            .iter()
+            .find(|definition| definition.name == "tb__run_tests")
+            .unwrap();
+        assert_eq!(
+            definition.parameters["properties"][INTENT_PROPERTY]["type"],
+            "string"
+        );
+    }
+
+    #[test]
+    fn existing_toolbox_intent_property_is_preserved() {
+        let mut tool = fixture_toolbox_tool();
+        tool.parameters = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "intent": {
+                    "type": "string",
+                    "description": "plugin-owned",
+                    "enum": ["plugin-value"]
+                }
+            }
+        });
+        let mut registry = default_tool_registry();
+        registry.push_entry(toolbox_tool_entry(tool, uuid::Uuid::nil()));
+
+        let definition = registry
+            .definitions()
+            .iter()
+            .find(|definition| definition.name == "tb__run_tests")
+            .unwrap();
+        assert_eq!(
+            definition.parameters["properties"][INTENT_PROPERTY]["description"],
+            "plugin-owned"
+        );
+        assert_eq!(
+            definition.parameters["properties"][INTENT_PROPERTY]["enum"][0],
+            "plugin-value"
+        );
+    }
+
+    #[test]
+    fn strip_intent_removes_only_the_metadata() {
+        assert_eq!(
+            strip_intent(r#"{"a":1,"intent":"Reading the tests"}"#),
+            r#"{"a":1}"#
+        );
+        assert_eq!(strip_intent(r#"{"a":1}"#), r#"{"a":1}"#);
+        assert_eq!(strip_intent("not json"), "not json");
+        assert_eq!(strip_intent("[1,2]"), "[1,2]");
+    }
+
+    #[tokio::test]
+    async fn execute_strips_intent_before_the_executor() {
+        let definition = Tool {
+            type_: "function".to_string(),
+            name: "Fake".to_string(),
+            description: "Test executor.".to_string(),
+            parameters: serde_json::json!({ "type": "object" }),
+        };
+        let entry = ToolEntry::new(
+            definition,
+            |_context: Arc<ToolContext>, _call_id: String, arguments: String| -> ToolFuture {
+                Box::pin(async move {
+                    Ok(ToolResult {
+                        output: arguments,
+                        images: Vec::new(),
+                        compensation_events: Vec::new(),
+                        permission_denials: Vec::new(),
+                    })
+                })
+            },
+        );
+        let registry = ToolRegistry::new(vec![entry]);
+
+        let result = registry
+            .execute(
+                Arc::new(ToolContext::from_current_process()),
+                "Fake",
+                "call-1",
+                r#"{"a":1,"intent":"Reading the tests"}"#,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&result.output).unwrap(),
+            serde_json::json!({ "a": 1 })
+        );
+    }
+
+    #[test]
+    fn valid_edit_call_with_intent_is_not_classified_as_invalid() {
+        let arguments =
+            r#"{"path":"f","edits":[{"old_text":"a","new_text":"b"}],"intent":"Editing f"}"#;
+        let events = argument_compensation_events("Edit", arguments, true, true, true);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn tool_prompt_mentions_optional_intent() {
+        let result = format_tool_list_section(SandboxPolicy::WorkspaceWrite, &[], None, true);
+        assert!(result.contains("optional `intent` string"));
+
+        let no_tools =
+            format_tool_list_section(SandboxPolicy::WorkspaceWrite, &[], Some(&[]), true);
+        assert!(!no_tools.contains("optional `intent` string"));
     }
 }
