@@ -633,11 +633,16 @@ Decision JSON may use:
   "permission": "allow",
   "reason": "optional explanation",
   "updated_input": {},
-  "additional_context": "optional model context"
+  "additional_context": "optional model context",
+  "follow_up": false
 }
 ```
 
 `continue: false` stops and has highest priority. `permission` takes priority over `decision`; `deny`, `block`, and `ask` block because Cake has no interactive ask flow. `PreToolUse` may return one `updated_input` object, which is revalidated by the tool. Any event may return `additional_context`.
+
+A `Stop` hook may set `follow_up: true` with non-empty `additional_context` to ask for one more agent turn in the same invocation. Cake appends the context as a synthetic user message whose first line is `[Stop hook follow-up]`, then runs the request again. The earlier assistant message is an intermediate result. Cake enforces a cap of one follow-up per invocation; the `Stop` payload carries `follow_up_index` (follow-ups already run) and `max_follow_ups` (the budget), so a hook can stop asking before the cap. Cake skips the follow-up when `--output-schema` is set, when the context is empty, when the budget is spent, and after any error, cut-off, limit, or interrupt. `Stop` runs after every successful turn; `SessionEnd` and `task_complete` run once, at the end.
+
+Text output prints the intermediate response when it completes and a marker on stderr. `--output-format json` keeps the final assistant message in `result` and adds `intermediate_results` only when a follow-up ran. `stream-json` already carries the synthetic user message and the follow-up response as ordinary message records.
 
 Pre-request failures may abort the invocation. Post-result hooks are best-effort so they cannot replace an existing model or tool outcome. `SessionEnd` is always best-effort: a nonzero exit, invalid JSON, block decision, timeout, or `fail_closed: true` is logged but cannot change the task result, output, or process exit code. Hook stdout and stderr stored in events are bounded.
 
@@ -671,6 +676,8 @@ Toolbox executables are trusted and run outside the Bash sandbox. Project `.cake
 ## Compatibility changes
 
 Changes to session versioning, record names or required fields, stream ordering, exit-code meaning, hook decisions, toolbox framing, gate framing or decisions, or machine-readable stdout are compatibility changes. They require focused serialization or integration tests, migration analysis where applicable, and an update to this document's semantics.
+
+The `Stop` hook's `follow_up` request and its `follow_up_index`/`max_follow_ups` payload fields are additive. A hook that does not set `follow_up` keeps the previous log-only behavior, so an existing hook file cannot start spending model turns after an upgrade. `--output-format json` adds `intermediate_results` only for an invocation that ran a follow-up.
 
 A settings file that cannot be loaded or parsed exited `1`; it now exits `3`, the class this document already assigns to invalid configuration. Every command that loads settings reports the failure with that code: `cake <prompt>`, `cake debug models`, `cake debug models --json`, `cake debug skills`, and `cake bash check` in both output modes. A script that branched on `1` for a broken settings file must branch on `3` instead; the stderr diagnostic is unchanged. See [ADR 044](adr/044-classify-settings-failures-as-input-errors.md).
 

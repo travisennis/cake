@@ -2945,6 +2945,12 @@ printf 'completed:%s' "$index"
                 .all(|record| !record.contains("task_complete"))
         );
 
+        // `execute_agent_turn` runs Stop after the final send; this test calls
+        // the pieces directly, so do the same before closing the invocation.
+        let stop = crate::CodingAssistant::run_stop_hook(Some(&runner), &response, 0, 0).await;
+        assert!(stop.context.is_none());
+        assert!(marker.exists());
+
         let result: Result<String, anyhow::Error> = Ok(response);
         crate::CodingAssistant::handle_agent_turn_result(&mut agent, Some(&runner), &result, 100)
             .await
@@ -2960,6 +2966,100 @@ printf 'completed:%s' "$index"
                 .count(),
             1
         );
+    }
+
+    fn follow_up_response(text: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": "resp-follow-up",
+            "output": [{
+                "type": "message",
+                "id": "msg-1",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": text}]
+            }],
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+        })
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn stop_follow_up_runs_one_extra_turn() {
+        let mock_server = MockServer::start().await;
+        // The follow-up request is the only one carrying the marker; register
+        // it first so wiremock's first-match rule selects it.
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .and(wiremock::matchers::body_string_contains(
+                "[Stop hook follow-up]",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(follow_up_response("second")))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(follow_up_response("first")))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let runner = Arc::new(HookRunner::new(
+            LoadedHooks {
+                groups: vec![HookGroup {
+                    event: HookEvent::Stop,
+                    matcher: HookMatcher::All,
+                    hooks: vec![HookCommand {
+                        command:
+                            r#"printf '{"follow_up":true,"additional_context":"event arrived"}'"#
+                                .to_string(),
+                        timeout: Duration::from_secs(2),
+                        fail_closed: false,
+                        status_message: None,
+                        source_path: dir.path().join("hooks.json"),
+                    }],
+                }],
+            },
+            HookContext {
+                session_id: uuid::Uuid::new_v4(),
+                task_id: uuid::Uuid::new_v4(),
+                transcript_path: None,
+                hook_event_sink: None,
+                cwd: dir.path().to_path_buf(),
+                model: "test-model".to_string(),
+            },
+        ));
+
+        let mut agent = test_agent_with_url(&mock_server.uri());
+        let result = crate::CodingAssistant::execute_agent_turn(
+            &mut agent,
+            Some(&runner),
+            crate::cli::CliOutputSink::new(crate::OutputFormat::StreamJson, false),
+            crate::config::hooks::HookSource::SessionStart("startup".to_string()),
+            "hello",
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.result.unwrap(), "second");
+        assert_eq!(result.intermediate, vec!["first".to_string()]);
+        assert_eq!(agent.turn_count(), 2);
+        assert_eq!(mock_server.received_requests().await.unwrap().len(), 2);
+
+        let follow_up = agent
+            .history()
+            .iter()
+            .find_map(|item| match item {
+                ConversationItem::Message {
+                    role: Role::User,
+                    content,
+                    ..
+                } if content.starts_with("[Stop hook follow-up]") => Some(content.clone()),
+                _ => None,
+            })
+            .expect("the synthetic follow-up message should be in history");
+        assert!(follow_up.contains("event arrived"));
     }
 
     #[tokio::test]

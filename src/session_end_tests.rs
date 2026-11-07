@@ -229,6 +229,18 @@ async fn session_end_emits_once_for_success_and_failed_turns() {
             &hook_events,
         );
 
+        if expected_reason == "success" {
+            // The success path runs Stop before the invocation closes; mirror
+            // the ordering `execute_agent_turn` owns.
+            CodingAssistant::run_stop_hook(
+                Some(&runner),
+                result.as_ref().expect("success case"),
+                0,
+                0,
+            )
+            .await;
+        }
+
         CodingAssistant::handle_agent_turn_result(&mut agent, Some(&runner), &result, 50)
             .await
             .unwrap();
@@ -267,8 +279,10 @@ async fn session_end_emits_once_for_pre_send_failure() {
     let result = CodingAssistant::execute_agent_turn(
         &mut agent,
         Some(&runner),
+        crate::cli::CliOutputSink::new(crate::OutputFormat::Text, false),
         crate::config::hooks::HookSource::SessionStart("startup".to_string()),
         "test prompt",
+        true,
     )
     .await;
     let Err(_error) = result else {

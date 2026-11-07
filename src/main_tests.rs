@@ -1108,6 +1108,7 @@ fn fail_on_error_exit_codes_follow_the_documented_classes() {
                     crate::cli::TurnResult {
                         result: Err(error()),
                         duration_ms: 0,
+                        intermediate: Vec::new(),
                     },
                     &agent,
                     Path::new("/work"),
@@ -1442,6 +1443,63 @@ fn test_resolve_model_for_session_unknown_stored_config_errors() {
             "unexpected error: {err}"
         );
     });
+}
+
+// -------------------------------------------------------------------------
+// Stop follow-up decision
+// -------------------------------------------------------------------------
+
+fn stop_outcome(follow_up: bool, context: Option<&str>) -> StopHookOutcome {
+    StopHookOutcome {
+        context: context.map(str::to_string),
+        follow_up,
+    }
+}
+
+#[test]
+fn follow_up_requires_opt_in_context_and_budget() {
+    assert_eq!(
+        CodingAssistant::stop_follow_up_context(&stop_outcome(true, Some("event")), 0, 1),
+        Some("event".to_string())
+    );
+    assert_eq!(
+        CodingAssistant::stop_follow_up_context(&stop_outcome(false, Some("event")), 0, 1),
+        None
+    );
+    assert_eq!(
+        CodingAssistant::stop_follow_up_context(&stop_outcome(true, None), 0, 1),
+        None
+    );
+    assert_eq!(
+        CodingAssistant::stop_follow_up_context(&stop_outcome(true, Some("")), 0, 1),
+        None
+    );
+    assert_eq!(
+        CodingAssistant::stop_follow_up_context(&stop_outcome(true, Some("event")), 1, 1),
+        None
+    );
+    assert_eq!(
+        CodingAssistant::stop_follow_up_context(&stop_outcome(true, Some("event")), 0, 0),
+        None
+    );
+}
+
+#[test]
+fn follow_up_prompt_marks_the_message_as_synthetic() {
+    let prompt = CodingAssistant::stop_follow_up_prompt("2 monitor events");
+    assert!(prompt.starts_with(CodingAssistant::STOP_FOLLOW_UP_MARKER));
+    assert!(prompt.ends_with("2 monitor events"));
+}
+
+#[test]
+fn json_reports_intermediate_results_only_when_present() {
+    let base = serde_json::json!({"result": "second"});
+    let with = CliOutputSink::with_intermediate_results(base.clone(), &["first".to_string()]);
+    assert_eq!(with["result"], "second");
+    assert_eq!(with["intermediate_results"][0], "first");
+
+    let without = CliOutputSink::with_intermediate_results(base, &[]);
+    assert!(without.get("intermediate_results").is_none());
 }
 
 // -------------------------------------------------------------------------

@@ -748,6 +748,64 @@ fn raw_deser_updated_input_and_additional_context_with_allow() {
     assert_eq!(parsed.additional_context, Some("be careful".to_string()));
 }
 
+#[test]
+fn raw_deser_follow_up_is_opt_in() {
+    let raw: RawHookOutput =
+        serde_json::from_str(r#"{"follow_up": true, "additional_context": "event"}"#).unwrap();
+    let parsed: ParsedHookOutput = raw.into();
+    assert!(parsed.follow_up);
+    assert_eq!(parsed.additional_context, Some("event".to_string()));
+
+    let raw: RawHookOutput = serde_json::from_str(r#"{"additional_context": "event"}"#).unwrap();
+    let parsed: ParsedHookOutput = raw.into();
+    assert!(!parsed.follow_up);
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn stop_payload_carries_follow_up_budget_and_returns_the_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let payload_path = dir.path().join("stop.json");
+    let command = HookCommand {
+        command: format!(
+            "cat > '{}'; printf '{{\"follow_up\":true,\"additional_context\":\"event\"}}'",
+            payload_path.display()
+        ),
+        timeout: Duration::from_secs(2),
+        fail_closed: false,
+        status_message: None,
+        source_path: dir.path().join("hooks.json"),
+    };
+    let loaded = LoadedHooks {
+        groups: vec![HookGroup {
+            event: HookEvent::Stop,
+            matcher: HookMatcher::All,
+            hooks: vec![command],
+        }],
+    };
+    let runner = HookRunner::new(
+        loaded,
+        HookContext {
+            session_id: uuid::Uuid::new_v4(),
+            task_id: uuid::Uuid::new_v4(),
+            transcript_path: None,
+            hook_event_sink: None,
+            cwd: dir.path().to_path_buf(),
+            model: "test-model".to_string(),
+        },
+    );
+
+    let outcome = runner.stop("done", 1, 1).await.unwrap();
+    assert_eq!(outcome.context, Some("event".to_string()));
+    assert!(outcome.follow_up);
+
+    let payload: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(payload_path).unwrap()).unwrap();
+    assert_eq!(payload["result"], "done");
+    assert_eq!(payload["follow_up_index"].as_u64(), Some(1));
+    assert_eq!(payload["max_follow_ups"].as_u64(), Some(1));
+}
+
 // ── HookDecision::decision_label ───────────────────────────────
 
 #[test]
@@ -798,6 +856,7 @@ fn decision_label_parsed_continue_is_none() {
         explicit_allow: true,
         updated_input: None,
         additional_context: None,
+        follow_up: false,
     });
 
     let decision = outcome_decision_label(&status);
@@ -914,6 +973,7 @@ fn decision_label_parsed_deny_is_deny() {
         explicit_allow: false,
         updated_input: None,
         additional_context: None,
+        follow_up: false,
     }));
     assert_eq!(decision, "deny");
 }

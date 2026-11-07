@@ -47,6 +47,15 @@ pub struct HookContext {
     pub model: String,
 }
 
+/// Result of one `Stop` hook dispatch for a completed turn.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct StopHookOutcome {
+    /// Joined `additional_context` from every matching hook.
+    pub context: Option<String>,
+    /// Whether any hook requested the one allowed follow-up turn.
+    pub follow_up: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionEndReason {
     Success,
@@ -152,6 +161,9 @@ struct AggregatedHookResult {
     deny_reasons: Vec<String>,
     updated_inputs: Vec<(Value, PathBuf)>,
     additional_context: Vec<String>,
+    /// Any matching `Stop` hook asked for a follow-up turn. Other events
+    /// parse the field for protocol uniformity but never read it.
+    follow_up: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -196,6 +208,7 @@ struct ParsedHookOutput {
     explicit_allow: bool,
     updated_input: Option<Value>,
     additional_context: Option<String>,
+    follow_up: bool,
 }
 
 /// Raw wire shape a hook script emits on stdout.  Private; callers work
@@ -210,6 +223,9 @@ struct RawHookOutput {
     reason: Option<String>,
     updated_input: Option<Value>,
     additional_context: Option<String>,
+    /// Opt-in request for one more agent turn, honored only on `Stop`.
+    #[serde(default)]
+    follow_up: Option<bool>,
 }
 
 impl From<RawHookOutput> for ParsedHookOutput {
@@ -230,6 +246,7 @@ impl From<RawHookOutput> for ParsedHookOutput {
             explicit_allow,
             updated_input: raw.updated_input,
             additional_context: raw.additional_context,
+            follow_up: raw.follow_up.unwrap_or(false),
         }
     }
 }
@@ -420,12 +437,33 @@ impl HookRunner {
         Ok(join_context(&result.additional_context))
     }
 
-    pub async fn stop(&self, result: &str) -> anyhow::Result<Option<String>> {
-        let payload = self.payload(HookEvent::Stop, json!({ "result": result }));
+    /// Run the `Stop` hooks for one completed turn.
+    ///
+    /// `follow_up_index` is how many follow-up turns this invocation has
+    /// already run, and `max_follow_ups` is what it may still run. Both reach
+    /// the hook so it can choose not to ask past the budget; core enforces the
+    /// cap regardless.
+    pub async fn stop(
+        &self,
+        result: &str,
+        follow_up_index: u32,
+        max_follow_ups: u32,
+    ) -> anyhow::Result<StopHookOutcome> {
+        let payload = self.payload(
+            HookEvent::Stop,
+            json!({
+                "result": result,
+                "follow_up_index": follow_up_index,
+                "max_follow_ups": max_follow_ups,
+            }),
+        );
         let result = self
             .run_and_aggregate(HookEvent::Stop, &HookSource::None, payload, None)
             .await?;
-        Ok(join_context(&result.additional_context))
+        Ok(StopHookOutcome {
+            context: join_context(&result.additional_context),
+            follow_up: result.follow_up,
+        })
     }
 
     pub async fn error_occurred(&self, message: &str) -> anyhow::Result<()> {
@@ -749,6 +787,8 @@ fn apply_parsed_status(
         aggregated.additional_context.push(context.clone());
     }
 
+    aggregated.follow_up |= parsed.follow_up;
+
     if event == HookEvent::PreToolUse
         && let Some(updated_input) = parsed.updated_input.clone()
     {
@@ -963,6 +1003,7 @@ async fn run_command_hook(
                 explicit_allow: false,
                 updated_input: None,
                 additional_context: None,
+                follow_up: false,
             }),
         };
     }

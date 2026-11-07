@@ -20,6 +20,9 @@ struct ClosedOutput;
 pub struct TurnResult {
     pub(crate) result: anyhow::Result<String>,
     pub(crate) duration_ms: u64,
+    /// Assistant responses that preceded a `Stop`-hook follow-up turn. Text
+    /// already printed them when they completed; JSON reports them.
+    pub(crate) intermediate: Vec<String>,
 }
 
 /// Pure-rendering sink for CLI output.
@@ -64,6 +67,7 @@ impl CliOutputSink {
         let TurnResult {
             result,
             duration_ms,
+            intermediate,
         } = turn;
 
         match self.format {
@@ -78,6 +82,7 @@ impl CliOutputSink {
                     session,
                     persists_session,
                 );
+                let json = Self::with_intermediate_results(json, &intermediate);
                 Self::write_json_value(&json)?;
                 result.map(|_| ())
             },
@@ -185,6 +190,31 @@ impl CliOutputSink {
     /// consumer. The CLI handles this after all run-local guards leave scope.
     pub(crate) fn is_closed_output(error: &anyhow::Error) -> bool {
         error.downcast_ref::<ClosedOutput>().is_some()
+    }
+
+    /// Add the intermediate responses to a completion document only when a
+    /// `Stop` follow-up superseded them.
+    pub(crate) fn with_intermediate_results(
+        mut json: serde_json::Value,
+        intermediate: &[String],
+    ) -> serde_json::Value {
+        if !intermediate.is_empty() {
+            json["intermediate_results"] = serde_json::json!(intermediate);
+        }
+        json
+    }
+
+    /// Print an intermediate assistant response before a follow-up turn.
+    ///
+    /// Text mode prints it as soon as it completes so the user does not wait
+    /// for the follow-up; JSON keeps it for the final document; stream-json has
+    /// already emitted the assistant message as a record.
+    pub(crate) fn render_intermediate(self, text: &str, marker: &str) -> anyhow::Result<()> {
+        if self.format == OutputFormat::Text {
+            Self::write_text_response(text)?;
+            eprintln!("\n{marker}");
+        }
+        Ok(())
     }
 
     /// Write one stream-json record and treat a closed consumer as a normal

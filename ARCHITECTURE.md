@@ -28,7 +28,7 @@ Cake is a binary crate. The CLI resolves configuration and run mode, builds an a
 1. The CLI resolves settings, model credentials, sandbox policy, instructions, skills, hooks, toolbox tools, and session mode.
 2. Cake builds a stable system prompt plus mutable developer context.
 3. A backend sends the typed conversation and registered tool definitions to the provider.
-4. A final assistant message ends the loop. Tool calls are validated, hooked, scheduled, executed, recorded in issue order, and returned to the provider for another turn.
+4. A final assistant message ends the loop. The CLI then runs the `Stop` hooks; a hook may ask for one bounded follow-up turn, which appends its context and re-enters the loop once. Tool calls are validated, hooked, scheduled, executed, recorded in issue order, and returned to the provider for another turn.
 5. Conversation and lifecycle records are fanned out to the session writer, stream-json output, progress renderer, and telemetry as applicable.
 
 ## Boundaries

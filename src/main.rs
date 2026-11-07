@@ -42,7 +42,7 @@ use crate::config::{
     ReasoningEffort, ResolvedModelConfig, Session, SettingsLoader, SkillCatalog, discover_skills,
     discover_skills_with_paths, parse_skill_path_list, read_agents_files, worktree,
 };
-use crate::hooks::{HookContext, HookRunner, SessionEndReason};
+use crate::hooks::{HookContext, HookRunner, SessionEndReason, StopHookOutcome};
 use crate::program_status::{BlockedKind, State};
 
 use crate::session_telemetry::{SessionTelemetryRecord, SessionTelemetryWriter};
@@ -263,6 +263,13 @@ struct RunResources {
 impl CodingAssistant {
     /// Maximum size in bytes for stdin input before it is rejected.
     const MAX_STDIN_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
+
+    /// Maximum number of `Stop`-hook follow-up turns one invocation may run.
+    const MAX_STOP_FOLLOW_UPS: u32 = 1;
+
+    /// Marker identifying the synthetic user message that carries `Stop` hook
+    /// follow-up context. It is not human input.
+    const STOP_FOLLOW_UP_MARKER: &str = "[Stop hook follow-up]";
 
     /// Read content from stdin if available (non-terminal).
     ///
@@ -1120,14 +1127,58 @@ impl CodingAssistant {
     async fn execute_agent_turn(
         client: &mut Agent,
         hook_runner: Option<&Arc<HookRunner>>,
+        output: CliOutputSink,
         session_start_source: HookSource,
         content: &str,
+        follow_ups_allowed: bool,
     ) -> anyhow::Result<TurnResult> {
         let start = Instant::now();
 
         Self::prepare_agent_turn(client, hook_runner, &session_start_source, content).await?;
 
-        let result = client.send(content.to_string()).await;
+        let max_follow_ups = if follow_ups_allowed {
+            Self::MAX_STOP_FOLLOW_UPS
+        } else {
+            0
+        };
+        let mut prompt = content.to_string();
+        let mut intermediate = Vec::new();
+        let mut follow_ups_run = 0_u32;
+
+        let result = loop {
+            let result = client.send(prompt).await;
+            let Ok(text) = &result else {
+                break result;
+            };
+
+            let outcome =
+                Self::run_stop_hook(hook_runner, text, follow_ups_run, max_follow_ups).await;
+            let Some(follow_up_context) =
+                Self::stop_follow_up_context(&outcome, follow_ups_run, max_follow_ups)
+            else {
+                break result;
+            };
+
+            // The user has already seen this answer; show it now rather than
+            // after the follow-up turn finishes.
+            if let Err(error) = output.render_intermediate(text, Self::STOP_FOLLOW_UP_MARKER) {
+                if CliOutputSink::is_closed_output(&error) {
+                    // The consumer stopped reading. Close the invocation without
+                    // spending a follow-up turn.
+                    break result;
+                }
+                return Err(error);
+            }
+            intermediate.push(text.clone());
+            follow_ups_run += 1;
+            tracing::info!(
+                target: "cake::hooks",
+                follow_up_index = follow_ups_run,
+                "Stop hook requested a follow-up turn"
+            );
+            prompt = Self::stop_follow_up_prompt(&follow_up_context);
+        };
+
         let duration_ms = start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
 
         Self::handle_agent_turn_result(client, hook_runner, &result, duration_ms).await?;
@@ -1138,7 +1189,31 @@ impl CodingAssistant {
         Ok(TurnResult {
             result,
             duration_ms,
+            intermediate,
         })
+    }
+
+    /// The context for one follow-up turn, or `None` when the hook did not ask,
+    /// the budget is spent, or there is nothing to deliver.
+    fn stop_follow_up_context(
+        outcome: &StopHookOutcome,
+        follow_ups_run: u32,
+        max_follow_ups: u32,
+    ) -> Option<String> {
+        if !outcome.follow_up || follow_ups_run >= max_follow_ups {
+            return None;
+        }
+        outcome
+            .context
+            .clone()
+            .filter(|context| !context.is_empty())
+    }
+
+    /// The synthetic user message that carries follow-up context. The marker
+    /// keeps the turn out of the human's voice in the transcript and on the
+    /// wire.
+    fn stop_follow_up_prompt(context: &str) -> String {
+        format!("{}\n{context}", Self::STOP_FOLLOW_UP_MARKER)
     }
 
     /// Run everything that precedes `client.send()`: the session-start and
@@ -1180,9 +1255,10 @@ impl CodingAssistant {
         Ok(())
     }
 
-    /// Handle the result of `client.send()`: invoke stop/error hooks and emit the
-    /// task completion record. Extracted from `execute_agent_turn` for focused
-    /// unit-testing without requiring a real API call.
+    /// Handle the result of the last `client.send()`: invoke error hooks and
+    /// emit the task completion record. `Stop` already ran for the turn in
+    /// `execute_agent_turn`, so success only closes the invocation. Extracted
+    /// for focused unit-testing without requiring a real API call.
     async fn handle_agent_turn_result(
         client: &mut Agent,
         hook_runner: Option<&Arc<HookRunner>>,
@@ -1208,13 +1284,14 @@ impl CodingAssistant {
         Ok(())
     }
 
+    /// Close a successful invocation after `Stop` has already run for its
+    /// final turn.
     async fn emit_successful_agent_turn(
         client: &mut Agent,
         hook_runner: Option<&Arc<HookRunner>>,
         response_text: &str,
         duration_ms: u64,
     ) -> anyhow::Result<()> {
-        Self::run_stop_hook(hook_runner, response_text).await;
         Self::run_session_end_hook(hook_runner, SessionEndReason::Success).await;
         client.emit_task_complete_record(
             TaskOutcome::Success {
@@ -1246,7 +1323,8 @@ impl CodingAssistant {
         cutoff: &CutOffError,
         duration_ms: u64,
     ) -> anyhow::Result<()> {
-        Self::run_stop_hook(hook_runner, &cutoff.detail).await;
+        // A cut-off cannot continue, so the hook sees a zero budget.
+        Self::run_stop_hook(hook_runner, &cutoff.detail, 0, 0).await;
         Self::run_session_end_hook(hook_runner, SessionEndReason::Error).await;
         // A failed writer must not replace the cut-off diagnostic with a second
         // append error, for the same reason as `emit_failed_agent_turn`.
@@ -1271,17 +1349,33 @@ impl CodingAssistant {
         }
     }
 
-    async fn run_stop_hook(hook_runner: Option<&Arc<HookRunner>>, response_text: &str) {
+    async fn run_stop_hook(
+        hook_runner: Option<&Arc<HookRunner>>,
+        response_text: &str,
+        follow_up_index: u32,
+        max_follow_ups: u32,
+    ) -> StopHookOutcome {
         let Some(runner) = hook_runner else {
-            return;
+            return StopHookOutcome::default();
         };
-        match runner.stop(response_text).await {
-            Ok(Some(context)) => {
-                tracing::info!(target: "cake::hooks", additional_context = %context, "Stop hook returned additional context");
+        match runner
+            .stop(response_text, follow_up_index, max_follow_ups)
+            .await
+        {
+            Ok(outcome) => {
+                if let Some(context) = outcome.context.as_ref() {
+                    tracing::info!(
+                        target: "cake::hooks",
+                        additional_context = %context,
+                        follow_up = outcome.follow_up,
+                        "Stop hook returned additional context"
+                    );
+                }
+                outcome
             },
-            Ok(None) => {},
             Err(error) => {
                 tracing::warn!(target: "cake::hooks", error = %error, "Stop hook failed (best-effort)");
+                StopHookOutcome::default()
             },
         }
     }
@@ -1486,8 +1580,10 @@ impl CmdRunner for CodingAssistant {
                 Self::execute_agent_turn(
                     &mut client,
                     hook_runner.as_ref(),
+                    output,
                     session_start_source,
                     &prepared.content,
+                    prepared.output_schema.is_none(),
                 )
                 .await
             } => match result {
@@ -1509,6 +1605,7 @@ impl CmdRunner for CodingAssistant {
                 TurnResult {
                     result: Ok(String::new()),
                     duration_ms: 0,
+                    intermediate: Vec::new(),
                 }
             },
         };
