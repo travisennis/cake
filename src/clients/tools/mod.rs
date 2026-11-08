@@ -91,7 +91,7 @@ pub struct ToolContext {
     /// pipeline rather than running a command ungated.
     pub gates: Option<Arc<GatePipeline>>,
 
-    /// Resolved tool output budgets from `[limits]` settings. Defaults to the
+    /// Resolved tool limits from `[limits]` settings. Defaults to the
     /// compiled constants; `with_limits` applies configured overrides.
     pub limits: ToolLimits,
     bash_sessions: bash_session_core::SessionRegistry,
@@ -124,8 +124,8 @@ impl ToolContext {
         self
     }
 
-    /// Attach resolved tool output budgets from the `[limits]` settings
-    /// section. Absent keys already resolved to the compiled defaults inside
+    /// Attach resolved tool limits from the `[limits]` settings section.
+    /// Absent keys already resolved to the compiled defaults inside
     /// `ToolLimits`, so this is a plain override.
     pub fn with_limits(mut self, limits: ToolLimits) -> Self {
         self.bash_sessions = bash_session_core::SessionRegistry::new(

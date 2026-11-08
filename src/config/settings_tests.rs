@@ -2007,6 +2007,47 @@ max_turns = "unlimited"
 }
 
 #[test]
+fn test_limits_edit_max_file_bytes_global_and_profile_override() {
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"
+[[models]]
+name = "test-model"
+model = "test/model"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+
+[limits]
+edit_max_file_bytes = 2_000_000
+
+[profiles.review.limits]
+edit_max_file_bytes = 1_000_000
+"#,
+    );
+    let project = create_project_settings("");
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(project.path()))
+    })
+    .unwrap();
+    assert_eq!(
+        loaded.limits.tool_limits.edit_max_file_bytes,
+        Some(2_000_000)
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load_with_profile(Some(project.path()), Some("review"))
+    })
+    .unwrap();
+    assert_eq!(
+        loaded.limits.tool_limits.edit_max_file_bytes,
+        Some(1_000_000)
+    );
+    assert!(loaded.warnings.is_empty(), "{:#?}", loaded.warnings);
+}
+
+#[test]
 fn test_limits_profile_overrides_top_level_per_key() {
     let home = create_home_dir();
     write_global_settings(
@@ -2187,6 +2228,10 @@ api_key_env = "MY_KEY"
         Some(DEFAULT_READ_MAX_OUTPUT_BYTES as usize)
     );
     assert_eq!(
+        tool.edit_max_file_bytes,
+        Some(DEFAULT_EDIT_MAX_FILE_BYTES as usize)
+    );
+    assert_eq!(
         tool.read_max_line_bytes,
         Some(DEFAULT_READ_MAX_LINE_BYTES as usize)
     );
@@ -2203,6 +2248,7 @@ fn test_limits_output_budget_unlimited_disables_cap() {
 [limits]
 bash_output_max_bytes = "unlimited"
 read_max_output_bytes = "unlimited"
+edit_max_file_bytes = "unlimited"
 read_max_line_bytes = "unlimited"
 "#,
     );
@@ -2227,6 +2273,7 @@ api_key_env = "MY_KEY"
     let tool = loaded.limits.tool_limits;
     assert_eq!(tool.bash_output_max_bytes, None);
     assert_eq!(tool.read_max_output_bytes, None);
+    assert_eq!(tool.edit_max_file_bytes, None);
     assert_eq!(tool.read_max_line_bytes, None);
     // Untouched keys keep their compiled defaults.
     assert_eq!(tool.bash_read_cap, Some(DEFAULT_BASH_READ_CAP as usize));
@@ -2454,6 +2501,7 @@ writable = ["~/.claude"]
 [limits]
 max_turns = 10
 bash_output_max_bytes = 50000
+edit_max_file_bytes = 16777216
 
 [profiles.review]
 default_model = "zen"

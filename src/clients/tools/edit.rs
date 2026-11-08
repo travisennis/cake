@@ -266,8 +266,8 @@ fn read_edit_file(
 ) -> Result<String, String> {
     let metadata = std::fs::metadata(path)
         .map_err(|e| format!("Failed to access file '{}': {e}", path.display()))?;
-    validate_edit_metadata(path, &metadata, limits.read_max_output_bytes)?;
-    let file_bytes = read_edit_bytes(path, limits.read_max_output_bytes)?;
+    validate_edit_metadata(path, &metadata, limits.edit_max_file_bytes)?;
+    let file_bytes = read_edit_bytes(path, limits.edit_max_file_bytes)?;
     validate_edit_bytes(path, &file_bytes)
 }
 
@@ -334,7 +334,7 @@ fn validate_edit_bytes(path: &Path, file_bytes: &[u8]) -> Result<String, String>
 
 fn oversized_file_error(path: &Path, size: u64, max_bytes: usize) -> String {
     format!(
-        "Cannot edit file '{}': file is {size} bytes, exceeding the configured Edit read limit of {max_bytes} bytes. Increase [limits].read_max_output_bytes or edit a smaller file.",
+        "Cannot edit file '{}': file is {size} bytes, exceeding the configured Edit input limit of {max_bytes} bytes. Increase [limits].edit_max_file_bytes or edit a smaller file.",
         path.display()
     )
 }

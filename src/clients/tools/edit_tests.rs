@@ -2,8 +2,6 @@ use super::*;
 use std::fs;
 use tempfile::TempDir;
 
-use crate::config::settings::DEFAULT_READ_MAX_OUTPUT_BYTES;
-
 // =========================================================================
 // Multiple Edits Tests
 // =========================================================================
@@ -778,11 +776,13 @@ fn delete_text_with_empty_new_text() {
 }
 
 #[test]
-fn edit_rejects_file_larger_than_read_limit_before_mutation() {
+fn edit_rejects_file_one_byte_over_edit_limit_before_mutation() {
     let temp_dir = TempDir::new().unwrap();
     let file_path = temp_dir.path().join("large.txt");
-    let max_bytes = DEFAULT_READ_MAX_OUTPUT_BYTES as usize;
-    let original = format!("target{}", "x".repeat(max_bytes));
+    let max_bytes = 64;
+    let file_size = max_bytes + 1;
+    let original = format!("target{}", "x".repeat(file_size - "target".len()));
+    assert_eq!(original.len(), file_size);
     fs::write(&file_path, &original).unwrap();
 
     let args = serde_json::json!({
@@ -793,24 +793,32 @@ fn edit_rejects_file_larger_than_read_limit_before_mutation() {
     })
     .to_string();
 
-    let err = execute_edit(&ToolContext::from_current_process(), &args).unwrap_err();
+    let mut limits = crate::config::settings::ToolLimits::defaults();
+    limits.edit_max_file_bytes = Some(max_bytes);
+    let context = ToolContext::from_current_process().with_limits(limits);
+
+    let err = execute_edit(&context, &args).unwrap_err();
     assert!(
-        err.contains("exceeding the configured Edit read limit"),
+        err.contains("exceeding the configured Edit input limit"),
         "Error should explain the size limit: {err}"
     );
     assert!(
-        err.contains(&format!("{max_bytes} bytes")),
+        err.contains(&format!("file is {file_size} bytes")),
+        "Error should include the actual file size: {err}"
+    );
+    assert!(
+        err.contains(&format!("limit of {max_bytes} bytes")),
         "Error should include the configured limit: {err}"
     );
     assert!(
-        err.contains("Increase [limits].read_max_output_bytes"),
+        err.contains("Increase [limits].edit_max_file_bytes"),
         "Error should provide a recovery path: {err}"
     );
     assert_eq!(fs::read_to_string(&file_path).unwrap(), original);
 }
 
 #[test]
-fn edit_accepts_file_at_read_limit() {
+fn edit_accepts_file_at_edit_limit_when_read_cap_is_lower() {
     let temp_dir = TempDir::new().unwrap();
     let file_path = temp_dir.path().join("boundary.txt");
     let max_bytes = 64;
@@ -826,10 +834,12 @@ fn edit_accepts_file_at_read_limit() {
     })
     .to_string();
     let mut limits = crate::config::settings::ToolLimits::defaults();
-    limits.read_max_output_bytes = Some(max_bytes);
+    limits.edit_max_file_bytes = Some(max_bytes);
+    limits.read_max_output_bytes = Some(1);
     let context = ToolContext::from_current_process().with_limits(limits);
 
-    execute_edit(&context, &args).expect("a file exactly at the limit should be editable");
+    execute_edit(&context, &args)
+        .expect("a file exactly at the Edit limit should be editable even when Read is narrower");
     assert_eq!(
         fs::read_to_string(&file_path).unwrap(),
         format!("changed{}", "x".repeat(max_bytes - "target".len()))
@@ -851,7 +861,7 @@ fn error_on_binary_file() {
     .to_string();
 
     let mut limits = crate::config::settings::ToolLimits::defaults();
-    limits.read_max_output_bytes = Some(7);
+    limits.edit_max_file_bytes = Some(7);
     let context = ToolContext::from_current_process().with_limits(limits);
     let result = execute_edit(&context, &args);
     assert!(result.is_err());
@@ -899,7 +909,7 @@ fn error_on_invalid_utf8_file() {
     .to_string();
 
     let mut limits = crate::config::settings::ToolLimits::defaults();
-    limits.read_max_output_bytes = Some(invalid.len());
+    limits.edit_max_file_bytes = Some(invalid.len());
     let context = ToolContext::from_current_process().with_limits(limits);
     let result = execute_edit(&context, &args);
     assert!(result.is_err());

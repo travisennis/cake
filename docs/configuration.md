@@ -126,7 +126,7 @@ Relative `system_prompt`, `skills.path`, `directories`, and `[sandbox]` values r
 
 ## Limits
 
-The optional `[limits]` section bounds the agent loop and the tool output budgets. A limit is a positive integer, or the string `"unlimited"` to mean no cap:
+The optional `[limits]` section bounds the agent loop and tool resource use. A limit is a positive integer, or the string `"unlimited"` to mean no cap:
 
 ```toml
 [limits]
@@ -139,6 +139,7 @@ max_turns = "unlimited"  # explicit opt-out; overrides a global cap
 [profiles.review.limits]
 max_turns = 10
 read_max_output_bytes = "unlimited"
+edit_max_file_bytes = 2097152  # 2 MiB for this profile
 ```
 
 An absent key inherits the lower-precedence value. An explicit `"unlimited"` removes that value's cap.
@@ -158,9 +159,9 @@ max_tool_calls = 50   # stop after 50 executed tool calls
 
 The limits combine; whichever fires first stops the loop. The stop is reported as `limit_exceeded` in the `task_complete` record and completion JSON, and as a distinct error in text mode.
 
-### Tool output budgets
+### Tool limits
 
-Tool limits have built-in defaults. Output budgets accept `"unlimited"`; Bash session safety limits require positive integers.
+Tool limits have built-in defaults. Byte caps accept `"unlimited"`; Bash session safety limits require positive integers.
 
 ```toml
 [limits]
@@ -171,7 +172,8 @@ bash_session_max = 16                    # Concurrent running commands
 bash_session_max_seconds = 3600          # Hard wall clock per command
 bash_session_exited_ttl_seconds = 600    # Retention after exit
 read_default_end_line = 500     # Read default window (lines; default 500)
-read_max_output_bytes = 100000  # Read output and Edit input cap (bytes; default 100000)
+read_max_output_bytes = 100000  # Read output cap (bytes; default 100000)
+edit_max_file_bytes = 16777216  # Edit input-file cap (bytes; default 16 MiB)
 read_max_line_bytes = 10000     # Read per-line cap (bytes; default 10000)
 read_image_max_bytes = 5242880  # ReadImage image cap (bytes; default 5 MiB)
 hook_output_limit = 65536       # Hook stdout/stderr cap per hook (bytes; default 65536)
@@ -184,12 +186,13 @@ hook_output_limit = 65536       # Hook stdout/stderr cap per hook (bytes; defaul
 - `bash_session_max_seconds`: hard wall clock in seconds; reaching it terminates the process group.
 - `bash_session_exited_ttl_seconds`: seconds a completed session remains available for late or repeated reads, subject to the completed-session count cap.
 - `read_default_end_line`: default Read window in lines when the model omits `end_line`. The compiled default is 500. `"unlimited"` reads to the end of the file.
-- `read_max_output_bytes`: maximum bytes of Read output before line-aligned truncation with a `continue with start_line=...` resume hint, and maximum bytes of an input file Edit will read. A byte-cap stop never delivers a partial line. `"unlimited"` disables both caps.
+- `read_max_output_bytes`: maximum bytes of Read output before line-aligned truncation with a `continue with start_line=...` resume hint. A byte-cap stop never delivers a partial line. `"unlimited"` disables the cap.
+- `edit_max_file_bytes`: maximum bytes of an input file Edit will read. Edit checks the file size before reading and rejects a larger file without truncating or modifying it. This limit is independent of `read_max_output_bytes`. The compiled default is 16 MiB (16,777,216 bytes). `"unlimited"` disables the cap.
 - `read_max_line_bytes`: maximum bytes delivered for a single Read line before it is truncated with a marker at a UTF-8 boundary. The cap bounds memory for newline-free giant lines. `"unlimited"` re-enables reading a whole line into memory, which can starve memory for such a file.
 - `read_image_max_bytes`: maximum bytes of an image the ReadImage tool will read and send to the provider. A larger file is rejected with a model-visible error, and the read itself stops at the cap. An image whose longest edge exceeds 2048 pixels is downscaled before sending, so a large screenshot reaches the model as a readable picture instead of a rejected request. `"unlimited"` disables the cap.
 - `hook_output_limit`: maximum bytes of hook stdout and stderr captured per hook invocation. `"unlimited"` disables truncation.
 
-When a project overrides a global budget back to no cap, `"unlimited"` is the explicit value that does so.
+When a project overrides a global limit back to no cap, `"unlimited"` is the explicit value that does so.
 
 ## Tool selection
 

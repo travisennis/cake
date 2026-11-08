@@ -256,9 +256,9 @@ const DEFAULT_SETTINGS: &str = r#"# Cake project settings, created by `cake init
 # [tools.bash.judge]
 # enabled = false
 
-# Optional limits bound the agent loop and the tool output budgets. The
+# Optional limits bound the agent loop and tool resource use. The
 # agent-loop keys are off by default: an uncapped loop is deliberate, and no
-# limit fires unless you configure one. The output-budget keys default to the
+# limit fires unless you configure one. Tool-limit keys default to the
 # compiled constants; overriding them changes tool behavior without a
 # release. A limit is a positive integer or "unlimited" (no cap). See
 # docs/configuration.md for the full contract. A selected profile can also set
@@ -275,7 +275,8 @@ const DEFAULT_SETTINGS: &str = r#"# Cake project settings, created by `cake init
 # bash_session_max_seconds = 3600          # Hard wall clock per command
 # bash_session_exited_ttl_seconds = 600    # Retention after exit
 # read_default_end_line = 500      # Read default window (lines)
-# read_max_output_bytes = 100000   # Read output and Edit input cap (bytes)
+# read_max_output_bytes = 100000   # Read output cap (bytes)
+# edit_max_file_bytes = 16777216   # Edit input-file cap (bytes)
 # read_max_line_bytes = 10000      # Read per-line cap (bytes; "unlimited" reads a whole line into memory)
 # hook_output_limit = 65536        # Hook stdout/stderr cap per hook (bytes)
 "#;

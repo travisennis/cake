@@ -660,10 +660,14 @@ pub struct LimitsSettingsOverlay {
     #[serde(default)]
     pub read_default_end_line: Option<Limit>,
     /// Maximum bytes of Read output before it is truncated at a line
-    /// boundary, and maximum bytes of input Edit will read. Absent uses the
-    /// compiled default of 100,000; `"unlimited"` disables both caps.
+    /// boundary. Absent uses the compiled default of 100,000; `"unlimited"`
+    /// disables the cap.
     #[serde(default)]
     pub read_max_output_bytes: Option<Limit>,
+    /// Maximum bytes of an input file Edit will read. Absent uses the
+    /// compiled default of 16 MiB; `"unlimited"` disables the cap.
+    #[serde(default)]
+    pub edit_max_file_bytes: Option<Limit>,
     /// Maximum bytes of one Read line delivered before it is truncated.
     /// Absent uses the compiled default of 10,000; `"unlimited"` re-enables
     /// reading a whole line into memory, which can starve memory for a
@@ -696,9 +700,9 @@ pub struct ResolvedLimits {
     pub tool_limits: ToolLimits,
 }
 
-/// Resolved limits for Bash, Read, and hook tools.
+/// Resolved limits for Bash, Read, Edit, and hook tools.
 ///
-/// Optional output budgets use `None` when the user configures `"unlimited"`.
+/// Optional byte caps use `None` when the user configures `"unlimited"`.
 /// Bash session bounds are mandatory positive values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ToolLimits {
@@ -713,9 +717,11 @@ pub struct ToolLimits {
     pub bash_session_exited_ttl_seconds: u64,
     /// Default Read window in lines (default 500).
     pub read_default_end_line: Option<usize>,
-    /// Maximum bytes of line-aligned Read output before truncation and of an
-    /// input file Edit will read (default 100,000).
+    /// Maximum bytes of line-aligned Read output before truncation (default
+    /// 100,000).
     pub read_max_output_bytes: Option<usize>,
+    /// Maximum bytes of an input file Edit will read (default 16 MiB).
+    pub edit_max_file_bytes: Option<usize>,
     /// Maximum bytes delivered for a single Read line (default 10,000).
     pub read_max_line_bytes: Option<usize>,
     /// Maximum bytes of an image `ReadImage` will read (default 5 MiB).
@@ -724,8 +730,8 @@ pub struct ToolLimits {
     pub hook_output_limit: Option<usize>,
 }
 
-/// Compiled defaults for the tool output budgets, used when the matching
-/// `[limits]` key is absent.
+/// Compiled defaults for the tool limits, used when the matching `[limits]`
+/// key is absent.
 pub const DEFAULT_BASH_OUTPUT_MAX_BYTES: u32 = 50_000;
 /// Compiled default for [`ToolLimits::bash_read_cap`]: 2× the inline cap so
 /// `truncate_output()` has enough data for a useful head+tail preview.
@@ -738,6 +744,10 @@ pub const DEFAULT_BASH_SESSION_EXITED_TTL_SECONDS: u32 = 600;
 pub const DEFAULT_READ_DEFAULT_END_LINE: u32 = 500;
 /// Compiled default for [`ToolLimits::read_max_output_bytes`].
 pub const DEFAULT_READ_MAX_OUTPUT_BYTES: u32 = 100_000;
+/// Compiled default for [`ToolLimits::edit_max_file_bytes`]: 16 MiB, large
+/// enough to edit ordinary source and data files while keeping whole-file
+/// reads bounded.
+pub const DEFAULT_EDIT_MAX_FILE_BYTES: u32 = 16 * 1024 * 1024;
 /// Compiled default for [`ToolLimits::read_max_line_bytes`], matching the
 /// constant it replaced in `src/clients/tools/read.rs`.
 pub const DEFAULT_READ_MAX_LINE_BYTES: u32 = 10_000;
@@ -761,6 +771,7 @@ impl ToolLimits {
             bash_session_exited_ttl_seconds: DEFAULT_BASH_SESSION_EXITED_TTL_SECONDS as u64,
             read_default_end_line: Some(DEFAULT_READ_DEFAULT_END_LINE as usize),
             read_max_output_bytes: Some(DEFAULT_READ_MAX_OUTPUT_BYTES as usize),
+            edit_max_file_bytes: Some(DEFAULT_EDIT_MAX_FILE_BYTES as usize),
             read_max_line_bytes: Some(DEFAULT_READ_MAX_LINE_BYTES as usize),
             read_image_max_bytes: Some(DEFAULT_READ_IMAGE_MAX_BYTES as usize),
             hook_output_limit: Some(DEFAULT_HOOK_OUTPUT_LIMIT as usize),
@@ -811,6 +822,10 @@ impl LimitsSettingsOverlay {
                 read_max_output_bytes: resolve_tool_limit(
                     self.read_max_output_bytes,
                     DEFAULT_READ_MAX_OUTPUT_BYTES,
+                ),
+                edit_max_file_bytes: resolve_tool_limit(
+                    self.edit_max_file_bytes,
+                    DEFAULT_EDIT_MAX_FILE_BYTES,
                 ),
                 read_max_line_bytes: resolve_tool_limit(
                     self.read_max_line_bytes,
@@ -1596,15 +1611,16 @@ impl SettingsLoader {
         }
     }
 
-    /// Merge the output-budget `[limits]` fields into the accumulator,
-    /// keeping [`Self::merge_limits`] at baseline complexity. Absent keys
-    /// keep lower-precedence values; an explicit `"unlimited"` overrides
-    /// back to no cap.
+    /// Merge the tool-limit `[limits]` fields into the accumulator, keeping
+    /// [`Self::merge_limits`] at baseline complexity. Absent keys keep
+    /// lower-precedence values; an explicit `"unlimited"` overrides back to
+    /// no cap.
     const fn merge_output_budgets(limits: &LimitsSettingsOverlay, acc: &mut SettingsAccumulator) {
         Self::merge_limit(&mut acc.bash_output_max_bytes, limits.bash_output_max_bytes);
         Self::merge_limit(&mut acc.bash_read_cap, limits.bash_read_cap);
         Self::merge_limit(&mut acc.read_default_end_line, limits.read_default_end_line);
         Self::merge_limit(&mut acc.read_max_output_bytes, limits.read_max_output_bytes);
+        Self::merge_limit(&mut acc.edit_max_file_bytes, limits.edit_max_file_bytes);
         Self::merge_limit(&mut acc.read_max_line_bytes, limits.read_max_line_bytes);
         Self::merge_limit(&mut acc.read_image_max_bytes, limits.read_image_max_bytes);
         Self::merge_limit(&mut acc.hook_output_limit, limits.hook_output_limit);
@@ -1853,6 +1869,7 @@ struct SettingsAccumulator {
     bash_session_exited_ttl_seconds: Option<PositiveLimit>,
     read_default_end_line: Option<Limit>,
     read_max_output_bytes: Option<Limit>,
+    edit_max_file_bytes: Option<Limit>,
     read_max_line_bytes: Option<Limit>,
     read_image_max_bytes: Option<Limit>,
     hook_output_limit: Option<Limit>,
@@ -1939,6 +1956,7 @@ impl SettingsAccumulator {
             bash_session_exited_ttl_seconds: self.bash_session_exited_ttl_seconds,
             read_default_end_line: self.read_default_end_line,
             read_max_output_bytes: self.read_max_output_bytes,
+            edit_max_file_bytes: self.edit_max_file_bytes,
             read_max_line_bytes: self.read_max_line_bytes,
             read_image_max_bytes: self.read_image_max_bytes,
             hook_output_limit: self.hook_output_limit,
