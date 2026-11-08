@@ -216,6 +216,7 @@ pub mod bash_gate_fixture;
 mod edit;
 mod file_access;
 mod json_repair;
+pub(in crate::clients) mod mcp;
 mod read;
 mod read_image;
 mod scheduling;
@@ -227,6 +228,7 @@ mod write;
 /// Crate-visible so `clients` can re-export it for hook payload parsing; the
 /// hook view of `tool_input` must use the same repair pass as executors (#185).
 pub use json_repair::repair_json_args;
+pub(super) use mcp::mcp_tool_entry;
 pub use read::extract_path as read_extract_path;
 pub(super) use scheduling::{ScheduledToolCall, schedule_tool_calls};
 pub(super) use toolbox::toolbox_tool_entry;
@@ -1510,9 +1512,42 @@ fn execute_write_tool(
 /// none. `supports_images` reports whether the resolved model accepts image
 /// input; a tool that sends pixels (such as `ReadImage`) is omitted when it is
 /// false, so the prompt never advertises a tool the model cannot use.
+#[cfg(test)]
 pub fn format_tool_list_section(
     sandbox_policy: SandboxPolicy,
     toolbox_tools: &[crate::config::toolbox::ToolboxTool],
+    enabled_tools: Option<&[String]>,
+    supports_images: bool,
+) -> String {
+    format_tool_list_section_with_mcp(
+        sandbox_policy,
+        toolbox_tools,
+        &[],
+        enabled_tools,
+        supports_images,
+    )
+}
+
+/// One tool discovered from an external server, for prompt listing.
+///
+/// This is deliberately independent of the live MCP connection so prompt
+/// assembly and its tests need no running server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExternalToolInfo {
+    /// Registered model-visible name.
+    pub name: String,
+    /// Description advertised by the server.
+    pub description: String,
+}
+
+/// Format the tool list, including tools discovered from MCP servers.
+///
+/// `mcp_tools` is empty under the read-only policy, matching the registry's
+/// filtering of external tools.
+pub fn format_tool_list_section_with_mcp(
+    sandbox_policy: SandboxPolicy,
+    toolbox_tools: &[crate::config::toolbox::ToolboxTool],
+    mcp_tools: &[ExternalToolInfo],
     enabled_tools: Option<&[String]>,
     supports_images: bool,
 ) -> String {
@@ -1531,6 +1566,9 @@ pub fn format_tool_list_section(
     let has_toolbox_tools = toolbox_lines
         .iter()
         .any(|tool| is_enabled_tool(&tool.registered_name, enabled_tools));
+    let has_mcp_tools = mcp_tools
+        .iter()
+        .any(|tool| is_enabled_tool(&tool.name, enabled_tools));
     for (name, desc) in registry
         .definitions()
         .iter()
@@ -1541,6 +1579,12 @@ pub fn format_tool_list_section(
                 .filter(|tool| is_enabled_tool(&tool.registered_name, enabled_tools))
                 .map(|tool| (&tool.registered_name, &tool.description)),
         )
+        .chain(
+            mcp_tools
+                .iter()
+                .filter(|tool| is_enabled_tool(&tool.name, enabled_tools))
+                .map(|tool| (&tool.name, &tool.description)),
+        )
     {
         let first_sentence = desc
             .split('.')
@@ -1550,7 +1594,7 @@ pub fn format_tool_list_section(
             .trim_end_matches('.');
         _ = writeln!(s, "- **{name}**: {first_sentence}.");
     }
-    let has_tools = has_any_enabled_tools(&registry, has_toolbox_tools);
+    let has_tools = has_any_enabled_tools(&registry, has_toolbox_tools, has_mcp_tools);
     if has_tools {
         s.push_str(
             "\nEvery tool call may include an optional `intent` string: one short, \
@@ -1562,8 +1606,12 @@ pub fn format_tool_list_section(
     s
 }
 
-fn has_any_enabled_tools(registry: &ToolRegistry, has_toolbox_tools: bool) -> bool {
-    !registry.definitions().is_empty() || has_toolbox_tools
+fn has_any_enabled_tools(
+    registry: &ToolRegistry,
+    has_toolbox_tools: bool,
+    has_mcp_tools: bool,
+) -> bool {
+    !registry.definitions().is_empty() || has_toolbox_tools || has_mcp_tools
 }
 
 fn append_tool_availability_footer(s: &mut String, has_tools: bool) {
@@ -2228,6 +2276,38 @@ mod tests {
             true,
         );
         assert!(result.contains("- **tb__run_tests**: Run the test suite.\n"));
+    }
+
+    fn fixture_mcp_tool() -> ExternalToolInfo {
+        ExternalToolInfo {
+            name: "mcp__safari-mcp__list_tabs".to_string(),
+            description: "List open tabs. Extra detail.".to_string(),
+        }
+    }
+
+    #[test]
+    fn format_tool_list_section_includes_mcp_tools() {
+        let result = format_tool_list_section_with_mcp(
+            SandboxPolicy::WorkspaceWrite,
+            &[],
+            &[fixture_mcp_tool()],
+            None,
+            false,
+        );
+        assert!(result.contains("- **mcp__safari-mcp__list_tabs**: List open tabs.\n"));
+    }
+
+    #[test]
+    fn format_tool_list_section_filters_mcp_tools_by_selection() {
+        let selected = ["Read".to_string()];
+        let result = format_tool_list_section_with_mcp(
+            SandboxPolicy::WorkspaceWrite,
+            &[],
+            &[fixture_mcp_tool()],
+            Some(&selected),
+            false,
+        );
+        assert!(!result.contains("mcp__safari-mcp__list_tabs"));
     }
 
     #[test]

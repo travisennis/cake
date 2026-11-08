@@ -2,7 +2,7 @@
 
 cake is a headless AI coding assistant for the terminal. It behaves like a Unix filter: provide a task, let the model inspect and modify the working tree, receive the result, and exit.
 
-Cake supports OpenAI-compatible Chat Completions and Responses APIs, sandboxed tool execution, persisted conversations, machine-readable output, project instructions, hooks, skills, and user-defined tools.
+Cake supports OpenAI-compatible Chat Completions and Responses APIs, sandboxed tool execution, persisted conversations, machine-readable output, project instructions, hooks, skills, user-defined tools, and Model Context Protocol servers over stdio.
 
 ## Install
 
@@ -37,7 +37,7 @@ Then export the API key named by `api_key_env`:
 export OPENROUTER_API_KEY="..."
 ```
 
-Model definitions are global-only. Project settings may be placed in `.cake/settings.toml`, but a project may only select a global model by name; a project `[[models]]` entry is rejected. Low-authority project settings load without a trust record; authority-bearing settings (sandbox grants, gates, `system_prompt`, `skills.path`), project hooks, and project toolbox executables require `cake trust`. Run `cake trust` after reviewing a checkout, or use `--trust-project` for one CI invocation and `--no-project-config` to ignore project `.cake/` configuration. See [Configuration](docs/configuration.md#project-trust) for the trust classes, model fields, precedence, profiles, skills, prompts, hooks, and toolbox tools.
+Model definitions are global-only. Project settings may be placed in `.cake/settings.toml`, but a project may only select a global model by name; a project `[[models]]` entry is rejected. Low-authority project settings load without a trust record; authority-bearing settings (sandbox grants, gates, `system_prompt`, `skills.path`), project hooks, project toolbox executables, and project MCP servers require `cake trust`. Run `cake trust` after reviewing a checkout, or use `--trust-project` for one CI invocation and `--no-project-config` to ignore project `.cake/` configuration. See [Configuration](docs/configuration.md#project-trust) for the trust classes, model fields, precedence, profiles, skills, prompts, hooks, toolbox tools, and MCP servers.
 
 ## Use cake
 
@@ -99,7 +99,7 @@ cake --output-schema result.schema.json "Return structured findings"
 
 Model-generated Bash commands use `workspace-write` sandboxing by default. Select `read-only`, `workspace-write`, `workspace-write-interactive` (macOS app launching and automation), or `danger-full-access` with `--sandbox`.
 
-The sandbox is a filesystem boundary, not a network boundary. Trusted hooks and toolbox executables run outside the Bash sandbox; project hooks and project toolbox executables require an explicit trust record. Read [Security](docs/security.md) before changing permissions or enabling extensions.
+The sandbox is a filesystem boundary, not a network boundary. Trusted hooks, toolbox executables, and MCP servers run outside the Bash sandbox; project hooks, project toolbox executables, and project MCP servers require an explicit trust record. Read [Security](docs/security.md) before changing permissions or enabling extensions.
 
 ## Project instructions and extensions
 
@@ -107,6 +107,7 @@ The sandbox is a filesystem boundary, not a network boundary. Trusted hooks and 
 - `SKILL.md` files provide instructions loaded on demand.
 - `hooks.json` files run local commands at lifecycle events.
 - Toolbox executables register additional `tb__*` tools.
+- `mcp.json` files register tools from Model Context Protocol servers as `mcp__*` tools.
 - `system.md` can replace the built-in system prompt.
 
 Configuration and precedence are in [Configuration](docs/configuration.md); extension protocols are in [Integrations](docs/integrations.md).

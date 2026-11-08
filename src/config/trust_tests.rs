@@ -403,8 +403,8 @@ fn symlinked_authority_paths_are_rejected() {
 }
 
 #[test]
-fn symlinked_hooks_and_toolbox_entries_are_rejected() {
-    for relative in [".cake/hooks.json", ".cake/tools/tool"] {
+fn symlinked_hooks_toolbox_and_mcp_entries_are_rejected() {
+    for relative in [".cake/hooks.json", ".cake/tools/tool", ".cake/mcp.json"] {
         let root = project();
         let config_dir = config();
         let external = project();
@@ -849,7 +849,7 @@ fn trust_record_helpers_reject_wrong_root_and_version() {
 }
 
 #[test]
-fn hook_and_toolbox_files_are_authority_sources() {
+fn hook_toolbox_and_mcp_files_are_authority_sources() {
     let root = project();
     let config_dir = config();
     write_project_file(
@@ -863,6 +863,11 @@ fn hook_and_toolbox_files_are_authority_sources() {
         r#"{"version":1,"hooks":{}}"#,
     );
     write_project_file(root.path(), ".cake/tools/lint", "#!/bin/sh\nexit 0\n");
+    write_project_file(
+        root.path(),
+        ".cake/mcp.json",
+        r#"{"mcpServers":{"safe":{"command":"true"}}}"#,
+    );
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -884,10 +889,15 @@ fn hook_and_toolbox_files_are_authority_sources() {
         vec![
             ".cake/hooks.json",
             ".cake/hooks.local.json",
-            ".cake/tools/lint"
+            ".cake/tools/lint",
+            ".cake/mcp.json"
         ]
     );
     assert_eq!(snapshot.hook_files.len(), 2);
+    assert_eq!(
+        snapshot.mcp_bytes.as_deref(),
+        Some(br#"{"mcpServers":{"safe":{"command":"true"}}}"#.as_slice())
+    );
     assert_eq!(
         snapshot
             .hook_files

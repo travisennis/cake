@@ -250,6 +250,9 @@ pub enum AuthorityKind {
     Settings,
     /// `.cake/hooks.json` or `.cake/hooks.local.json`.
     Hooks,
+    /// `.cake/mcp.json`, which starts MCP server executables.
+    #[serde(rename = "mcp_config")]
+    McpConfig,
     /// A regular file under `.cake/tools/`.
     #[serde(rename = "toolbox")]
     ToolboxFile,
@@ -704,6 +707,8 @@ pub struct ProjectConfigSnapshot {
     pub settings: Option<SettingsSource>,
     /// `.cake/hooks.json` and `.cake/hooks.local.json` bytes.
     pub hook_files: Vec<HookFileSource>,
+    /// Exact `.cake/mcp.json` bytes.
+    pub mcp_bytes: Option<Vec<u8>>,
     /// Authority-bearing files and keys.
     pub authority: Vec<AuthoritySource>,
     /// Where the persistent record lives.
@@ -750,6 +755,7 @@ impl ProjectConfigSnapshot {
             manifest: scan.manifest,
             settings,
             hook_files: scan.hook_files,
+            mcp_bytes: scan.mcp_bytes,
             authority,
             record_path,
             warnings: scan.warnings,
@@ -827,6 +833,14 @@ impl ProjectConfigSnapshot {
             keys: Vec::new(),
             executable: file.executable,
         }));
+        if scan.mcp_bytes.is_some() {
+            authority.push(AuthoritySource {
+                path: ".cake/mcp.json".to_string(),
+                kind: AuthorityKind::McpConfig,
+                keys: Vec::new(),
+                executable: false,
+            });
+        }
         authority
     }
 
@@ -844,6 +858,7 @@ impl ProjectConfigSnapshot {
             manifest: ProjectManifest::default(),
             settings: None,
             hook_files: Vec::new(),
+            mcp_bytes: None,
             authority: Vec::new(),
             record_path,
             warnings: Vec::new(),
@@ -929,6 +944,7 @@ struct CakeScan {
     settings_bytes: Option<Vec<u8>>,
     hook_files: Vec<HookFileSource>,
     toolbox_files: Vec<TrustedFile>,
+    mcp_bytes: Option<Vec<u8>>,
     warnings: Vec<String>,
 }
 
@@ -939,6 +955,7 @@ impl CakeScan {
             settings_bytes: None,
             hook_files: Vec::new(),
             toolbox_files: Vec::new(),
+            mcp_bytes: None,
             warnings: Vec::new(),
         }
     }
@@ -963,6 +980,7 @@ pub fn scan_project_cake(project_root: &Path) -> Result<ProjectConfigSnapshotFil
                 settings_bytes: None,
                 hook_files: Vec::new(),
                 toolbox_files: Vec::new(),
+                mcp_bytes: None,
                 warnings: Vec::new(),
             });
         },
@@ -992,6 +1010,7 @@ pub fn scan_project_cake(project_root: &Path) -> Result<ProjectConfigSnapshotFil
         settings_bytes: scan.settings_bytes,
         hook_files: scan.hook_files,
         toolbox_files: scan.toolbox_files,
+        mcp_bytes: scan.mcp_bytes,
         warnings: scan.warnings,
     })
 }
@@ -1007,6 +1026,8 @@ pub struct ProjectConfigSnapshotFiles {
     pub hook_files: Vec<HookFileSource>,
     /// Toolbox files under `.cake/tools/`.
     pub toolbox_files: Vec<TrustedFile>,
+    /// Exact `.cake/mcp.json` bytes, when present.
+    pub mcp_bytes: Option<Vec<u8>>,
     /// Non-authority symlinks that were skipped.
     pub warnings: Vec<String>,
 }
@@ -1100,6 +1121,8 @@ fn visit_file(
         scan.hook_files.push(HookFileSource { path, bytes });
     } else if relative == ".cake/settings.toml" {
         scan.settings_bytes = Some(bytes);
+    } else if relative == ".cake/mcp.json" {
+        scan.mcp_bytes = Some(bytes);
     }
     if relative.starts_with(".cake/tools/") {
         scan.toolbox_files.push(trusted.clone());
@@ -1113,9 +1136,9 @@ fn is_authority_path(relative: &str) -> bool {
     is_authority_file(relative) || relative == ".cake/tools" || relative.starts_with(".cake/tools/")
 }
 
-/// Whether a path is a settings or hook file.
+/// Whether a path is a settings, hook, or MCP configuration file.
 fn is_authority_file(relative: &str) -> bool {
-    relative == ".cake/settings.toml" || is_hook_file(relative)
+    relative == ".cake/settings.toml" || is_hook_file(relative) || relative == ".cake/mcp.json"
 }
 
 fn is_hook_file(relative: &str) -> bool {
@@ -1165,6 +1188,7 @@ fn is_authority_os_path(root: &Path, path: &Path) -> bool {
     path == cake.join("settings.toml")
         || path == cake.join("hooks.json")
         || path == cake.join("hooks.local.json")
+        || path == cake.join("mcp.json")
         || path.starts_with(cake.join("tools"))
 }
 

@@ -10,8 +10,10 @@ use crate::clients::agent_observer::AgentObserver;
 use crate::clients::agent_runner::AgentRunner;
 use crate::clients::agent_state::{ConversationState, accumulate_usage};
 use crate::clients::backend::Backend;
+use crate::clients::mcp::McpServer;
 use crate::clients::tools::{
-    SandboxPolicy, ToolContext, ToolRegistry, default_tool_registry, toolbox_tool_entry,
+    SandboxPolicy, ToolContext, ToolRegistry, default_tool_registry, mcp_tool_entry,
+    toolbox_tool_entry,
 };
 use crate::config::model::ResolvedModelConfig;
 use crate::config::output_schema::OutputSchema;
@@ -315,6 +317,48 @@ impl Agent {
         }) {
             self.tools
                 .push_entry(toolbox_tool_entry(tool, self.session_id));
+        }
+        self
+    }
+
+    /// Registers tools discovered from MCP servers (`mcp__*`).
+    ///
+    /// MCP servers are trusted external processes, like toolbox tools, so they
+    /// are never registered under the read-only sandbox policy. Each entry
+    /// captures the server connection, so the process stays alive for the run
+    /// and every tool call shares one JSON-RPC transport.
+    pub fn with_mcp_servers(mut self, servers: Vec<McpServer>) -> Self {
+        if self.tool_context.sandbox_policy == SandboxPolicy::ReadOnly {
+            return self;
+        }
+        let supports_images = self.config.model_config.supports_images;
+        let enabled_tool_names = self.enabled_tool_names.clone();
+        for server in servers {
+            let server_name = server.name.clone();
+            let client = Arc::clone(&server.client);
+            for tool in &server.tools {
+                let enabled = enabled_tool_names
+                    .as_ref()
+                    .is_none_or(|names| names.iter().any(|name| name == &tool.registered_name));
+                if enabled {
+                    if self.tools.has(&tool.registered_name) {
+                        tracing::warn!(
+                            target: "cake",
+                            "MCP server '{}' tool '{}' collides with an existing registered tool '{}'; skipping it",
+                            server_name,
+                            tool.name,
+                            tool.registered_name
+                        );
+                        continue;
+                    }
+                    self.tools.push_entry(mcp_tool_entry(
+                        &server_name,
+                        tool,
+                        Arc::clone(&client),
+                        supports_images,
+                    ));
+                }
+            }
         }
         self
     }

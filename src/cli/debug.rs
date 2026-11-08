@@ -1,13 +1,19 @@
 use crate::cli::{
-    CHECK_SETTINGS_LOAD_FAILED, CmdRunner, CommandRunOptions, DiagnosticDocument, report_failure,
-    settings_warnings,
+    CHECK_MCP_CONFIG, CHECK_MCP_SERVER, CHECK_SETTINGS_LOAD_FAILED, CmdRunner, CommandRunOptions,
+    DiagnosticCheck, DiagnosticDocument, report_failure, settings_warnings,
 };
+use crate::clients::mcp::connect_server;
+use crate::config::mcp::discover_mcp_servers;
 use crate::config::model::ApiType;
 use crate::config::settings::{LoadedSettings, SettingsLoad};
 use crate::config::skills::{discover_skills_with_paths, parse_skill_path_list};
 use crate::config::trust::{ProjectTrustReport, TrustState};
 use crate::config::{DataDir, ModelDefinition, SettingsLoader};
 use clap::{Parser, Subcommand};
+use serde::Serialize;
+use serde_json::json;
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
 
 /// Debug and introspection commands.
 #[derive(Clone, Debug, Parser)]
@@ -47,6 +53,19 @@ Examples:
         #[arg(long, default_value_t = false)]
         json: bool,
     },
+    /// Connect to configured MCP servers and list their tools
+    #[command(after_help = "\
+Examples:
+  cake debug mcp
+  cake debug mcp --json | jq '.data.servers[].tools[].registered_name'")]
+    Mcp {
+        /// Output the server and tool inventory as one diagnostic JSON document
+        #[arg(long, default_value_t = false)]
+        json: bool,
+        /// Load MCP server definitions from this file as well. Can be repeated.
+        #[arg(long, value_name = "PATH")]
+        mcp_config: Vec<PathBuf>,
+    },
 }
 
 impl CmdRunner for DebugCommand {
@@ -55,7 +74,7 @@ impl CmdRunner for DebugCommand {
         _data_dir: &DataDir,
         options: &CommandRunOptions<'_>,
     ) -> anyhow::Result<()> {
-        // CmdRunner is asynchronous, although this command has no async work.
+        // CmdRunner is asynchronous, although some commands have no async work.
         std::future::ready(()).await;
         match &self.command {
             DebugSubcommand::Skills {
@@ -71,6 +90,7 @@ impl CmdRunner for DebugCommand {
                 options,
             ),
             DebugSubcommand::Models { json } => run_models(*json, options),
+            DebugSubcommand::Mcp { json, mcp_config } => run_mcp(*json, mcp_config, options).await,
         }
     }
 }
@@ -174,6 +194,219 @@ fn run_skills(
         catalog.size_report(catalog_budget, description_budget)
     );
     Ok(())
+}
+
+/// One resolved server row in the `debug mcp` report.
+#[derive(Debug, Serialize)]
+struct McpServerReport {
+    name: String,
+    command: String,
+    args: Vec<String>,
+    env: Vec<String>,
+    source: String,
+    timeout_secs: u64,
+    status: &'static str,
+    protocol_version: Option<String>,
+    server_info: Option<String>,
+    error: Option<String>,
+    tools: Vec<McpToolReport>,
+}
+
+/// One discovered tool in the `debug mcp` report.
+#[derive(Debug, Serialize)]
+struct McpToolReport {
+    name: String,
+    registered_name: String,
+    description: String,
+    has_output_schema: bool,
+}
+
+/// Connect to every configured MCP server and report the tool inventory.
+///
+/// Connecting is the point of the command: a server's tools are its own
+/// runtime output, so a configuration-only listing could not tell a user
+/// whether the server actually works.
+async fn run_mcp(
+    json_output: bool,
+    mcp_config: &[PathBuf],
+    options: &CommandRunOptions<'_>,
+) -> anyhow::Result<()> {
+    let load = load_settings("debug mcp", json_output, options)?;
+    let current_dir = std::env::current_dir()
+        .map_err(|error| anyhow::anyhow!("Failed to get current directory: {error}"))?;
+    let mcp_config =
+        resolve_mcp_config_paths(mcp_config, &current_dir, options.project_config_mode);
+    let discovery = discover_mcp_servers(
+        &mcp_config,
+        &current_dir,
+        &crate::config::config_dir(),
+        &current_dir,
+        &load.trust,
+        options.project_config_mode,
+        load.mcp_config_bytes.as_deref(),
+    )
+    .map_err(|error| report_failure(json_output, "debug mcp", CHECK_MCP_CONFIG, error.into()))?;
+
+    let reports = collect_mcp_reports(&discovery.servers, &current_dir).await;
+    let checks = mcp_checks(&discovery.warnings, &reports);
+
+    if json_output {
+        print_mcp_document(&reports, checks);
+    } else {
+        print_mcp_text(&discovery.warnings, &reports);
+    }
+    Ok(())
+}
+
+/// Resolve explicit config paths, filtering project-local ones when project
+/// configuration is disabled.
+fn resolve_mcp_config_paths(
+    mcp_config: &[PathBuf],
+    current_dir: &Path,
+    mode: crate::config::trust::ProjectConfigMode,
+) -> Vec<PathBuf> {
+    if mode == crate::config::trust::ProjectConfigMode::Ignore {
+        crate::config::mcp::filter_project_mcp_paths(mcp_config.to_vec(), &[current_dir])
+    } else {
+        mcp_config.to_vec()
+    }
+}
+
+/// Connect to each configured server in order and collect its report.
+async fn collect_mcp_reports(
+    servers: &[crate::config::mcp::McpServerConfig],
+    current_dir: &Path,
+) -> Vec<McpServerReport> {
+    let mut reports = Vec::new();
+    for config in servers {
+        reports.push(report_server(config, current_dir).await);
+    }
+    reports
+}
+
+/// Build the diagnostic findings from configuration warnings and failed
+/// servers.
+fn mcp_checks(warnings: &[String], reports: &[McpServerReport]) -> Vec<DiagnosticCheck> {
+    let mut checks: Vec<DiagnosticCheck> = warnings
+        .iter()
+        .map(|warning| DiagnosticCheck::warning(CHECK_MCP_CONFIG, warning.clone()))
+        .collect();
+    checks.extend(reports.iter().filter_map(|report| {
+        report.error.as_ref().map(|error| {
+            DiagnosticCheck::warning(
+                CHECK_MCP_SERVER,
+                format!("MCP server '{}' failed: {error}", report.name),
+            )
+        })
+    }));
+    checks
+}
+
+/// Emit the machine-readable inventory document.
+fn print_mcp_document(reports: &[McpServerReport], checks: Vec<DiagnosticCheck>) {
+    let ready = reports
+        .iter()
+        .filter(|report| report.status == "ready")
+        .count();
+    let tool_count: usize = reports.iter().map(|report| report.tools.len()).sum();
+    let document = DiagnosticDocument::new(
+        "debug mcp",
+        json!({
+            "count": reports.len(),
+            "ready": ready,
+            "tool_count": tool_count,
+        }),
+        checks,
+        json!({ "servers": reports }),
+    );
+    document.print();
+}
+
+/// Emit warnings on stderr and the human-readable inventory on stdout.
+fn print_mcp_text(warnings: &[String], reports: &[McpServerReport]) {
+    for warning in warnings {
+        eprintln!("warning: {warning}");
+    }
+    print!("{}", format_mcp_report(reports));
+}
+
+/// Connect one server and collect its report. A failed server is data, not a
+/// command failure: the other servers still tell the user something useful.
+async fn report_server(
+    config: &crate::config::mcp::McpServerConfig,
+    current_dir: &Path,
+) -> McpServerReport {
+    let mut report = McpServerReport {
+        name: config.name.clone(),
+        command: config.command.clone(),
+        args: config.args.clone(),
+        env: config.env.keys().cloned().collect(),
+        source: config.source.display().to_string(),
+        timeout_secs: config.timeout_secs,
+        status: "failed",
+        protocol_version: None,
+        server_info: None,
+        error: None,
+        tools: Vec::new(),
+    };
+    match connect_server(config, current_dir).await {
+        Ok(server) => {
+            report.status = "ready";
+            report.protocol_version = Some(server.protocol_version.clone());
+            report.server_info = server.server_info.clone();
+            report.tools = server
+                .tools
+                .iter()
+                .map(|tool| McpToolReport {
+                    name: tool.name.clone(),
+                    registered_name: tool.registered_name.clone(),
+                    description: tool.description.clone(),
+                    has_output_schema: tool.output_schema.is_some(),
+                })
+                .collect();
+            server.shutdown().await;
+        },
+        Err(error) => report.error = Some(error),
+    }
+    report
+}
+
+/// Render the human-readable `debug mcp` report.
+fn format_mcp_report(reports: &[McpServerReport]) -> String {
+    if reports.is_empty() {
+        return "No MCP servers configured.\n".to_string();
+    }
+    let mut output = String::from("MCP servers\n");
+    for report in reports {
+        output.push('\n');
+        _ = writeln!(output, "{} ({})", report.name, report.status);
+        _ = writeln!(output, "  source: {}", report.source);
+        let command = std::iter::once(report.command.as_str())
+            .chain(report.args.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" ");
+        _ = writeln!(output, "  command: {command}");
+        _ = writeln!(output, "  timeout: {}s", report.timeout_secs);
+        if !report.env.is_empty() {
+            _ = writeln!(output, "  env: {}", report.env.join(", "));
+        }
+        if let Some(version) = &report.protocol_version {
+            _ = writeln!(output, "  protocol: {version}");
+        }
+        if let Some(info) = &report.server_info {
+            _ = writeln!(output, "  server: {info}");
+        }
+        if let Some(error) = &report.error {
+            _ = writeln!(output, "  error: {error}");
+        }
+        if !report.tools.is_empty() {
+            _ = writeln!(output, "  tools ({}):", report.tools.len());
+            for tool in &report.tools {
+                _ = writeln!(output, "    - {} -> {}", tool.name, tool.registered_name);
+            }
+        }
+    }
+    output
 }
 
 fn format_models(models: &std::collections::HashMap<String, ModelDefinition>) -> String {
@@ -507,5 +740,66 @@ mod tests {
             limits: crate::config::settings::ResolvedLimits::default(),
             warnings,
         }
+    }
+
+    fn fixture_mcp_report(status: &'static str) -> McpServerReport {
+        McpServerReport {
+            name: "safari-mcp".to_string(),
+            command: "/usr/bin/safaridriver".to_string(),
+            args: vec!["--mcp".to_string()],
+            env: vec!["SAFARI_TOKEN".to_string()],
+            source: "/home/user/.config/cake/mcp.json".to_string(),
+            timeout_secs: 60,
+            status,
+            protocol_version: (status == "ready").then(|| "2026-07-28".to_string()),
+            server_info: (status == "ready").then(|| "Safari".to_string()),
+            error: (status == "failed").then(|| "connection closed".to_string()),
+            tools: if status == "ready" {
+                vec![McpToolReport {
+                    name: "list_tabs".to_string(),
+                    registered_name: "mcp__safari-mcp__list_tabs".to_string(),
+                    description: "List tabs".to_string(),
+                    has_output_schema: false,
+                }]
+            } else {
+                Vec::new()
+            },
+        }
+    }
+
+    #[test]
+    fn mcp_text_report_lists_ready_and_failed_servers() {
+        let ready = format_mcp_report(&[fixture_mcp_report("ready")]);
+        assert!(ready.contains("safari-mcp (ready)"));
+        assert!(ready.contains("/usr/bin/safaridriver --mcp"));
+        assert!(ready.contains("env: SAFARI_TOKEN"));
+        assert!(ready.contains("list_tabs -> mcp__safari-mcp__list_tabs"));
+
+        let failed = format_mcp_report(&[fixture_mcp_report("failed")]);
+        assert!(failed.contains("safari-mcp (failed)"));
+        assert!(failed.contains("error: connection closed"));
+    }
+
+    #[test]
+    fn empty_mcp_report_is_explicit() {
+        assert_eq!(format_mcp_report(&[]), "No MCP servers configured.\n");
+    }
+
+    #[test]
+    fn mcp_json_document_reports_warning_status_for_a_failed_server() {
+        let document = DiagnosticDocument::new(
+            "debug mcp",
+            json!({"count": 1, "ready": 0, "tool_count": 0}),
+            vec![DiagnosticCheck::warning(
+                CHECK_MCP_SERVER,
+                "MCP server 'safari-mcp' failed: connection closed",
+            )],
+            json!({"servers": [fixture_mcp_report("failed")]}),
+        );
+        let rendered = document.render().unwrap();
+        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(value["status"], "warning");
+        assert_eq!(value["data"]["servers"][0]["status"], "failed");
+        assert_eq!(value["checks"][0]["id"], CHECK_MCP_SERVER);
     }
 }

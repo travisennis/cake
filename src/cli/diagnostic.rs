@@ -48,6 +48,12 @@ pub const CHECK_SESSIONS_DISCOVERY: &str = "sessions.discovery_failed";
 /// Check id for a checkpoint append that failed.
 pub const CHECK_SESSIONS_CHECKPOINT: &str = "sessions.checkpoint_failed";
 
+/// Check id for an MCP configuration problem or a skipped server definition.
+pub const CHECK_MCP_CONFIG: &str = "mcp.config_invalid";
+
+/// Check id for an MCP server that could not start or handshake.
+pub const CHECK_MCP_SERVER: &str = "mcp.server_failed";
+
 /// Overall status of a diagnostic document.
 ///
 /// The status describes the invocation, not the subject it inspects: a

@@ -186,9 +186,11 @@ const fn classify_schema_error(error: &crate::config::OutputSchemaError) -> u8 {
     }
 }
 
-/// Project trust failures are configuration defects: the invocation cannot use
-/// the checkout until the user trusts it or selects an explicit one-run mode,
-/// so they share the settings input-error class.
+/// Project trust and explicit configuration-file failures are configuration
+/// defects: the invocation cannot use the checkout until the user trusts it or
+/// selects an explicit one-run mode, and a named config file that is missing
+/// or malformed is input the user supplied. They share the settings
+/// input-error class.
 fn classify_project_error(err: &anyhow::Error) -> Option<u8> {
     let is_project_error = err
         .downcast_ref::<crate::config::trust::TrustError>()
@@ -198,6 +200,9 @@ fn classify_project_error(err: &anyhow::Error) -> Option<u8> {
             .is_some()
         || err
             .downcast_ref::<crate::config::trust::ProjectConfigModeError>()
+            .is_some()
+        || err
+            .downcast_ref::<crate::config::mcp::McpConfigError>()
             .is_some();
     is_project_error.then_some(code::INPUT_ERROR)
 }

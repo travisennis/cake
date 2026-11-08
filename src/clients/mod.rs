@@ -16,6 +16,7 @@ mod agent_state;
 pub mod backend;
 mod chat_completions;
 mod chat_types;
+pub mod mcp;
 mod provider_strategy;
 pub mod response_stall;
 mod responses;
@@ -25,9 +26,10 @@ pub mod termination;
 mod tools;
 
 pub use agent::Agent;
+pub use tools::ExternalToolInfo;
 #[doc(inline)]
 pub use tools::ToolContext;
-pub use tools::format_tool_list_section;
+pub use tools::format_tool_list_section_with_mcp;
 pub use tools::{SandboxPolicy, resolve_linked_worktree_dirs, resolve_sandbox_policy};
 
 /// Re-exported so hook payloads parse tool arguments through the same repair

@@ -11,13 +11,14 @@ use std::sync::Arc;
 use tracing::info;
 
 use crate::cli::run_mode::{RunMode, SessionPersistencePlan};
+use crate::clients::mcp::McpServer;
 use crate::clients::{Agent, ToolContext};
 use crate::config::skills::Skill;
 use crate::config::toolbox::ToolboxTool;
 use crate::config::{
     AgentsFile, DataDir, ModelDefinition, ResolvedModelConfig, Session, SkillCatalog,
 };
-use crate::prompts::build_initial_prompt_messages_with_project;
+use crate::prompts::build_initial_prompt_messages_with_mcp;
 use crate::types::SessionRecord;
 
 /// A fully assembled agent, session, and persistence plan ready for execution.
@@ -107,6 +108,7 @@ impl crate::CodingAssistant {
         skill_locations: &HashMap<PathBuf, Skill>,
         tool_context: Arc<ToolContext>,
         toolbox_tools: Vec<ToolboxTool>,
+        mcp_servers: Vec<McpServer>,
         enabled_tools: Option<&[String]>,
         task_id: uuid::Uuid,
     ) -> anyhow::Result<RunSession> {
@@ -121,6 +123,7 @@ impl crate::CodingAssistant {
             .with_model_config_name(model_config_name.clone())
             .with_tool_context(tool_context)
             .with_toolbox_tools(toolbox_tools)
+            .with_mcp_servers(mcp_servers)
             .with_enabled_tools(enabled_tools)
             // Flattened rather than layered: the CLI prints only the outermost
             // error, and the underlying diagnostic is the useful part.
@@ -153,6 +156,7 @@ impl crate::CodingAssistant {
         skill_locations: HashMap<PathBuf, Skill>,
         tool_context: Arc<ToolContext>,
         toolbox_tools: Vec<ToolboxTool>,
+        mcp_servers: Vec<McpServer>,
         enabled_tools: Option<&[String]>,
         task_id: uuid::Uuid,
         persistence: Option<SessionPersistencePlan>,
@@ -162,6 +166,7 @@ impl crate::CodingAssistant {
             .with_model_config_name(model_config_name.clone())
             .with_tool_context(tool_context)
             .with_toolbox_tools(toolbox_tools)
+            .with_mcp_servers(mcp_servers)
             .with_enabled_tools(enabled_tools)
             .with_skill_locations(skill_locations);
         let new_id = agent.session_id();
@@ -191,6 +196,7 @@ impl crate::CodingAssistant {
         skill_locations: HashMap<PathBuf, Skill>,
         tool_context: Arc<ToolContext>,
         toolbox_tools: Vec<ToolboxTool>,
+        mcp_servers: Vec<McpServer>,
         enabled_tools: Option<&[String]>,
         task_id: uuid::Uuid,
     ) -> anyhow::Result<RunSession> {
@@ -199,6 +205,7 @@ impl crate::CodingAssistant {
             .with_model_config_name(model_config_name.clone())
             .with_tool_context(tool_context)
             .with_toolbox_tools(toolbox_tools)
+            .with_mcp_servers(mcp_servers)
             .with_enabled_tools(enabled_tools);
         let new_id = agent.session_id();
         // Re-envelope the seed's checkpoint for this session before restoring
@@ -271,6 +278,7 @@ impl crate::CodingAssistant {
         skill_catalog: &SkillCatalog,
         tool_context: &Arc<ToolContext>,
         toolbox_tools: &[ToolboxTool],
+        mcp_servers: &[McpServer],
         enabled_tools: Option<&[String]>,
         task_id: uuid::Uuid,
         loaded_system_prompt: Option<&str>,
@@ -288,6 +296,7 @@ impl crate::CodingAssistant {
             default_model,
             tool_context,
             toolbox_tools,
+            mcp_servers,
             tools_enabled: enabled_tools,
             include_runtime_context: !self.no_runtime_context,
             include_project_prompt,
@@ -331,6 +340,7 @@ impl crate::CodingAssistant {
             &inputs.skill_locations,
             tool_context,
             inputs.toolbox_tools.to_vec(),
+            inputs.mcp_servers.to_vec(),
             inputs.tools_enabled,
             inputs.task_id,
         )
@@ -377,6 +387,7 @@ impl crate::CodingAssistant {
             inputs.skill_locations.clone(),
             tool_context,
             inputs.toolbox_tools.to_vec(),
+            inputs.mcp_servers.to_vec(),
             inputs.tools_enabled,
             inputs.task_id,
         )
@@ -400,6 +411,7 @@ impl crate::CodingAssistant {
             inputs.skill_locations.clone(),
             Arc::clone(inputs.tool_context),
             inputs.toolbox_tools.to_vec(),
+            inputs.mcp_servers.to_vec(),
             inputs.tools_enabled,
             inputs.task_id,
             persistence,
@@ -420,6 +432,7 @@ struct RunInputs<'a> {
     default_model: Option<&'a str>,
     tool_context: &'a Arc<ToolContext>,
     toolbox_tools: &'a [ToolboxTool],
+    mcp_servers: &'a [McpServer],
     tools_enabled: Option<&'a [String]>,
     include_runtime_context: bool,
     include_project_prompt: bool,
@@ -433,7 +446,7 @@ impl RunInputs<'_> {
     /// model capabilities: a model that does not accept image input never
     /// advertises `ReadImage`.
     fn initial_messages(&self, supports_images: bool) -> Vec<(crate::types::Role, String)> {
-        build_initial_prompt_messages_with_project(
+        build_initial_prompt_messages_with_mcp(
             &self.current_dir,
             self.config_dir,
             self.cli_system_prompt,
@@ -442,6 +455,7 @@ impl RunInputs<'_> {
             self.skill_catalog,
             self.tool_context.sandbox_policy,
             self.toolbox_tools,
+            self.mcp_servers,
             self.tools_enabled,
             supports_images,
             self.include_runtime_context,
@@ -566,6 +580,7 @@ mod tests {
             &HashMap::new(),
             test_tool_context(),
             Vec::new(),
+            Vec::new(),
             None,
             uuid::Uuid::new_v4(),
         )
@@ -632,6 +647,7 @@ mod tests {
                         diagnostics: Vec::new(),
                     },
                     &tool_context,
+                    &[],
                     &[],
                     None,
                     uuid::Uuid::new_v4(),
@@ -714,6 +730,7 @@ mod tests {
             &HashMap::new(),
             tool_context,
             Vec::new(),
+            Vec::new(),
             None,
             uuid::Uuid::new_v4(),
         )
@@ -740,6 +757,7 @@ mod tests {
             &HashMap::new(),
             test_tool_context(),
             Vec::new(),
+            Vec::new(),
             None,
             uuid::Uuid::new_v4(),
         )
@@ -765,6 +783,7 @@ mod tests {
             &[(crate::types::Role::System, "test".to_string())],
             HashMap::new(),
             test_tool_context(),
+            Vec::new(),
             Vec::new(),
             None,
             uuid::Uuid::new_v4(),
@@ -851,6 +870,7 @@ mod tests {
                 diagnostics: Vec::new(),
             },
             &tool_context,
+            &[],
             &[],
             None,
             uuid::Uuid::new_v4(),
@@ -1354,6 +1374,7 @@ mod tests {
             HashMap::new(),
             test_tool_context(),
             Vec::new(),
+            Vec::new(),
             None,
             uuid::Uuid::new_v4(),
         )
@@ -1429,6 +1450,7 @@ mod tests {
             &[(crate::types::Role::System, "fresh system".to_string())],
             HashMap::new(),
             test_tool_context(),
+            Vec::new(),
             Vec::new(),
             None,
             uuid::Uuid::new_v4(),

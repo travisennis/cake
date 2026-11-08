@@ -1,0 +1,531 @@
+//! MCP server configuration discovery and naming.
+//!
+//! Cake reads the ecosystem `mcpServers` JSON shape from three sources, in
+//! increasing precedence:
+//!
+//! 1. the user-owned global file `<config>/cake/mcp.json`;
+//! 2. the trusted project file `.cake/mcp.json`;
+//! 3. each explicit `--mcp-config <path>` file, in command-line order.
+//!
+//! Later sources replace earlier servers with the same name. A server entry
+//! names the executable and its arguments directly, matching the configuration
+//! other MCP clients document:
+//!
+//! ```json
+//! {
+//!   "mcpServers": {
+//!     "safari-mcp": { "command": "/usr/bin/safaridriver", "args": ["--mcp"] }
+//!   }
+//! }
+//! ```
+//!
+//! Discovery only reads and validates configuration. Starting servers and
+//! speaking the protocol live in `clients::mcp`.
+
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
+
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
+
+use crate::config::trust::{ProjectConfigMode, ProjectTrustReport};
+
+/// File name under `<config>/cake/` for the user-owned server list.
+pub const MCP_CONFIG_FILE: &str = "mcp.json";
+
+/// Project-relative path for a trusted project's server list.
+pub const PROJECT_MCP_CONFIG: &str = ".cake/mcp.json";
+
+/// Prefix applied to every registered MCP tool.
+pub const MCP_TOOL_PREFIX: &str = "mcp__";
+
+/// Default per-request timeout for a server.
+pub const DEFAULT_MCP_TIMEOUT_SECS: u64 = 60;
+
+/// Maximum timeout accepted from configuration.
+const MAX_MCP_TIMEOUT_SECS: u64 = 3_600;
+
+/// Maximum length of a server name. Leaves room for the prefix, separators,
+/// one tool-name character, and a truncation hash within the 64-character
+/// provider function-name limit.
+const MAX_SERVER_NAME_LEN: usize = 32;
+
+/// Maximum registered tool name length, matching the provider function-name
+/// limit used by `config::toolbox`.
+const MAX_REGISTERED_NAME_LEN: usize = 64;
+
+/// Bytes appended to a truncated name: two separators plus eight hex digits
+/// of a SHA-256 digest.
+const TRUNCATION_SUFFIX_LEN: usize = 10;
+
+/// One resolved MCP server definition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct McpServerConfig {
+    /// Local instance name from the JSON object key.
+    pub name: String,
+    /// Executable to spawn.
+    pub command: String,
+    /// Arguments passed to the executable.
+    pub args: Vec<String>,
+    /// Additional environment variables. Values are never logged.
+    pub env: BTreeMap<String, String>,
+    /// Per-request timeout in seconds, clamped to 1..=3600.
+    pub timeout_secs: u64,
+    /// File the definition came from, for diagnostics.
+    pub source: PathBuf,
+}
+
+/// Resolved server list plus non-fatal discovery warnings.
+#[derive(Debug, Default)]
+pub struct McpConfigLoad {
+    /// Servers in deterministic name order after precedence resolution.
+    pub servers: Vec<McpServerConfig>,
+    /// Human-readable problems that skipped a file or server.
+    pub warnings: Vec<String>,
+}
+
+/// A configuration file the user explicitly named could not be used.
+#[derive(Debug, thiserror::Error)]
+pub enum McpConfigError {
+    /// The explicit file does not exist.
+    #[error("MCP config file {path} does not exist")]
+    Missing {
+        /// The path named on the command line.
+        path: PathBuf,
+    },
+    /// The explicit file could not be read.
+    #[error("MCP config file {path} could not be read: {source}")]
+    Read {
+        /// The path named on the command line.
+        path: PathBuf,
+        /// The underlying read failure.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The explicit file is not valid JSON or not the documented shape.
+    #[error("MCP config file {path} is invalid: {message}")]
+    Invalid {
+        /// The path named on the command line.
+        path: PathBuf,
+        /// The parser or validation diagnostic.
+        message: String,
+    },
+}
+
+/// JSON shape of one configuration file.
+#[derive(Debug, Deserialize)]
+struct RawMcpFile {
+    #[serde(rename = "mcpServers", default)]
+    mcp_servers: BTreeMap<String, RawMcpServer>,
+}
+
+/// JSON shape of one server entry.
+#[derive(Debug, Deserialize)]
+struct RawMcpServer {
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    args: Option<Vec<String>>,
+    #[serde(default)]
+    env: Option<BTreeMap<String, String>>,
+    /// Present for remote servers; recognized so the diagnostic can be specific.
+    #[serde(default)]
+    url: Option<String>,
+    /// Transport label used by some clients. Only `stdio` is supported.
+    #[serde(default, rename = "type")]
+    transport: Option<String>,
+    #[serde(default)]
+    disabled: bool,
+    #[serde(default)]
+    timeout_secs: Option<u64>,
+}
+
+/// Discover and merge MCP server definitions.
+///
+/// Auto-discovered files that are unreadable or malformed produce warnings and
+/// are skipped. A file named with `--mcp-config` is an explicit input, so a
+/// missing, unreadable, or malformed file returns [`McpConfigError`].
+///
+/// `project_bytes` is the exact `.cake/mcp.json` content read by the trust
+/// snapshot, so the bytes that were hashed are the bytes that are parsed.
+///
+/// # Errors
+///
+/// Returns [`McpConfigError`] when an explicit file cannot be used.
+pub fn discover_mcp_servers(
+    explicit: &[PathBuf],
+    base_dir: &Path,
+    config_dir: &Path,
+    project_dir: &Path,
+    trust: &ProjectTrustReport,
+    mode: ProjectConfigMode,
+    project_bytes: Option<&[u8]>,
+) -> Result<McpConfigLoad, McpConfigError> {
+    let mut merger = McpMerger::new();
+    merger.read(&config_dir.join("cake").join(MCP_CONFIG_FILE), false)?;
+    load_project_source(
+        &mut merger,
+        &project_dir.join(PROJECT_MCP_CONFIG),
+        trust,
+        mode,
+        project_bytes,
+    );
+    for path in explicit {
+        merger.read(&resolve_explicit(path, base_dir), true)?;
+    }
+    Ok(merger.finish())
+}
+
+/// Resolve an explicit config path against the invocation directory.
+fn resolve_explicit(path: &Path, base_dir: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base_dir.join(path)
+    }
+}
+
+/// Add the trusted project file, or report why it was skipped.
+fn load_project_source(
+    merger: &mut McpMerger,
+    project: &Path,
+    trust: &ProjectTrustReport,
+    mode: ProjectConfigMode,
+    bytes: Option<&[u8]>,
+) {
+    if !mode.loads_project_config() {
+        return;
+    }
+    if !trust.allows_authority() {
+        if project.exists() {
+            merger.warnings.push(format!(
+                "ignoring {}: project configuration is not trusted; run `cake trust`",
+                project.display()
+            ));
+        }
+        return;
+    }
+    let Some(bytes) = bytes else {
+        return;
+    };
+    match std::str::from_utf8(bytes) {
+        Ok(text) => {
+            if let Err(error) = merger.parse(project, text, false) {
+                merger.warnings.push(error.to_string());
+            }
+        },
+        Err(error) => merger.warnings.push(format!(
+            "ignoring {}: file is not valid UTF-8: {error}",
+            project.display()
+        )),
+    }
+}
+
+/// Accumulates servers from every source with later names replacing earlier.
+#[derive(Default)]
+struct McpMerger {
+    servers: Vec<McpServerConfig>,
+    positions: HashMap<String, usize>,
+    warnings: Vec<String>,
+}
+
+impl McpMerger {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Read one file and merge its servers.
+    fn read(&mut self, path: &Path, explicit: bool) -> Result<(), McpConfigError> {
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && !explicit => {
+                return Ok(());
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(McpConfigError::Missing {
+                    path: path.to_path_buf(),
+                });
+            },
+            Err(error) if explicit => {
+                return Err(McpConfigError::Read {
+                    path: path.to_path_buf(),
+                    source: error,
+                });
+            },
+            Err(error) => {
+                self.warnings
+                    .push(format!("ignoring MCP config {}: {error}", path.display()));
+                return Ok(());
+            },
+        };
+        self.parse(path, &text, explicit)
+    }
+
+    /// Parse one file's text and merge its servers.
+    fn parse(&mut self, path: &Path, text: &str, explicit: bool) -> Result<(), McpConfigError> {
+        let raw = match parse_mcp_file(text) {
+            Ok(raw) => raw,
+            Err(message) => {
+                if explicit {
+                    return Err(McpConfigError::Invalid {
+                        path: path.to_path_buf(),
+                        message,
+                    });
+                }
+                self.warnings
+                    .push(format!("ignoring MCP config {}: {message}", path.display()));
+                return Ok(());
+            },
+        };
+        for (name, server) in raw.mcp_servers {
+            let Some(config) = resolve_server(&name, server, path, &mut self.warnings) else {
+                continue;
+            };
+            self.merge(config);
+        }
+        Ok(())
+    }
+
+    fn merge(&mut self, config: McpServerConfig) {
+        if let Some(index) = self.positions.get(&config.name) {
+            self.servers[*index] = config;
+        } else {
+            self.positions
+                .insert(config.name.clone(), self.servers.len());
+            self.servers.push(config);
+        }
+    }
+
+    fn finish(mut self) -> McpConfigLoad {
+        self.servers
+            .sort_by(|left, right| left.name.cmp(&right.name));
+        McpConfigLoad {
+            servers: self.servers,
+            warnings: self.warnings,
+        }
+    }
+}
+
+/// Parse and shape-check one config file.
+fn parse_mcp_file(text: &str) -> Result<RawMcpFile, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|error| format!("invalid JSON: {error}"))?;
+    if !value.is_object() {
+        return Err("expected a JSON object with an 'mcpServers' member".to_string());
+    }
+    serde_json::from_value(value).map_err(|error| format!("invalid mcpServers shape: {error}"))
+}
+
+/// Remove explicit config paths that live inside any checkout's `.cake/` tree.
+///
+/// Used only for `--no-project-config`: an explicit path must not re-enable a
+/// project's MCP server definitions. Both the lexical and canonical paths are
+/// checked so a symlinked `.cake` path is still filtered.
+#[must_use]
+pub fn filter_project_mcp_paths(paths: Vec<PathBuf>, project_roots: &[&Path]) -> Vec<PathBuf> {
+    let cake_roots: Vec<PathBuf> = project_roots
+        .iter()
+        .map(|root| root.join(".cake"))
+        .collect();
+    let canonical_roots: Vec<PathBuf> = cake_roots
+        .iter()
+        .map(|root| std::fs::canonicalize(root).unwrap_or_else(|_| root.clone()))
+        .collect();
+    paths
+        .into_iter()
+        .filter(|path| {
+            let lexical_hit = cake_roots.iter().any(|root| path.starts_with(root));
+            let identity = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+            let canonical_hit = canonical_roots
+                .iter()
+                .any(|root| identity.starts_with(root));
+            !lexical_hit && !canonical_hit
+        })
+        .collect()
+}
+
+/// Validate one raw entry and turn it into a resolved server definition.
+fn resolve_server(
+    name: &str,
+    raw: RawMcpServer,
+    source: &Path,
+    warnings: &mut Vec<String>,
+) -> Option<McpServerConfig> {
+    if raw.disabled {
+        return None;
+    }
+    if !valid_server_name(name) {
+        warnings.push(format!(
+            "ignoring MCP server '{name}' in {}: names must be 1-{MAX_SERVER_NAME_LEN} \
+             characters of ASCII letters, digits, '_' or '-'",
+            source.display()
+        ));
+        return None;
+    }
+    if raw.url.is_some() {
+        warnings.push(format!(
+            "ignoring MCP server '{name}' in {}: remote HTTP servers are not supported; \
+             only stdio 'command' servers are available",
+            source.display()
+        ));
+        return None;
+    }
+    if let Some(transport) = raw.transport.as_deref()
+        && transport != "stdio"
+    {
+        warnings.push(format!(
+            "ignoring MCP server '{name}' in {}: transport '{transport}' is not supported; \
+             only stdio is available",
+            source.display()
+        ));
+        return None;
+    }
+    let Some(command) = raw.command.as_deref().map(str::trim) else {
+        warnings.push(format!(
+            "ignoring MCP server '{name}' in {}: 'command' is required",
+            source.display()
+        ));
+        return None;
+    };
+    if command.is_empty() || command.contains('\0') {
+        warnings.push(format!(
+            "ignoring MCP server '{name}' in {}: 'command' must be a non-empty executable",
+            source.display()
+        ));
+        return None;
+    }
+    let args = raw.args.unwrap_or_default();
+    if args.iter().any(|arg| arg.contains('\0')) {
+        warnings.push(format!(
+            "ignoring MCP server '{name}' in {}: arguments may not contain NUL bytes",
+            source.display()
+        ));
+        return None;
+    }
+    let Some(env) = raw.env else {
+        return Some(build_server(
+            name,
+            command,
+            args,
+            BTreeMap::new(),
+            raw.timeout_secs,
+            source,
+        ));
+    };
+    if let Some((key, _)) = env
+        .iter()
+        .find(|(key, value)| !valid_env_name(key) || value.contains('\0'))
+    {
+        warnings.push(format!(
+            "ignoring MCP server '{name}' in {}: environment entry '{key}' is not a valid \
+             name or contains a NUL byte",
+            source.display()
+        ));
+        return None;
+    }
+    Some(build_server(
+        name,
+        command,
+        args,
+        env,
+        raw.timeout_secs,
+        source,
+    ))
+}
+
+/// Apply timeout defaults and clamping.
+fn build_server(
+    name: &str,
+    command: &str,
+    args: Vec<String>,
+    env: BTreeMap<String, String>,
+    timeout_secs: Option<u64>,
+    source: &Path,
+) -> McpServerConfig {
+    McpServerConfig {
+        name: name.to_string(),
+        command: command.to_string(),
+        args,
+        env,
+        timeout_secs: timeout_secs
+            .unwrap_or(DEFAULT_MCP_TIMEOUT_SECS)
+            .clamp(1, MAX_MCP_TIMEOUT_SECS),
+        source: source.to_path_buf(),
+    }
+}
+
+/// Server names become part of a provider function name, so keep them to the
+/// characters every provider accepts.
+fn valid_server_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_SERVER_NAME_LEN
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+/// Environment variable names follow the portable POSIX convention.
+fn valid_env_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+/// Build the registered tool name for one server/tool pair.
+///
+/// The result fits the 64-character provider limit. Characters outside
+/// `[A-Za-z0-9_-]` become `_`; a name that would exceed the limit is truncated
+/// and given a deterministic eight-hex-character digest suffix so two long
+/// names cannot collapse into one.
+#[must_use]
+pub fn registered_tool_name(server: &str, tool: &str) -> Option<String> {
+    let server = sanitize_component(server);
+    let tool = sanitize_component(tool);
+    if !has_alphanumeric(&server) || !has_alphanumeric(&tool) {
+        return None;
+    }
+    let candidate = format!("{MCP_TOOL_PREFIX}{server}__{tool}");
+    if candidate.len() <= MAX_REGISTERED_NAME_LEN {
+        return Some(candidate);
+    }
+
+    let digest = sha256_hex(candidate.as_bytes());
+    let digest = digest.get(..8).unwrap_or(digest.as_str());
+    let fixed_len = MCP_TOOL_PREFIX.len() + server.len() + 2 + TRUNCATION_SUFFIX_LEN;
+    let keep = MAX_REGISTERED_NAME_LEN.saturating_sub(fixed_len);
+    let truncated: String = tool.chars().take(keep.max(1)).collect();
+    Some(format!("{MCP_TOOL_PREFIX}{server}__{truncated}__{digest}"))
+}
+
+/// Replace every character that a provider function name rejects.
+fn sanitize_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// A name made only of punctuation is not a usable tool or server name.
+fn has_alphanumeric(value: &str) -> bool {
+    value.chars().any(|ch| ch.is_ascii_alphanumeric())
+}
+
+/// Lowercase hex SHA-256 digest.
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
+}
+
+#[cfg(test)]
+#[path = "mcp_tests.rs"]
+mod mcp_tests;

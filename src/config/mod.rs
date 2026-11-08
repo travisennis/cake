@@ -17,6 +17,7 @@ mod data_dir;
 pub mod gates;
 pub mod git;
 pub mod hooks;
+pub mod mcp;
 pub mod model;
 pub mod output_schema;
 pub mod session;

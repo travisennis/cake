@@ -931,6 +931,8 @@ pub struct SettingsLoad {
     pub trust: ProjectTrustReport,
     /// Exact project hook file bytes validated with the trust snapshot.
     pub hook_files: Vec<crate::config::trust::HookFileSource>,
+    /// Exact `.cake/mcp.json` bytes validated with the same snapshot.
+    pub mcp_config_bytes: Option<Vec<u8>>,
 }
 
 /// Definition of a named model in settings.toml.
@@ -1297,6 +1299,7 @@ impl SettingsLoader {
             settings,
             trust,
             hook_files: snapshot.hook_files.clone(),
+            mcp_config_bytes: snapshot.mcp_bytes.clone(),
         })
     }
 

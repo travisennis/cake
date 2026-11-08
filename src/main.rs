@@ -171,6 +171,14 @@ pub(crate) struct CodingAssistant {
     #[arg(long, value_name = "DIR")]
     pub toolbox: Vec<PathBuf>,
 
+    /// Load MCP server definitions from an `mcpServers` JSON file. Can be
+    /// repeated; later files override servers with the same name.
+    ///
+    /// The default sources are `~/.config/cake/mcp.json` and, for a trusted
+    /// project, `.cake/mcp.json`. See `cake debug mcp`.
+    #[arg(long, value_name = "PATH")]
+    pub mcp_config: Vec<PathBuf>,
+
     /// Select the sandbox policy for model-generated shell commands
     /// (read-only, workspace-write, workspace-write-interactive,
     /// danger-full-access). Default: workspace-write.
@@ -238,6 +246,7 @@ struct PreparedRun {
     current_dir: PathBuf,
     additional_dirs: Vec<PathBuf>,
     toolbox_dirs: Vec<PathBuf>,
+    mcp_config_paths: Vec<PathBuf>,
     _worktree: WorktreeGuard,
     content: String,
     output_schema: Option<Arc<crate::config::OutputSchema>>,
@@ -257,6 +266,7 @@ struct RunResources {
     skill_catalog: SkillCatalog,
     tool_context: Arc<ToolContext>,
     toolbox_tools: Vec<crate::config::toolbox::ToolboxTool>,
+    mcp_servers: Vec<crate::clients::mcp::McpServer>,
     tools_enabled: Option<Vec<String>>,
 }
 
@@ -639,10 +649,33 @@ impl CodingAssistant {
             );
         }
 
+        // Explicit MCP config paths stay anchored to the invocation directory,
+        // like `--toolbox` and other relative CLI inputs. `--no-project-config`
+        // also filters any explicit path inside a checkout's `.cake/` tree so a
+        // wrapper cannot re-enable project server definitions.
+        let mut mcp_config_paths: Vec<PathBuf> = self
+            .mcp_config
+            .iter()
+            .map(|path| {
+                if path.is_absolute() {
+                    path.clone()
+                } else {
+                    original_dir.join(path)
+                }
+            })
+            .collect();
+        if project_config_mode == ProjectConfigMode::Ignore {
+            mcp_config_paths = crate::config::mcp::filter_project_mcp_paths(
+                mcp_config_paths,
+                &[&original_dir, &current_dir],
+            );
+        }
+
         Ok(PreparedRun {
             current_dir,
             additional_dirs,
             toolbox_dirs,
+            mcp_config_paths,
             _worktree: WorktreeGuard::new(worktree, original_dir),
             content: inputs.content,
             output_schema: inputs.output_schema,
@@ -690,12 +723,14 @@ impl CodingAssistant {
         data_dir: &DataDir,
         additional_dirs: Vec<PathBuf>,
         toolbox_dirs: &[PathBuf],
+        mcp_config_paths: &[PathBuf],
         project_config_mode: ProjectConfigMode,
     ) -> anyhow::Result<RunResources> {
         let load = self.load_settings(current_dir, project_config_mode)?;
         let loaded = load.settings;
         let trust = load.trust;
         let project_hook_files = load.hook_files;
+        let project_mcp_bytes = load.mcp_config_bytes;
         // Settings files with unrecognized keys load normally but silently
         // drop those keys; surface them on stderr so a typo like `temparature`
         // is seen instead of quietly ignored.
@@ -789,6 +824,25 @@ impl CodingAssistant {
             crate::config::toolbox::load_toolbox_tools(toolbox_dirs).await
         };
 
+        // MCP servers are trusted executables, like toolbox tools, so they are
+        // never started under the read-only policy. Discovery still validates
+        // an explicit config path there, so a typo is not silently ignored.
+        let mcp_servers = if sandbox_policy == SandboxPolicy::ReadOnly {
+            if !mcp_config_paths.is_empty() {
+                eprintln!("note: MCP servers are not started under the read-only sandbox policy");
+            }
+            Vec::new()
+        } else {
+            Self::start_mcp_servers(
+                current_dir,
+                mcp_config_paths,
+                &trust,
+                project_config_mode,
+                project_mcp_bytes.as_deref(),
+            )
+            .await?
+        };
+
         Ok(RunResources {
             loaded,
             trust,
@@ -798,8 +852,43 @@ impl CodingAssistant {
             skill_catalog,
             tool_context: Arc::new(tool_context),
             toolbox_tools,
+            mcp_servers,
             tools_enabled,
         })
+    }
+
+    /// Discover configured MCP servers, connect to each, and print warnings for
+    /// servers that cannot start. A broken server is skipped; it never stops the
+    /// run.
+    async fn start_mcp_servers(
+        current_dir: &Path,
+        mcp_config_paths: &[PathBuf],
+        trust: &ProjectTrustReport,
+        project_config_mode: ProjectConfigMode,
+        project_mcp_bytes: Option<&[u8]>,
+    ) -> anyhow::Result<Vec<crate::clients::mcp::McpServer>> {
+        let discovery = crate::config::mcp::discover_mcp_servers(
+            mcp_config_paths,
+            current_dir,
+            &crate::config::config_dir(),
+            current_dir,
+            trust,
+            project_config_mode,
+            project_mcp_bytes,
+        )?;
+        for warning in &discovery.warnings {
+            eprintln!("warning: {warning}");
+        }
+        let mut servers = Vec::new();
+        for config in &discovery.servers {
+            match crate::clients::mcp::connect_server(config, current_dir).await {
+                Ok(server) => servers.push(server),
+                Err(error) => {
+                    eprintln!("warning: skipping MCP server '{}': {error}", config.name);
+                },
+            }
+        }
+        Ok(servers)
     }
 
     /// Resolve `[sandbox].read_only` paths for read-only sandbox access.
@@ -1073,6 +1162,7 @@ impl CodingAssistant {
             (self.reasoning_budget.is_some(), "--reasoning-budget"),
             (!self.add_dir.is_empty(), "--add-dir"),
             (!self.toolbox.is_empty(), "--toolbox"),
+            (!self.mcp_config.is_empty(), "--mcp-config"),
             (self.sandbox.is_some(), "--sandbox"),
             (self.no_tools, "--no-tools"),
             (self.tools.is_some(), "--tools"),
@@ -1485,6 +1575,7 @@ impl CmdRunner for CodingAssistant {
                 data_dir,
                 prepared.additional_dirs.clone(),
                 &prepared.toolbox_dirs,
+                &prepared.mcp_config_paths,
                 options.project_config_mode,
             )
             .await?;
@@ -1502,6 +1593,7 @@ impl CmdRunner for CodingAssistant {
             &resources.skill_catalog,
             &resources.tool_context,
             &resources.toolbox_tools,
+            &resources.mcp_servers,
             resources.tools_enabled.as_deref(),
             task_id,
             resources.loaded.system_prompt.as_deref(),

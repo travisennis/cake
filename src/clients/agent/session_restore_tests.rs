@@ -316,6 +316,7 @@ fn restored_agent(session: Session) -> Agent {
         &HashMap::new(),
         session_restore_tool_context(),
         Vec::new(),
+        Vec::new(),
         None,
         uuid::Uuid::nil(),
     )
@@ -504,6 +505,7 @@ fn restore_recomputation_from_the_file_matches_loaded_state() {
         &[(Role::System, "sys".to_string())],
         HashMap::new(),
         session_restore_tool_context(),
+        Vec::new(),
         Vec::new(),
         None,
         uuid::Uuid::nil(),

@@ -24,7 +24,7 @@ use std::path::Path;
 use chrono::Local;
 use tracing::{debug, warn};
 
-use crate::clients::{SandboxPolicy, format_tool_list_section};
+use crate::clients::{ExternalToolInfo, SandboxPolicy, format_tool_list_section_with_mcp};
 use crate::config::toolbox::ToolboxTool;
 use crate::config::{AgentsFile, SkillCatalog};
 use crate::types::Role;
@@ -202,6 +202,7 @@ pub fn resolve_system_prompt(
     clippy::too_many_arguments,
     reason = "prompt resolution naturally requires many inputs"
 )]
+#[cfg(test)]
 pub fn resolve_system_prompt_with_project(
     working_dir: &Path,
     config_dir: &Path,
@@ -209,6 +210,37 @@ pub fn resolve_system_prompt_with_project(
     settings_system_prompt: Option<&Path>,
     sandbox_policy: SandboxPolicy,
     toolbox_tools: &[ToolboxTool],
+    enabled_tools: Option<&[String]>,
+    supports_images: bool,
+    include_project_prompt: bool,
+) -> String {
+    resolve_system_prompt_with_mcp(
+        working_dir,
+        config_dir,
+        cli_system_prompt,
+        settings_system_prompt,
+        sandbox_policy,
+        toolbox_tools,
+        &[],
+        enabled_tools,
+        supports_images,
+        include_project_prompt,
+    )
+}
+
+/// Resolve the system prompt with MCP server tools included in the list.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "prompt resolution naturally requires many inputs"
+)]
+pub fn resolve_system_prompt_with_mcp(
+    working_dir: &Path,
+    config_dir: &Path,
+    cli_system_prompt: Option<&Path>,
+    settings_system_prompt: Option<&Path>,
+    sandbox_policy: SandboxPolicy,
+    toolbox_tools: &[ToolboxTool],
+    mcp_servers: &[crate::clients::mcp::McpServer],
     enabled_tools: Option<&[String]>,
     supports_images: bool,
     include_project_prompt: bool,
@@ -244,6 +276,7 @@ pub fn resolve_system_prompt_with_project(
     builtin_prompt(
         sandbox_policy,
         toolbox_tools,
+        mcp_servers,
         enabled_tools,
         supports_images,
     )
@@ -281,16 +314,26 @@ fn read_project_prompt(working_dir: &Path) -> Option<String> {
 fn builtin_prompt(
     sandbox_policy: SandboxPolicy,
     toolbox_tools: &[ToolboxTool],
+    mcp_servers: &[crate::clients::mcp::McpServer],
     enabled_tools: Option<&[String]>,
     supports_images: bool,
 ) -> String {
     let builtin = BUILTIN_SYSTEM_PROMPT.trim().to_string();
     if builtin.contains("{{AVAILABLE_TOOLS}}") {
+        let mcp_tools: Vec<ExternalToolInfo> = mcp_servers
+            .iter()
+            .flat_map(|server| server.tools.iter())
+            .map(|tool| ExternalToolInfo {
+                name: tool.registered_name.clone(),
+                description: tool.description.clone(),
+            })
+            .collect();
         builtin.replace(
             "{{AVAILABLE_TOOLS}}",
-            &format_tool_list_section(
+            &format_tool_list_section_with_mcp(
                 sandbox_policy,
                 toolbox_tools,
+                &mcp_tools,
                 enabled_tools,
                 supports_images,
             ),
@@ -348,6 +391,7 @@ pub fn build_initial_prompt_messages_with_enabled_tools(
     clippy::too_many_arguments,
     reason = "prompt construction naturally requires many inputs"
 )]
+#[cfg(test)]
 pub fn build_initial_prompt_messages_with_project(
     working_dir: &Path,
     config_dir: &Path,
@@ -362,15 +406,53 @@ pub fn build_initial_prompt_messages_with_project(
     include_runtime_context: bool,
     include_project_prompt: bool,
 ) -> Vec<(Role, String)> {
+    build_initial_prompt_messages_with_mcp(
+        working_dir,
+        config_dir,
+        cli_system_prompt,
+        settings_system_prompt,
+        agents_files,
+        skill_catalog,
+        sandbox_policy,
+        toolbox_tools,
+        &[],
+        enabled_tools,
+        supports_images,
+        include_runtime_context,
+        include_project_prompt,
+    )
+}
+
+/// Build initial prompt messages with MCP server tools in the tool list.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "prompt construction naturally requires many inputs"
+)]
+pub fn build_initial_prompt_messages_with_mcp(
+    working_dir: &Path,
+    config_dir: &Path,
+    cli_system_prompt: Option<&Path>,
+    settings_system_prompt: Option<&Path>,
+    agents_files: &[AgentsFile],
+    skill_catalog: &SkillCatalog,
+    sandbox_policy: SandboxPolicy,
+    toolbox_tools: &[ToolboxTool],
+    mcp_servers: &[crate::clients::mcp::McpServer],
+    enabled_tools: Option<&[String]>,
+    supports_images: bool,
+    include_runtime_context: bool,
+    include_project_prompt: bool,
+) -> Vec<(Role, String)> {
     let mut messages = vec![(
         Role::System,
-        resolve_system_prompt_with_project(
+        resolve_system_prompt_with_mcp(
             working_dir,
             config_dir,
             cli_system_prompt,
             settings_system_prompt,
             sandbox_policy,
             toolbox_tools,
+            mcp_servers,
             enabled_tools,
             supports_images,
             include_project_prompt,

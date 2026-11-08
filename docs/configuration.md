@@ -23,7 +23,7 @@ Model definitions are global-only. A project settings file may select a global `
 Project `.cake/` configuration has three trust classes (ADR 053):
 
 - **Low-authority** settings load without a trust record: `default_model` and profile `default_model` naming a global model, profile selection and non-authority profile overlays, `[tools].enabled` when it only narrows, `[limits]`, project `AGENTS.md`, and skills under the default project roots. These can change behavior or cost but cannot add filesystem authority, execute code, read arbitrary host files, or select a new provider endpoint.
-- **Authority-bearing** settings require an explicit trust record: `directories`, `[sandbox].read_only` and `[sandbox].writable`, `[tools.bash].gates`, every `[gates.<name>]` table, the legacy `[tools.bash.judge]` table, `system_prompt`, `skills.path`, `.cake/hooks.json`, `.cake/hooks.local.json`, and every file under `.cake/tools/`. The same keys inside a project profile overlay also require trust.
+- **Authority-bearing** settings require an explicit trust record: `directories`, `[sandbox].read_only` and `[sandbox].writable`, `[tools.bash].gates`, every `[gates.<name>]` table, the legacy `[tools.bash.judge]` table, `system_prompt`, `skills.path`, `.cake/hooks.json`, `.cake/hooks.local.json`, `.cake/mcp.json`, and every file under `.cake/tools/`. The same keys inside a project profile overlay also require trust.
 - **Model definitions** are user-owned global configuration. A project cannot define a `[[models]]` entry; move it to `<config>/cake/settings.toml` and select it by name.
 
 The trust record is a versioned SHA-256 manifest of the project `.cake/` tree stored at `<config>/cake/trust/<project-key>.json`. It is owner-only (`0600`, parent `0700`), keyed to the canonical project root, and revalidated on every invocation. A changed, added, removed, or executable-bit-changed file invalidates it, so any authority-bearing `.cake/` edit requires `cake trust` again. A new worktree has a different canonical root and starts untrusted. Generated `.cake/worktrees/` directories are not configuration and are excluded from the manifest.
@@ -38,9 +38,9 @@ cake trust --revoke         # remove the record for the current root
 One-run modes never write a record:
 
 - `--trust-project` or `CAKE_TRUST_PROJECT=1` accepts the current snapshot for one invocation. Use it in CI after reviewing the checkout.
-- `--no-project-config` or `CAKE_PROJECT_CONFIG=off` ignores project `.cake/` settings, hooks, toolbox tools, and the automatic project prompt for one invocation. Repository content such as `AGENTS.md` and default-root skills remains untrusted model input.
+- `--no-project-config` or `CAKE_PROJECT_CONFIG=off` ignores project `.cake/` settings, hooks, toolbox tools, MCP servers, and the automatic project prompt for one invocation. Repository content such as `AGENTS.md` and default-root skills remains untrusted model input.
 
-The two modes conflict and fail closed. When authority-bearing configuration is present and untrusted, Cake exits `3` before resolving a provider credential, running a hook, describing a toolbox tool, starting a gate, creating a writable grant, registering a tool, or opening a session. Read-only inspection commands (`cake trust --status`, `cake debug models`, `cake debug skills`, `cake gates list`) report the state without applying authority; `cake gates doctor` and `cake bash check` enforce the trust check.
+The two modes conflict and fail closed. When authority-bearing configuration is present and untrusted, Cake exits `3` before resolving a provider credential, running a hook, describing a toolbox tool, starting an MCP server or gate, creating a writable grant, registering a tool, or opening a session. Read-only inspection commands (`cake trust --status`, `cake debug models`, `cake debug skills`, `cake debug mcp`, `cake gates list`) report the state without applying authority; `cake gates doctor` and `cake bash check` enforce the trust check.
 
 ## Project scaffolding with `cake init`
 
@@ -435,6 +435,45 @@ Each executable implements a describe and execute protocol. Valid tools are regi
 
 Toolbox executables are trusted and unsandboxed. Under `read-only`, Cake skips toolbox discovery entirely so even the describe action cannot mutate the workspace. See [Integrations](integrations.md) for the protocol and [Security](security.md) for the trust boundary.
 
+## MCP servers
+
+Cake is a Model Context Protocol client over stdio. Server definitions use the ecosystem `mcpServers` JSON shape, so the same entry works in Cake and in other MCP clients:
+
+```json
+{
+  "mcpServers": {
+    "safari-mcp": {
+      "command": "/usr/bin/safaridriver",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+Cake reads these sources in increasing precedence:
+
+1. `<config>/cake/mcp.json` (user-owned)
+2. `.cake/mcp.json` (requires project trust)
+3. each `--mcp-config <path>` file, in command-line order
+
+Later files replace earlier servers with the same name. Relative `--mcp-config` paths resolve from the invocation directory. A missing global or project file is ignored; a missing, unreadable, or malformed `--mcp-config` file is an input error and exits `3`. A malformed auto-discovered file, an unsupported transport, and an invalid server entry produce a warning and are skipped. `--no-project-config` also ignores an explicit `--mcp-config` path inside a checkout's `.cake/` tree.
+
+A server entry supports `command` (required), `args`, `env` (additional environment variables; values are never logged), `disabled`, and `timeout_secs` (per request, default 60, clamped to 1--3600). `type` must be `stdio` when present. `url` entries are recognized but rejected with a warning because HTTP transports are not implemented yet. Server names are local labels of 1--32 ASCII letters, digits, `_`, or `-`.
+
+Project `.cake/mcp.json` is authority-bearing because it names an executable; it is discovered only after the project trust record matches and is skipped by `--no-project-config`. MCP servers run as trusted executables outside the Bash sandbox with Cake's ambient environment. Under `read-only`, none are started. A server that fails to start or handshake is skipped with a warning; `cake debug mcp` shows the diagnostic and the tools of the servers that did start.
+
+Discovered tools are registered as `mcp__<server>__<tool>`; characters a provider function name rejects become `_`, and a name beyond the 64-character provider limit is truncated with a stable hash suffix. `[tools].enabled` and `--tools` select MCP tools by that registered name, and the system prompt lists them with the other tools. `notifications/tools/list_changed` is logged but does not change a live run; restart Cake to pick up a new tool list.
+
+Supported protocol eras are legacy `initialize` (`2025-11-25`) and modern per-request metadata (`2026-07-28`), selected with the `server/discover` probe. Resources, prompts, sampling, elicitation, roots, tasks, extensions, HTTP transports, and OAuth are not implemented.
+
+```text
+cake debug mcp                  # connect and list servers and tools
+cake debug mcp --json           # diagnostic document
+cake debug mcp --mcp-config ./mcp.json
+```
+
+Safari 27 exposes its developer automation this way. Enable Develop settings and "Allow remote automation and external agents", add the `safari-mcp` entry above, and run `cake debug mcp` to confirm the connection.
+
 ## Data and diagnostics
 
 `CAKE_DATA_DIR` overrides Cake's cache and session data roots. Otherwise logs and telemetry use `~/.cache/cake/`, while resumable sessions use `~/.local/share/cake/sessions/`.
@@ -446,3 +485,4 @@ Set `RUST_LOG=cake=debug` or `RUST_LOG=cake=trace` for verbose file logging. Nor
 - [ADR 002](adr/002-agent-skills.md), the skills system.
 - [ADR 003](adr/003-settings-profiles.md), settings profiles.
 - [ADR 049](adr/049-external-policy-gates-with-the-cake-gate-1-protocol.md), external policy gates and the `cake-gate/1` protocol.
+- [ADR 055](adr/055-use-a-dual-era-stdio-mcp-client-configured-by-mcp-json.md), the stdio MCP client and `mcp.json` configuration.

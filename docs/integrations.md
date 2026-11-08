@@ -153,6 +153,8 @@ Each finding carries a stable machine-readable `id`, a `status` of `warning` or 
 - `sessions.directory_unreadable` --- the sessions directory could not be read.
 - `sessions.discovery_failed` --- one warning per session file or directory entry that `sessions list` could not inspect. The message names the path and reason. At most eight are reported, with the last naming any omitted failures; working-directory filtering is not a failure.
 - `sessions.checkpoint_failed` --- a `cake sessions checkpoint` append failed. The message matches the stderr diagnostic, and the exit code follows that failure's class (see [Checkpoint append](#checkpoint-append)).
+- `mcp.config_invalid` --- an MCP configuration file or server entry was skipped. The message names the path and the reason. An explicit `--mcp-config` failure is reported as an error finding and exits `3`.
+- `mcp.server_failed` --- a configured MCP server could not start, handshake, or list its tools. The message carries the bounded diagnostic, and the invocation continues.
 
 Consumers switch on `id`, ignore unknown ids, and tolerate added fields and added findings.
 
@@ -167,6 +169,8 @@ Exit behavior follows the codes above: `ok` and `warning` exit `0`; `error` repo
 `sessions list --json` reports the sessions for the current working directory: `summary.count` is the number of listed sessions and `data.sessions` holds each `session_id`, `timestamp`, and `first_prompt`, newest first, with the session id breaking ties between equal timestamps. Unreadable, malformed, and unsupported session files appear as `sessions.discovery_failed` warnings without hiding valid sessions; a file excluded only because its working directory differs is not a warning.
 
 `cake sessions checkpoint --json` reports one append: `summary` carries `session_id`, `checkpoint_id`, `boundary`, `before_tokens`, `after_tokens`, and `retained_count`, and `data` carries `session_file` and `basis`.
+
+`cake debug mcp --json` reports one inventory of configured MCP servers. `summary.count` is the number of resolved server definitions, `summary.ready` the number that connected, and `summary.tool_count` the total number of discovered tools. `data.servers` carries each server's `name`, `command`, `args`, `env` (variable names only), `source`, `timeout_secs`, `status` (`ready` or `failed`), `protocol_version`, `server_info`, `error`, and `tools` in server order, with each tool's `name`, `registered_name`, `description`, and `has_output_schema`.
 
 `bash check --json` reports one configured-pipeline result. `summary.verdict` is `allow`, `warn`, `block`, or `bypassed`; `data` carries `verdict` (`null` for a bypass or an all-abstain chain), `code`, `confidence`, `message`, `overridden`, `bypassed`, `latency_ms`, `gate`, and `stages`. `data.gate` names the deciding gate, or `null` for a bypass or a chain with no deciding stage. `data.stages` carries one entry per gate in execution order with `gate`, `version`, `mode`, `decision`, `code`, `latency_ms`, `overridden`, `failure_class`, `failed_open`, and `disabled`; shadow entries carry their would-be decision, and later enforce stages that never ran are absent. A bypass has no stages. A startup failure is reported by `gate_startup` and a startup diagnostic, not as a stage.
 
@@ -673,9 +677,37 @@ The process runs in the session working directory with `AGENT=cake`, `AI_AGENT=c
 
 Toolbox executables are trusted and run outside the Bash sandbox. Project `.cake/tools` executables are discovered only for a trusted project and are filtered out by `--no-project-config`. Their calls may execute concurrently, and Cake cannot infer mutation targets for same-path serialization.
 
+## MCP client protocol
+
+Cake is a Model Context Protocol client over stdio. A server definition is the ecosystem `mcpServers` JSON shape: `command` is required, `args` and `env` are optional, and `timeout_secs` bounds each request (default 60, clamped to 1--3600). `disabled` skips the entry. `type` must be `stdio` when present. `url` is recognized but rejected with a warning because HTTP transports are not implemented in this release. Source precedence and trust are described in [Configuration](configuration.md#mcp-servers).
+
+At startup Cake spawns each enabled server in the invocation working directory with Cake's environment plus the configured `env`, `AGENT=cake`, and `AI_AGENT=cake`. The process runs in its own process group and is killed when the connection is dropped or the run ends.
+
+Cake speaks dual-era MCP. It first sends `server/discover` with `2026-07-28` protocol metadata and waits at most ten seconds. A successful result or an `UnsupportedProtocolVersionError` (`-32022`) identifies a modern server; Cake uses `2026-07-28` when the server advertises it and sends the protocol version, client identity, and client capabilities in `_meta` on every subsequent request. Any other error or a timeout identifies a legacy server: Cake sends `initialize` with `2025-11-25`, accepts a returned legacy version, then sends `notifications/initialized`. A server advertising only an unknown newer version is an error naming the required version.
+
+`tools/list` follows `nextCursor` for at most 100 pages. Each tool's `name`, `description`, `inputSchema`, and optional `outputSchema` are read once at startup; a missing `inputSchema` becomes an empty object schema, and a non-object schema skips the tool. Tools are registered as `mcp__<server>__<tool>` and the `[tools].enabled` exact-name selection applies to that registered name. The tool list is fixed for the invocation; `notifications/tools/list_changed` is logged and requires a restart to take effect.
+
+A `tools/call` request carries the server's own tool name and the model's argument object. The result's `content` blocks are mapped as follows:
+
+- `text` blocks are joined line by line.
+- `image` blocks become inline `ImagePart` values when the resolved model accepts images, the MIME type is PNG, JPEG, GIF, or WebP, the decoded size is within `[limits].read_image_max_bytes`, and the base64 payload is valid. Otherwise a text placeholder names the reason.
+- `audio` blocks become a text placeholder; `resource` blocks contribute their `text` field when present and a bounded placeholder otherwise; `resource_link` blocks become a named link line.
+- Unknown block types become compact JSON.
+- When there is no text, `structuredContent` is serialized as pretty JSON. An empty result is `(no output)`.
+- `isError: true` becomes a model-visible tool error carrying the rendered text. A JSON-RPC error also becomes a tool error.
+- Text output is capped at 50,000 bytes with an explicit truncation marker and an `output_truncation` compensation event.
+
+Each request has its own timeout. On timeout Cake sends `notifications/cancelled` with the request id and reason, fails that tool call, and keeps the connection. A server-initiated `ping` is answered with an empty result, `roots/list` with an empty roots list, and any other server request with JSON-RPC `-32601`. A malformed or non-JSON line on stdout is ignored with a log entry rather than corrupting another request.
+
+A server that cannot spawn, handshake, or list tools is skipped with a warning; other servers and built-in tools continue. Under the `read-only` sandbox policy no server is spawned and no MCP tool is registered. Project `.cake/mcp.json` is authority-bearing: an untrusted project fails closed before discovery, and `--no-project-config` skips the file. MCP servers are trusted executables outside the Bash sandbox, like toolbox tools and hooks.
+
+`cake debug mcp` connects, prints each server's source, command, environment variable names (never values), negotiated protocol, server identity, and discovered tools, and reports failed servers inline. `--json` emits the standard diagnostic document with `command: "debug mcp"`; `summary` carries `count`, `ready`, and `tool_count`, and `data.servers` carries one entry per configured server with `name`, `command`, `args`, `env` (names only), `source`, `timeout_secs`, `status` (`ready` or `failed`), `protocol_version`, `server_info`, `error`, and `tools` (`name`, `registered_name`, `description`, `has_output_schema`).
+
 ## Compatibility changes
 
 Changes to session versioning, record names or required fields, stream ordering, exit-code meaning, hook decisions, toolbox framing, gate framing or decisions, or machine-readable stdout are compatibility changes. They require focused serialization or integration tests, migration analysis where applicable, and an update to this document's semantics.
+
+MCP support is additive. It adds the `--mcp-config` flag, the optional `<config>/cake/mcp.json` and trusted `.cake/mcp.json` sources, the `mcp__<server>__<tool>` tool namespace, and the `cake debug mcp` command with its diagnostic checks. No existing tool, hook, toolbox, gate, provider wire shape, session record, or session format version changes. A run with no MCP configuration behaves as before.
 
 The `Stop` hook's `follow_up` request and its `follow_up_index`/`max_follow_ups` payload fields are additive. A hook that does not set `follow_up` keeps the previous log-only behavior, so an existing hook file cannot start spending model turns after an upgrade. `--output-format json` adds `intermediate_results` only for an invocation that ran a follow-up.
 
@@ -702,3 +734,4 @@ The `cake-gate/1` contract adds `gate_startup`, `gate_decision`, and `gate_evide
 - [ADR 044](adr/044-classify-settings-failures-as-input-errors.md), the exit class for a settings load or parse failure.
 - [ADR 049](adr/049-external-policy-gates-with-the-cake-gate-1-protocol.md), external policy gates and the `cake-gate/1` protocol.
 - [ADR 053](adr/053-trust-project-configuration-by-capability.md), capability-based project configuration trust.
+- [ADR 055](adr/055-use-a-dual-era-stdio-mcp-client-configured-by-mcp-json.md), the dual-era stdio MCP client and `mcp.json` configuration.
