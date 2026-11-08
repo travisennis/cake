@@ -1,5 +1,6 @@
 """Dashboard regression tests: temporal attribution, retention and safe embedding."""
 import argparse
+import ast
 import contextlib
 import io
 import json
@@ -191,6 +192,31 @@ class DashboardTests(unittest.TestCase):
         source = Path(install_dashboard.__file__).resolve().parent
         for name in install_dashboard.RUNTIME_FILES:
             self.assertTrue((source / name).exists(), name)
+
+    def test_runtime_copy_covers_the_dashboard_import_closure(self):
+        source = Path(install_dashboard.__file__).resolve().parent
+        pending = ['dashboard.py']
+        included = set()
+        while pending:
+            name = pending.pop()
+            if name in included:
+                continue
+            included.add(name)
+            path = source / name
+            self.assertTrue(path.exists(), name)
+            for node in ast.walk(ast.parse(path.read_text())):
+                if isinstance(node, ast.Import):
+                    modules = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                    modules = [node.module]
+                else:
+                    continue
+                for module in modules:
+                    local = module.split('.')[0] + '.py'
+                    if (source / local).exists():
+                        pending.append(local)
+        for name in included:
+            self.assertIn(name, install_dashboard.RUNTIME_FILES)
 
     def test_python_candidates_dedupe_the_installer_interpreter(self):
         self.assertEqual(install_dashboard.python_candidates(Path('/opt/homebrew/bin/python3')),

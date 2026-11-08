@@ -14,6 +14,8 @@ LABELS = ('com.cake.metrics.refresh', 'com.cake.metrics.reminder')
 PYTHON_FALLBACKS = ('/opt/homebrew/bin/python3', '/usr/local/bin/python3', '/usr/bin/python3')
 RUNTIME_FILES = ('dashboard.py', 'dashboard.html', 'dashboard_report.py',
                  'dashboard_sections.py', 'dashboard_render.py', 'cakelib.py',
+                 'api.py', 'cache_breaks.py', 'compensations.py', 'gates.py',
+                 'judge.py', 'outcomes.py', 'time_breakdown.py', 'tools.py',
                  'install_dashboard.py', 'metrics_job.sh')
 
 
