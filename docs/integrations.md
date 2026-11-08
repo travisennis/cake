@@ -122,7 +122,7 @@ An automatic semantic continuation is visible as the provider's partial conversa
 
 ## Diagnostic JSON
 
-`debug models --json`, `sessions list --json`, and `bash check --json` emit one document with the same top-level fields, so a consumer parses one shape instead of one dialect per command. Arrays the document carries are ordered by the command that builds them, never by directory iteration or hash order, so two runs over the same state emit the same bytes.
+`debug models --json`, `sessions list --json`, `cake mcp list --json`, `cake mcp get --json`, and `bash check --json` emit one document with the same top-level fields, so a consumer parses one shape instead of one dialect per command. Arrays the document carries are ordered by the command that builds them, never by directory iteration or hash order, so two runs over the same state emit the same bytes.
 
 ```json
 {
@@ -155,6 +155,7 @@ Each finding carries a stable machine-readable `id`, a `status` of `warning` or 
 - `sessions.checkpoint_failed` --- a `cake sessions checkpoint` append failed. The message matches the stderr diagnostic, and the exit code follows that failure's class (see [Checkpoint append](#checkpoint-append)).
 - `mcp.config_invalid` --- an MCP configuration file or server entry was skipped. The message names the path and the reason. An explicit `--mcp-config` failure is reported as an error finding and exits `3`.
 - `mcp.server_failed` --- a configured MCP server could not start, handshake, or list its tools. The message carries the bounded diagnostic, and the invocation continues.
+- `mcp.server_not_found` --- `cake mcp get` named a server that the resolved sources do not define. The finding is an error and exits `3`.
 
 Consumers switch on `id`, ignore unknown ids, and tolerate added fields and added findings.
 
@@ -171,6 +172,10 @@ Exit behavior follows the codes above: `ok` and `warning` exit `0`; `error` repo
 `cake sessions checkpoint --json` reports one append: `summary` carries `session_id`, `checkpoint_id`, `boundary`, `before_tokens`, `after_tokens`, and `retained_count`, and `data` carries `session_file` and `basis`.
 
 `cake debug mcp --json` reports one inventory of configured MCP servers. `summary.count` is the number of resolved server definitions, `summary.ready` the number that connected, and `summary.tool_count` the total number of discovered tools. `data.servers` carries each server's `name`, `command`, `args`, `env` (variable names only), `source`, `timeout_secs`, `status` (`ready` or `failed`), `protocol_version`, `server_info`, `error`, and `tools` in server order, with each tool's `name`, `registered_name`, `description`, and `has_output_schema`.
+
+`cake mcp list --json` reports the resolved definitions without connecting. `summary.count` is the number of effective definitions and `data.servers` carries each server's `name`, `command`, `args`, `env` (variable names only), `source`, and `timeout_secs` in name order. Discovery warnings appear as `mcp.config_invalid` checks; an untrusted project file is skipped and reported the same way a run reports it.
+
+`cake mcp get --json` reports one resolved definition. `summary.name` is the requested name and `data.server` carries the same fields as one `mcp list` entry. A name the resolved sources do not define emits one `mcp.server_not_found` error check and exits `3`.
 
 `bash check --json` reports one configured-pipeline result. `summary.verdict` is `allow`, `warn`, `block`, or `bypassed`; `data` carries `verdict` (`null` for a bypass or an all-abstain chain), `code`, `confidence`, `message`, `overridden`, `bypassed`, `latency_ms`, `gate`, and `stages`. `data.gate` names the deciding gate, or `null` for a bypass or a chain with no deciding stage. `data.stages` carries one entry per gate in execution order with `gate`, `version`, `mode`, `decision`, `code`, `latency_ms`, `overridden`, `failure_class`, `failed_open`, and `disabled`; shadow entries carry their would-be decision, and later enforce stages that never ran are absent. A bypass has no stages. A startup failure is reported by `gate_startup` and a startup diagnostic, not as a stage.
 
@@ -703,11 +708,13 @@ A server that cannot spawn, handshake, or list tools is skipped with a warning; 
 
 `cake debug mcp` connects, prints each server's source, command, environment variable names (never values), negotiated protocol, server identity, and discovered tools, and reports failed servers inline. `--json` emits the standard diagnostic document with `command: "debug mcp"`; `summary` carries `count`, `ready`, and `tool_count`, and `data.servers` carries one entry per configured server with `name`, `command`, `args`, `env` (names only), `source`, `timeout_secs`, `status` (`ready` or `failed`), `protocol_version`, `server_info`, `error`, and `tools` (`name`, `registered_name`, `description`, `has_output_schema`).
 
+`cake mcp add NAME [--env KEY=VALUE]... [--timeout-secs N] -- COMMAND [ARGS]...` adds or replaces one entry in `<config>/cake/mcp.json`; `cake mcp remove NAME` deletes one. Both edit only the user-owned global file, preserve unrelated top-level keys and other server entries, and replace it atomically with owner-only permissions. A malformed existing file is left untouched and exits `3`. `cake mcp list` and `cake mcp get NAME` report the resolved definitions from the same sources a run uses, without starting a server or applying project authority; they are read-only inspection commands and accept the one-run project-trust flags. Environment variable values never appear in their output. `--url` is accepted but rejected because HTTP transports are not implemented. `cake debug mcp` remains the command that connects and reports tools.
+
 ## Compatibility changes
 
 Changes to session versioning, record names or required fields, stream ordering, exit-code meaning, hook decisions, toolbox framing, gate framing or decisions, or machine-readable stdout are compatibility changes. They require focused serialization or integration tests, migration analysis where applicable, and an update to this document's semantics.
 
-MCP support is additive. It adds the `--mcp-config` flag, the optional `<config>/cake/mcp.json` and trusted `.cake/mcp.json` sources, the `mcp__<server>__<tool>` tool namespace, and the `cake debug mcp` command with its diagnostic checks. No existing tool, hook, toolbox, gate, provider wire shape, session record, or session format version changes. A run with no MCP configuration behaves as before.
+MCP support is additive. It adds the `--mcp-config` flag, the optional `<config>/cake/mcp.json` and trusted `.cake/mcp.json` sources, the `mcp__<server>__<tool>` tool namespace, the `cake debug mcp` command with its diagnostic checks, and the `cake mcp add`, `mcp get`, `mcp list`, and `mcp remove` management commands. Management edits only the global file and adds the `mcp.server_not_found` check id; it changes no file format, server entry, or run behavior. No existing tool, hook, toolbox, gate, provider wire shape, session record, or session format version changes. A run with no MCP configuration behaves as before.
 
 The `Stop` hook's `follow_up` request and its `follow_up_index`/`max_follow_ups` payload fields are additive. A hook that does not set `follow_up` keeps the previous log-only behavior, so an existing hook file cannot start spending model turns after an upgrade. `--output-format json` adds `intermediate_results` only for an invocation that ran a follow-up.
 

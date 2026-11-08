@@ -13,6 +13,7 @@ mod debug;
 mod diagnostic;
 mod gates;
 mod init;
+mod mcp;
 mod output;
 mod persistence;
 mod replay;
@@ -20,6 +21,7 @@ mod run_mode;
 mod sandbox_grants;
 mod session_factory;
 mod sessions;
+mod settings;
 mod trust;
 
 #[doc(inline)]
@@ -29,12 +31,14 @@ pub use checkpoint::CheckpointError;
 pub use cmd_runner::{CmdRunner, CommandRunOptions};
 pub use debug::DebugCommand;
 pub use diagnostic::{
-    CHECK_MCP_CONFIG, CHECK_MCP_SERVER, CHECK_SESSIONS_CHECKPOINT, CHECK_SESSIONS_DIRECTORY,
-    CHECK_SESSIONS_DISCOVERY, CHECK_SETTINGS_LOAD_FAILED, DiagnosticCheck, DiagnosticDocument,
-    report_failure, settings_warnings,
+    CHECK_MCP_CONFIG, CHECK_MCP_NOT_FOUND, CHECK_MCP_SERVER, CHECK_SESSIONS_CHECKPOINT,
+    CHECK_SESSIONS_DIRECTORY, CHECK_SESSIONS_DISCOVERY, CHECK_SETTINGS_LOAD_FAILED,
+    DiagnosticCheck, DiagnosticDocument, report_failure, settings_warnings,
 };
 pub use gates::GatesCommand;
 pub use init::{InitCommand, InitError};
+#[doc(inline)]
+pub use mcp::McpCommand;
 pub use output::{CliOutputSink, TurnResult};
 pub use persistence::execute_persistence_plan;
 pub use replay::{ReplayCommand, ReplayError};
@@ -77,6 +81,8 @@ pub enum Commands {
     Gates(GatesCommand),
     /// Create `.cake/` project scaffolding and a behavior-preserving settings file
     Init(InitCommand),
+    /// Manage configured MCP server definitions
+    Mcp(McpCommand),
     /// Replay an existing session transcript as stream-json events
     Replay(ReplayCommand),
     /// Review, inspect, and revoke project configuration trust
@@ -102,6 +108,7 @@ impl Commands {
             Self::Bash(_) => "bash",
             Self::Gates(_) => "gates",
             Self::Init(_) => "init",
+            Self::Mcp(_) => "mcp",
             Self::Replay(_) => "replay",
             Self::Trust(_) => "trust",
         }
@@ -111,7 +118,7 @@ impl Commands {
     pub(crate) const fn project_config_use(&self) -> crate::config::trust::ProjectConfigUse {
         use crate::config::trust::ProjectConfigUse;
         match self {
-            Self::Debug(_) => ProjectConfigUse::Inspect,
+            Self::Debug(_) | Self::Mcp(_) => ProjectConfigUse::Inspect,
             Self::Bash(_) => ProjectConfigUse::Enforce,
             Self::Gates(command) => command.project_config_use(),
             Self::Sessions(_) | Self::Init(_) | Self::Replay(_) | Self::Trust(_) => {
@@ -143,6 +150,7 @@ impl Commands {
             Self::Bash(command) => command.run(data_dir, options).await,
             Self::Gates(command) => command.run(data_dir, options).await,
             Self::Init(command) => command.run(data_dir, options).await,
+            Self::Mcp(command) => command.run(data_dir, options).await,
             Self::Replay(command) => command.run(data_dir, options).await,
             Self::Trust(command) => command.run(data_dir, options).await,
         }

@@ -1,11 +1,12 @@
+use crate::cli::settings::load_settings;
 use crate::cli::{
-    CHECK_MCP_CONFIG, CHECK_MCP_SERVER, CHECK_SETTINGS_LOAD_FAILED, CmdRunner, CommandRunOptions,
-    DiagnosticCheck, DiagnosticDocument, report_failure, settings_warnings,
+    CHECK_MCP_CONFIG, CHECK_MCP_SERVER, CmdRunner, CommandRunOptions, DiagnosticCheck,
+    DiagnosticDocument, report_failure, settings_warnings,
 };
 use crate::clients::mcp::connect_server;
 use crate::config::mcp::discover_mcp_servers;
 use crate::config::model::ApiType;
-use crate::config::settings::{LoadedSettings, SettingsLoad};
+use crate::config::settings::LoadedSettings;
 use crate::config::skills::{discover_skills_with_paths, parse_skill_path_list};
 use crate::config::trust::{ProjectTrustReport, TrustState};
 use crate::config::{DataDir, ModelDefinition, SettingsLoader};
@@ -93,31 +94,6 @@ impl CmdRunner for DebugCommand {
             DebugSubcommand::Mcp { json, mcp_config } => run_mcp(*json, mcp_config, options).await,
         }
     }
-}
-
-/// Load settings for an inspection command.
-fn load_settings(
-    command: &'static str,
-    json_output: bool,
-    options: &CommandRunOptions<'_>,
-) -> anyhow::Result<SettingsLoad> {
-    let current_dir = std::env::current_dir()
-        .map_err(|error| anyhow::anyhow!("Failed to get current directory: {error}"))?;
-    SettingsLoader::load_with_project_config(
-        &current_dir,
-        options.profile,
-        options.no_gate,
-        &crate::config::config_dir(),
-        options.project_config_mode,
-    )
-    .map_err(|error| {
-        report_failure(
-            json_output,
-            command,
-            CHECK_SETTINGS_LOAD_FAILED,
-            error.into(),
-        )
-    })
 }
 
 /// Tell a human that authority-bearing project configuration was ignored.

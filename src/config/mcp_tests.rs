@@ -354,3 +354,200 @@ fn environment_map_is_preserved_in_server_source_order() {
     );
     assert_eq!(server.env.get("A").unwrap(), "1");
 }
+
+fn draft(name: &str) -> McpServerDraft {
+    McpServerDraft {
+        name: name.to_string(),
+        command: "python3".to_string(),
+        args: vec!["server.py".to_string()],
+        env: BTreeMap::from([("FAKE_MCP_ERA".to_string(), "modern".to_string())]),
+        timeout_secs: 30,
+    }
+}
+
+#[test]
+fn upsert_creates_a_discoverable_global_entry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = global_config_path(tmp.path());
+
+    upsert_server(&path, &draft("fixture")).unwrap();
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let entry = &parsed["mcpServers"]["fixture"];
+    assert_eq!(entry["command"], "python3");
+    assert_eq!(entry["args"][0], "server.py");
+    assert_eq!(entry["env"]["FAKE_MCP_ERA"], "modern");
+    assert_eq!(entry["timeout_secs"], 30);
+
+    let load = discover(
+        tmp.path(),
+        tmp.path(),
+        &[],
+        &trust(TrustState::NotRequired),
+        ProjectConfigMode::Enforce,
+    );
+    assert_eq!(load.servers.len(), 1);
+    assert_eq!(load.servers[0].name, "fixture");
+    assert_eq!(load.servers[0].timeout_secs, 30);
+}
+
+#[test]
+fn upsert_replaces_one_entry_and_preserves_the_rest_of_the_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = global_config_path(tmp.path());
+    write(
+        &path,
+        r#"{
+          "meta": {"keep": true},
+          "mcpServers": {
+            "alpha": {"command": "old", "disabled": true},
+            "beta": {"command": "keep", "custom": 7}
+          }
+        }"#,
+    );
+
+    upsert_server(&path, &draft("alpha")).unwrap();
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(parsed["meta"]["keep"], true);
+    assert_eq!(parsed["mcpServers"]["alpha"]["command"], "python3");
+    assert!(parsed["mcpServers"]["alpha"].get("disabled").is_none());
+    assert_eq!(parsed["mcpServers"]["beta"]["custom"], 7);
+}
+
+#[test]
+fn upsert_omits_default_timeout_and_empty_collections() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = global_config_path(tmp.path());
+    let mut minimal = draft("minimal");
+    minimal.args.clear();
+    minimal.env.clear();
+    minimal.timeout_secs = DEFAULT_MCP_TIMEOUT_SECS;
+
+    upsert_server(&path, &minimal).unwrap();
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let entry = parsed["mcpServers"]["minimal"].as_object().unwrap();
+    assert_eq!(entry.len(), 1);
+    assert_eq!(entry["command"], "python3");
+}
+
+#[test]
+fn upsert_leaves_a_malformed_file_untouched() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = global_config_path(tmp.path());
+    let original = "{ not json";
+    write(&path, original);
+
+    let error = upsert_server(&path, &draft("fixture")).unwrap_err();
+
+    assert!(matches!(error, McpManageError::Invalid { .. }), "{error}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+}
+
+#[test]
+fn upsert_rejects_an_invalid_draft() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = global_config_path(tmp.path());
+    let mut invalid_name = draft("bad name");
+    invalid_name.name = "bad name".to_string();
+    assert!(matches!(
+        upsert_server(&path, &invalid_name),
+        Err(McpManageError::InvalidName { .. })
+    ));
+
+    let mut invalid_command = draft("fixture");
+    invalid_command.command = "  ".to_string();
+    assert!(matches!(
+        upsert_server(&path, &invalid_command),
+        Err(McpManageError::InvalidCommand { .. })
+    ));
+
+    let mut invalid_timeout = draft("fixture");
+    invalid_timeout.timeout_secs = 0;
+    assert!(matches!(
+        upsert_server(&path, &invalid_timeout),
+        Err(McpManageError::InvalidTimeout { .. })
+    ));
+
+    let mut invalid_env = draft("fixture");
+    invalid_env
+        .env
+        .insert("BAD-NAME".to_string(), "value".to_string());
+    assert!(matches!(
+        upsert_server(&path, &invalid_env),
+        Err(McpManageError::InvalidEnv { .. })
+    ));
+    assert!(!path.exists(), "validation must not create the file");
+}
+
+#[test]
+fn remove_deletes_one_entry_and_reports_presence() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = global_config_path(tmp.path());
+    write(
+        &path,
+        r#"{"mcpServers":{"alpha":{"command":"a"},"beta":{"command":"b"}}}"#,
+    );
+
+    assert!(remove_server(&path, "alpha").unwrap());
+    let parsed: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(parsed["mcpServers"].get("alpha").is_none());
+    assert_eq!(parsed["mcpServers"]["beta"]["command"], "b");
+
+    let before = std::fs::read_to_string(&path).unwrap();
+    assert!(!remove_server(&path, "alpha").unwrap());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+}
+
+#[test]
+fn remove_of_a_missing_file_is_a_no_op() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = global_config_path(tmp.path());
+
+    assert!(!remove_server(&path, "fixture").unwrap());
+    assert!(!path.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn upsert_writes_owner_only_permissions() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let path = global_config_path(tmp.path());
+
+    upsert_server(&path, &draft("fixture")).unwrap();
+
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600);
+}
+
+#[cfg(unix)]
+#[test]
+fn upsert_writes_through_a_symlink_without_replacing_it() {
+    use std::os::unix::fs::symlink;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("dotfiles-mcp.json");
+    let link = global_config_path(tmp.path());
+    std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+    write(&target, r#"{"mcpServers":{}}"#);
+    symlink(&target, &link).unwrap();
+
+    upsert_server(&link, &draft("fixture")).unwrap();
+
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&target).unwrap()).unwrap();
+    assert_eq!(parsed["mcpServers"]["fixture"]["command"], "python3");
+}

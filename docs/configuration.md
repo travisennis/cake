@@ -40,7 +40,7 @@ One-run modes never write a record:
 - `--trust-project` or `CAKE_TRUST_PROJECT=1` accepts the current snapshot for one invocation. Use it in CI after reviewing the checkout.
 - `--no-project-config` or `CAKE_PROJECT_CONFIG=off` ignores project `.cake/` settings, hooks, toolbox tools, MCP servers, and the automatic project prompt for one invocation. Repository content such as `AGENTS.md` and default-root skills remains untrusted model input.
 
-The two modes conflict and fail closed. When authority-bearing configuration is present and untrusted, Cake exits `3` before resolving a provider credential, running a hook, describing a toolbox tool, starting an MCP server or gate, creating a writable grant, registering a tool, or opening a session. Read-only inspection commands (`cake trust --status`, `cake debug models`, `cake debug skills`, `cake debug mcp`, `cake gates list`) report the state without applying authority; `cake gates doctor` and `cake bash check` enforce the trust check.
+The two modes conflict and fail closed. When authority-bearing configuration is present and untrusted, Cake exits `3` before resolving a provider credential, running a hook, describing a toolbox tool, starting an MCP server or gate, creating a writable grant, registering a tool, or opening a session. Read-only inspection commands (`cake trust --status`, `cake debug models`, `cake debug skills`, `cake debug mcp`, `cake mcp list`, `cake mcp get`, `cake gates list`) report the state without applying authority; `cake gates doctor` and `cake bash check` enforce the trust check.
 
 ## Project scaffolding with `cake init`
 
@@ -459,6 +459,18 @@ Cake reads these sources in increasing precedence:
 Later files replace earlier servers with the same name. Relative `--mcp-config` paths resolve from the invocation directory. A missing global or project file is ignored; a missing, unreadable, or malformed `--mcp-config` file is an input error and exits `3`. A malformed auto-discovered file, an unsupported transport, and an invalid server entry produce a warning and are skipped. `--no-project-config` also ignores an explicit `--mcp-config` path inside a checkout's `.cake/` tree.
 
 A server entry supports `command` (required), `args`, `env` (additional environment variables; values are never logged), `disabled`, and `timeout_secs` (per request, default 60, clamped to 1--3600). `type` must be `stdio` when present. `url` entries are recognized but rejected with a warning because HTTP transports are not implemented yet. Server names are local labels of 1--32 ASCII letters, digits, `_`, or `-`.
+
+Manage the user-owned global file from the CLI:
+
+```text
+cake mcp add safari-mcp -- /usr/bin/safaridriver --mcp
+cake mcp add fixture --env FAKE_MCP_ERA=modern --timeout-secs 30 -- python3 server.py
+cake mcp list
+cake mcp get safari-mcp --json
+cake mcp remove safari-mcp
+```
+
+`add` and `remove` edit only `<config>/cake/mcp.json`. `add` replaces an entry with the same name and preserves every other top-level key and server entry; both commands write atomically with owner-only permissions. A malformed existing file is reported and left untouched. `list` and `get` resolve the same sources a run uses, including a trusted project file, but do not start a server; they report only enabled, valid definitions, so a disabled or malformed entry is skipped exactly as a run skips it. `--json` emits the diagnostic document. Output never includes environment variable values, only their names. `--url` is accepted for parity with other clients but rejected, because Cake implements only stdio transports. `cake debug mcp` connects and lists tools.
 
 Project `.cake/mcp.json` is authority-bearing because it names an executable; it is discovered only after the project trust record matches and is skipped by `--no-project-config`. MCP servers run as trusted executables outside the Bash sandbox with Cake's ambient environment. Under `read-only`, none are started. A server that fails to start or handshake is skipped with a warning; `cake debug mcp` shows the diagnostic and the tools of the servers that did start.
 

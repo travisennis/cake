@@ -107,7 +107,7 @@ fn classify_typed_error(err: &anyhow::Error) -> Option<u8> {
         return Some(classify_settings_error(settings_err));
     }
 
-    if let Some(class) = classify_project_error(err) {
+    if let Some(class) = classify_configuration_error(err) {
         return Some(class);
     }
 
@@ -186,12 +186,19 @@ const fn classify_schema_error(error: &crate::config::OutputSchemaError) -> u8 {
     }
 }
 
-/// Project trust and explicit configuration-file failures are configuration
-/// defects: the invocation cannot use the checkout until the user trusts it or
-/// selects an explicit one-run mode, and a named config file that is missing
-/// or malformed is input the user supplied. They share the settings
-/// input-error class.
-fn classify_project_error(err: &anyhow::Error) -> Option<u8> {
+/// Project trust, explicit configuration files, and MCP management failures.
+///
+/// Trust and named configuration-file failures are configuration defects: the
+/// invocation cannot use the checkout until the user trusts it or selects an
+/// explicit one-run mode, and a named config file that is missing or malformed
+/// is input the user supplied. They share the settings input-error class. An
+/// MCP management failure carries its own class: invalid definitions and
+/// missing names are input errors, and file read or write failures are
+/// operational errors.
+fn classify_configuration_error(err: &anyhow::Error) -> Option<u8> {
+    if let Some(mcp_err) = err.downcast_ref::<crate::config::mcp::McpManageError>() {
+        return Some(mcp_err.exit_code());
+    }
     let is_project_error = err
         .downcast_ref::<crate::config::trust::TrustError>()
         .is_some()
@@ -972,6 +979,67 @@ mod tests {
             )),
         ] {
             assert_eq!(classify_to_u8(&err), code::AGENT_ERROR);
+        }
+    }
+
+    // --- MCP management error classification ---
+
+    #[test]
+    fn classify_mcp_manage_input_errors() {
+        use crate::config::mcp::McpManageError;
+
+        let errors = [
+            McpManageError::InvalidName {
+                name: "bad name".to_string(),
+            },
+            McpManageError::InvalidCommand {
+                name: "fixture".to_string(),
+            },
+            McpManageError::InvalidEnv {
+                name: "fixture".to_string(),
+                key: "BAD-NAME".to_string(),
+            },
+            McpManageError::InvalidTimeout { seconds: 0 },
+            McpManageError::UnsupportedUrl {
+                name: "remote".to_string(),
+            },
+            McpManageError::Invalid {
+                path: "/tmp/mcp.json".into(),
+                message: "invalid JSON".to_string(),
+            },
+            McpManageError::NotFound {
+                name: "missing".to_string(),
+            },
+        ];
+        for error in errors {
+            assert_eq!(
+                classify_to_u8(&anyhow::Error::new(error)),
+                code::INPUT_ERROR
+            );
+        }
+    }
+
+    #[test]
+    fn classify_mcp_manage_file_errors_as_agent_errors() {
+        use crate::config::mcp::McpManageError;
+
+        for path in ["/tmp/read-mcp.json", "/tmp/write-mcp.json"] {
+            let source = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+            let error = if path.contains("read") {
+                McpManageError::Read {
+                    path: path.into(),
+                    source,
+                }
+            } else {
+                McpManageError::Write {
+                    path: path.into(),
+                    source,
+                }
+            };
+            assert_eq!(
+                classify_to_u8(&anyhow::Error::new(error)),
+                code::AGENT_ERROR
+            );
         }
     }
 

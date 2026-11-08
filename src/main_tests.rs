@@ -72,6 +72,11 @@ fn test_project_config_surface_by_command() {
         (vec!["cake", "debug", "skills"], ProjectConfigUse::Inspect),
         (vec!["cake", "gates", "list"], ProjectConfigUse::Inspect),
         (vec!["cake", "gates", "doctor"], ProjectConfigUse::Enforce),
+        (vec!["cake", "mcp", "list"], ProjectConfigUse::Inspect),
+        (
+            vec!["cake", "mcp", "add", "fixture", "--", "true"],
+            ProjectConfigUse::Inspect,
+        ),
         (
             vec!["cake", "bash", "check", "--", "git status"],
             ProjectConfigUse::Enforce,

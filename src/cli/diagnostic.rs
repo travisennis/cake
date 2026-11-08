@@ -54,6 +54,9 @@ pub const CHECK_MCP_CONFIG: &str = "mcp.config_invalid";
 /// Check id for an MCP server that could not start or handshake.
 pub const CHECK_MCP_SERVER: &str = "mcp.server_failed";
 
+/// Check id for a `cake mcp get` name that the resolved sources do not define.
+pub const CHECK_MCP_NOT_FOUND: &str = "mcp.server_not_found";
+
 /// Overall status of a diagnostic document.
 ///
 /// The status describes the invocation, not the subject it inspects: a

@@ -20,10 +20,16 @@
 //! ```
 //!
 //! Discovery only reads and validates configuration. Starting servers and
-//! speaking the protocol live in `clients::mcp`.
+//! speaking the protocol live in `clients::mcp`. `cake mcp add` and
+//! `cake mcp remove` edit the user-owned global file through this module.
 
 use std::collections::{BTreeMap, HashMap};
+use std::fs::{self, OpenOptions};
+use std::io::Write as _;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -43,7 +49,7 @@ pub const MCP_TOOL_PREFIX: &str = "mcp__";
 pub const DEFAULT_MCP_TIMEOUT_SECS: u64 = 60;
 
 /// Maximum timeout accepted from configuration.
-const MAX_MCP_TIMEOUT_SECS: u64 = 3_600;
+pub const MAX_MCP_TIMEOUT_SECS: u64 = 3_600;
 
 /// Maximum length of a server name. Leaves room for the prefix, separators,
 /// one tool-name character, and a truncation hash within the 64-character
@@ -162,7 +168,7 @@ pub fn discover_mcp_servers(
     project_bytes: Option<&[u8]>,
 ) -> Result<McpConfigLoad, McpConfigError> {
     let mut merger = McpMerger::new();
-    merger.read(&config_dir.join("cake").join(MCP_CONFIG_FILE), false)?;
+    merger.read(&global_config_path(config_dir), false)?;
     load_project_source(
         &mut merger,
         &project_dir.join(PROJECT_MCP_CONFIG),
@@ -174,6 +180,12 @@ pub fn discover_mcp_servers(
         merger.read(&resolve_explicit(path, base_dir), true)?;
     }
     Ok(merger.finish())
+}
+
+/// The user-owned global MCP configuration file beneath the config root.
+#[must_use]
+pub fn global_config_path(config_dir: &Path) -> PathBuf {
+    config_dir.join("cake").join(MCP_CONFIG_FILE)
 }
 
 /// Resolve an explicit config path against the invocation directory.
@@ -456,7 +468,7 @@ fn build_server(
 
 /// Server names become part of a provider function name, so keep them to the
 /// characters every provider accepts.
-fn valid_server_name(name: &str) -> bool {
+pub fn valid_server_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= MAX_SERVER_NAME_LEN
         && name
@@ -465,7 +477,7 @@ fn valid_server_name(name: &str) -> bool {
 }
 
 /// Environment variable names follow the portable POSIX convention.
-fn valid_env_name(name: &str) -> bool {
+pub fn valid_env_name(name: &str) -> bool {
     let mut bytes = name.bytes();
     let Some(first) = bytes.next() else {
         return false;
@@ -524,6 +536,338 @@ fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     hex::encode(hasher.finalize())
+}
+
+/// One stdio server definition written by `cake mcp add`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct McpServerDraft {
+    /// Local instance name.
+    pub name: String,
+    /// Executable to spawn.
+    pub command: String,
+    /// Arguments passed to the executable.
+    pub args: Vec<String>,
+    /// Additional environment variables, by name.
+    pub env: BTreeMap<String, String>,
+    /// Per-request timeout in seconds.
+    pub timeout_secs: u64,
+}
+
+/// A failure while reading or editing MCP server definitions.
+#[derive(Debug, thiserror::Error)]
+pub enum McpManageError {
+    /// The server name is not a usable provider tool prefix.
+    #[error(
+        "invalid MCP server name '{name}': names must be 1-{MAX_SERVER_NAME_LEN} characters \
+         of ASCII letters, digits, '_' or '-'"
+    )]
+    InvalidName {
+        /// The rejected name.
+        name: String,
+    },
+    /// The command is missing or contains a NUL byte.
+    #[error("invalid MCP command for '{name}': provide a non-empty executable after `--`")]
+    InvalidCommand {
+        /// The server the command belongs to.
+        name: String,
+    },
+    /// An environment variable name is not a portable name.
+    #[error("invalid environment variable name '{key}' for MCP server '{name}'")]
+    InvalidEnv {
+        /// The server the environment entry belongs to.
+        name: String,
+        /// The rejected variable name.
+        key: String,
+    },
+    /// The requested timeout is outside the supported range.
+    #[error("invalid MCP timeout {seconds}s: use a value from 1 to {MAX_MCP_TIMEOUT_SECS}")]
+    InvalidTimeout {
+        /// The rejected timeout.
+        seconds: u64,
+    },
+    /// The requested transport is a remote HTTP server, which Cake does not
+    /// implement.
+    #[error(
+        "remote MCP server '{name}' is not supported: Cake implements stdio servers only; \
+         omit --url and provide the executable after `--`"
+    )]
+    UnsupportedUrl {
+        /// The server the URL belongs to.
+        name: String,
+    },
+    /// The file exists but is not the documented `mcpServers` shape.
+    #[error("MCP config file {path} is invalid: {message}")]
+    Invalid {
+        /// The file that could not be used.
+        path: PathBuf,
+        /// The parser or shape diagnostic.
+        message: String,
+    },
+    /// The file could not be read.
+    #[error("MCP config file {path} could not be read: {source}")]
+    Read {
+        /// The file that could not be read.
+        path: PathBuf,
+        /// The underlying read failure.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The file could not be written.
+    #[error("MCP config file {path} could not be written: {source}")]
+    Write {
+        /// The file that could not be written.
+        path: PathBuf,
+        /// The underlying write failure.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The named server is not defined by the resolved sources.
+    #[error("MCP server '{name}' is not configured for this directory")]
+    NotFound {
+        /// The name the command looked for.
+        name: String,
+    },
+}
+
+impl McpManageError {
+    /// The process exit code that accompanies this failure.
+    pub const fn exit_code(&self) -> u8 {
+        use crate::exit_code::code;
+        match self {
+            Self::InvalidName { .. }
+            | Self::InvalidCommand { .. }
+            | Self::InvalidEnv { .. }
+            | Self::InvalidTimeout { .. }
+            | Self::UnsupportedUrl { .. }
+            | Self::Invalid { .. }
+            | Self::NotFound { .. } => code::INPUT_ERROR,
+            Self::Read { .. } | Self::Write { .. } => code::AGENT_ERROR,
+        }
+    }
+}
+
+/// Add one stdio server to the global file, replacing an entry with the same
+/// name and preserving every other top-level key and server entry.
+///
+/// # Errors
+///
+/// Returns [`McpManageError`] for an invalid definition, an unreadable or
+/// malformed existing file, or a failed write.
+pub fn upsert_server(path: &Path, draft: &McpServerDraft) -> Result<(), McpManageError> {
+    validate_draft(draft)?;
+    let mut document = read_document(path)?;
+    let servers = servers_mut(&mut document, path)?;
+    servers.insert(draft.name.clone(), server_entry(draft));
+    write_document(path, &document)
+}
+
+/// Remove one server from the global file. Returns whether it was present.
+///
+/// A file that does not exist and a name that is absent are both `Ok(false)`,
+/// and an absent name does not rewrite the file.
+///
+/// # Errors
+///
+/// Returns [`McpManageError`] for an invalid name, an unreadable or malformed
+/// existing file, or a failed write.
+pub fn remove_server(path: &Path, name: &str) -> Result<bool, McpManageError> {
+    if !valid_server_name(name) {
+        return Err(McpManageError::InvalidName {
+            name: name.to_string(),
+        });
+    }
+    let mut document = read_document(path)?;
+    let servers = servers_mut(&mut document, path)?;
+    let removed = servers.remove(name).is_some();
+    if removed {
+        write_document(path, &document)?;
+    }
+    Ok(removed)
+}
+
+/// Validate every field that becomes a provider-visible server definition.
+fn validate_draft(draft: &McpServerDraft) -> Result<(), McpManageError> {
+    if !valid_server_name(&draft.name) {
+        return Err(McpManageError::InvalidName {
+            name: draft.name.clone(),
+        });
+    }
+    if draft.command.trim().is_empty() || draft.command.contains('\0') {
+        return Err(McpManageError::InvalidCommand {
+            name: draft.name.clone(),
+        });
+    }
+    if let Some(key) = draft.env.keys().find(|key| !valid_env_name(key)) {
+        return Err(McpManageError::InvalidEnv {
+            name: draft.name.clone(),
+            key: key.clone(),
+        });
+    }
+    if draft.timeout_secs == 0 || draft.timeout_secs > MAX_MCP_TIMEOUT_SECS {
+        return Err(McpManageError::InvalidTimeout {
+            seconds: draft.timeout_secs,
+        });
+    }
+    Ok(())
+}
+
+/// Read the file as a JSON object with an object-valued `mcpServers` member.
+fn read_document(path: &Path) -> Result<serde_json::Value, McpManageError> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(serde_json::json!({ "mcpServers": {} }));
+        },
+        Err(source) => {
+            return Err(McpManageError::Read {
+                path: path.to_path_buf(),
+                source,
+            });
+        },
+    };
+    let mut document: serde_json::Value =
+        serde_json::from_str(&text).map_err(|error| McpManageError::Invalid {
+            path: path.to_path_buf(),
+            message: format!("invalid JSON: {error}"),
+        })?;
+    let Some(root) = document.as_object_mut() else {
+        return Err(McpManageError::Invalid {
+            path: path.to_path_buf(),
+            message: "expected a JSON object with an 'mcpServers' member".to_string(),
+        });
+    };
+    match root.get_mut("mcpServers") {
+        Some(serde_json::Value::Object(_)) => {},
+        Some(_) => {
+            return Err(McpManageError::Invalid {
+                path: path.to_path_buf(),
+                message: "'mcpServers' must be a JSON object".to_string(),
+            });
+        },
+        None => {
+            root.insert(
+                "mcpServers".to_string(),
+                serde_json::Value::Object(serde_json::Map::new()),
+            );
+        },
+    }
+    Ok(document)
+}
+
+/// Borrow the `mcpServers` object after [`read_document`] guaranteed it.
+fn servers_mut<'a>(
+    document: &'a mut serde_json::Value,
+    path: &Path,
+) -> Result<&'a mut serde_json::Map<String, serde_json::Value>, McpManageError> {
+    document
+        .get_mut("mcpServers")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| McpManageError::Invalid {
+            path: path.to_path_buf(),
+            message: "'mcpServers' must be a JSON object".to_string(),
+        })
+}
+
+/// Build the JSON entry for one draft, omitting defaults.
+fn server_entry(draft: &McpServerDraft) -> serde_json::Value {
+    let mut entry = serde_json::Map::new();
+    entry.insert(
+        "command".to_string(),
+        serde_json::Value::String(draft.command.clone()),
+    );
+    if !draft.args.is_empty() {
+        entry.insert("args".to_string(), serde_json::json!(draft.args));
+    }
+    if !draft.env.is_empty() {
+        entry.insert("env".to_string(), serde_json::json!(draft.env));
+    }
+    if draft.timeout_secs != DEFAULT_MCP_TIMEOUT_SECS {
+        entry.insert(
+            "timeout_secs".to_string(),
+            serde_json::json!(draft.timeout_secs),
+        );
+    }
+    serde_json::Value::Object(entry)
+}
+
+/// Serialize the document and replace the file atomically with owner-only
+/// permissions. A symlinked destination is written through its target so a
+/// dotfiles setup keeps the link.
+fn write_document(path: &Path, document: &serde_json::Value) -> Result<(), McpManageError> {
+    let target = write_target(path)?;
+    let Some(parent) = target.parent() else {
+        return Err(McpManageError::Write {
+            path: target,
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "the config path has no parent directory",
+            ),
+        });
+    };
+    fs::create_dir_all(parent).map_err(|source| McpManageError::Write {
+        path: target.clone(),
+        source,
+    })?;
+    let mut bytes = serde_json::to_vec_pretty(document).map_err(|error| McpManageError::Write {
+        path: target.clone(),
+        source: std::io::Error::other(error),
+    })?;
+    bytes.push(b'\n');
+    let temp = temp_path(&target, parent);
+    let write_result = write_temp_file(&temp, &bytes).and_then(|()| {
+        fs::rename(&temp, &target).map_err(|source| McpManageError::Write {
+            path: target.clone(),
+            source,
+        })
+    });
+    if write_result.is_err() {
+        drop(fs::remove_file(&temp));
+    }
+    write_result
+}
+
+/// Resolve a symlinked destination so the write keeps the link in place.
+fn write_target(path: &Path) -> Result<PathBuf, McpManageError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            fs::canonicalize(path).map_err(|source| McpManageError::Write {
+                path: path.to_path_buf(),
+                source,
+            })
+        },
+        _ => Ok(path.to_path_buf()),
+    }
+}
+
+/// Build a unique sibling path for the temporary file.
+fn temp_path(path: &Path, parent: &Path) -> PathBuf {
+    parent.join(format!(
+        ".{}.{}.{}.tmp",
+        path.file_name()
+            .map_or("mcp", |name| name.to_str().unwrap_or("mcp")),
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos())
+    ))
+}
+
+/// Create the temporary file with owner-only permissions and flush it.
+fn write_temp_file(path: &Path, bytes: &[u8]) -> Result<(), McpManageError> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(path).map_err(|source| McpManageError::Write {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|source| McpManageError::Write {
+            path: path.to_path_buf(),
+            source,
+        })
 }
 
 #[cfg(test)]
