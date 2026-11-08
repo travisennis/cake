@@ -174,7 +174,7 @@ pub(crate) struct CodingAssistant {
     /// Load MCP server definitions from an `mcpServers` JSON file. Can be
     /// repeated; later files override servers with the same name.
     ///
-    /// The default sources are `~/.config/cake/mcp.json` and, for a trusted
+    /// The default sources are `<config>/cake/mcp.json` and, for a trusted
     /// project, `.cake/mcp.json`. See `cake debug mcp`.
     #[arg(long, value_name = "PATH")]
     pub mcp_config: Vec<PathBuf>,
