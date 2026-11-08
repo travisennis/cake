@@ -30,6 +30,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
+use crate::config::mcp::McpExposure;
 use crate::config::settings::ToolLimits;
 use crate::gates::composer::GatePipeline;
 use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
@@ -222,6 +223,7 @@ mod read_image;
 mod scheduling;
 mod script_evidence;
 mod secure_temp_dir;
+mod tool_search;
 mod toolbox;
 mod write;
 
@@ -231,6 +233,7 @@ pub use json_repair::repair_json_args;
 pub(super) use mcp::mcp_tool_entry;
 pub use read::extract_path as read_extract_path;
 pub(super) use scheduling::{ScheduledToolCall, schedule_tool_calls};
+pub use tool_search::{TOOL_SEARCH_NAME, ToolSearchEntry, tool_search_enabled, tool_search_entry};
 pub(super) use toolbox::toolbox_tool_entry;
 
 /// Compensation events derivable from a tool call's arguments and outcome,
@@ -1042,6 +1045,17 @@ impl ToolRegistry {
         self.find(name).is_some()
     }
 
+    /// Remove one registered tool by name, returning whether it was present.
+    pub(super) fn remove_by_name(&mut self, name: &str) -> bool {
+        let before = self.entries.len();
+        self.entries.retain(|entry| entry.definition.name != name);
+        let removed = self.entries.len() != before;
+        if removed {
+            self.refresh_definitions();
+        }
+        removed
+    }
+
     /// Return whether a registered tool's executor applies the conservative
     /// JSON repair pass before parsing its arguments. Unregistered names are
     /// never repaired: they never reach an argument parser.
@@ -1523,6 +1537,7 @@ pub fn format_tool_list_section(
         sandbox_policy,
         toolbox_tools,
         &[],
+        &[],
         enabled_tools,
         supports_images,
     )
@@ -1540,13 +1555,33 @@ pub struct ExternalToolInfo {
     pub description: String,
 }
 
+/// One connected MCP server, for the compact prompt summary.
+///
+/// `enabled_tool_count` is already filtered by the active `--tools` selection,
+/// so a server with no model-accessible tools is omitted from the summary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExternalServerInfo {
+    /// Local server name.
+    pub name: String,
+    /// Optional one-line description from configuration.
+    pub description: Option<String>,
+    /// Effective exposure for this run.
+    pub exposure: McpExposure,
+    /// Total tools discovered on the server.
+    pub tool_count: usize,
+    /// Tools remaining after the exact-name allowlist.
+    pub enabled_tool_count: usize,
+}
+
 /// Format the tool list, including tools discovered from MCP servers.
 ///
 /// `mcp_tools` is empty under the read-only policy, matching the registry's
-/// filtering of external tools.
+/// filtering of external tools. `mcp_servers` carries one summary row per
+/// non-hidden, model-accessible server.
 pub fn format_tool_list_section_with_mcp(
     sandbox_policy: SandboxPolicy,
     toolbox_tools: &[crate::config::toolbox::ToolboxTool],
+    mcp_servers: &[ExternalServerInfo],
     mcp_tools: &[ExternalToolInfo],
     enabled_tools: Option<&[String]>,
     supports_images: bool,
@@ -1569,6 +1604,14 @@ pub fn format_tool_list_section_with_mcp(
     let has_mcp_tools = mcp_tools
         .iter()
         .any(|tool| is_enabled_tool(&tool.name, enabled_tools));
+    let summarized_servers: Vec<&ExternalServerInfo> = mcp_servers
+        .iter()
+        .filter(|server| server.enabled_tool_count > 0 && server.exposure != McpExposure::Hidden)
+        .collect();
+    let has_deferred_tools = tool_search_enabled(enabled_tools)
+        && summarized_servers
+            .iter()
+            .any(|server| server.exposure == McpExposure::Deferred);
     for (name, desc) in registry
         .definitions()
         .iter()
@@ -1594,7 +1637,18 @@ pub fn format_tool_list_section_with_mcp(
             .trim_end_matches('.');
         _ = writeln!(s, "- **{name}**: {first_sentence}.");
     }
-    let has_tools = has_any_enabled_tools(&registry, has_toolbox_tools, has_mcp_tools);
+    if has_deferred_tools {
+        s.push_str(
+            "- **ToolSearch**: Search MCP tools that are not loaded yet and make matching \
+             tools available on the next turn.\n",
+        );
+    }
+    append_mcp_server_summary(&mut s, &summarized_servers);
+    let has_tools = has_any_enabled_tools(
+        &registry,
+        has_toolbox_tools,
+        has_mcp_tools || !summarized_servers.is_empty(),
+    );
     if has_tools {
         s.push_str(
             "\nEvery tool call may include an optional `intent` string: one short, \
@@ -1602,8 +1656,57 @@ pub fn format_tool_list_section_with_mcp(
              Include it on every call when you can.\n",
         );
     }
-    append_tool_availability_footer(&mut s, has_tools);
+    append_tool_availability_footer(&mut s, has_tools, has_deferred_tools);
     s
+}
+
+/// Bound on one server description in the prompt summary.
+const MAX_SERVER_DESCRIPTION_CHARS: usize = 200;
+
+fn append_mcp_server_summary(s: &mut String, servers: &[&ExternalServerInfo]) {
+    if servers.is_empty() {
+        return;
+    }
+    s.push_str("\n## MCP servers\n\n");
+    for server in servers {
+        let tools = match server.enabled_tool_count {
+            1 if server.tool_count == 1 => "1 tool".to_string(),
+            count if count == server.tool_count => format!("{count} tools"),
+            1 => format!("1 of {} tools", server.tool_count),
+            count => format!("{count} of {} tools", server.tool_count),
+        };
+        let mut line = format!(
+            "- **{}** (`{}`, {tools})",
+            server.name,
+            server.exposure.as_str()
+        );
+        if let Some(description) = server.description.as_deref()
+            && let Some(description) = concise_description(description)
+        {
+            line.push_str(": ");
+            line.push_str(&description);
+            line.push('.');
+        }
+        line.push('\n');
+        s.push_str(&line);
+    }
+}
+
+/// Collapse a description to one bounded sentence for the server summary.
+fn concise_description(description: &str) -> Option<String> {
+    let one_line = description.split_whitespace().collect::<Vec<_>>().join(" ");
+    let first_sentence = one_line.split('.').next().unwrap_or(&one_line).trim();
+    if first_sentence.is_empty() {
+        return None;
+    }
+    let mut bounded: String = first_sentence
+        .chars()
+        .take(MAX_SERVER_DESCRIPTION_CHARS)
+        .collect();
+    if first_sentence.chars().count() > MAX_SERVER_DESCRIPTION_CHARS {
+        bounded.push_str("...");
+    }
+    Some(bounded)
 }
 
 fn has_any_enabled_tools(
@@ -1614,8 +1717,13 @@ fn has_any_enabled_tools(
     !registry.definitions().is_empty() || has_toolbox_tools || has_mcp_tools
 }
 
-fn append_tool_availability_footer(s: &mut String, has_tools: bool) {
-    if has_tools {
+fn append_tool_availability_footer(s: &mut String, has_tools: bool, has_deferred_tools: bool) {
+    if has_deferred_tools {
+        s.push_str(
+            "\nOnly these tools are available directly. Use `ToolSearch` to load tools from \
+             deferred MCP servers. There is no Glob, Grep, or LS tool.",
+        );
+    } else if has_tools {
         s.push_str("\nOnly these tools are available. There is no Glob, Grep, or LS tool.");
     } else {
         s.push_str("\nNo tools are available.");
@@ -2290,6 +2398,7 @@ mod tests {
         let result = format_tool_list_section_with_mcp(
             SandboxPolicy::WorkspaceWrite,
             &[],
+            &[],
             &[fixture_mcp_tool()],
             None,
             false,
@@ -2303,11 +2412,69 @@ mod tests {
         let result = format_tool_list_section_with_mcp(
             SandboxPolicy::WorkspaceWrite,
             &[],
+            &[],
             &[fixture_mcp_tool()],
             Some(&selected),
             false,
         );
         assert!(!result.contains("mcp__safari-mcp__list_tabs"));
+    }
+
+    fn fixture_mcp_server(exposure: McpExposure) -> ExternalServerInfo {
+        ExternalServerInfo {
+            name: "safari-mcp".to_string(),
+            description: Some("Browser automation. Extra detail.".to_string()),
+            exposure,
+            tool_count: 2,
+            enabled_tool_count: 2,
+        }
+    }
+
+    #[test]
+    fn format_tool_list_section_summarizes_deferred_mcp_servers() {
+        let result = format_tool_list_section_with_mcp(
+            SandboxPolicy::WorkspaceWrite,
+            &[],
+            &[fixture_mcp_server(McpExposure::Deferred)],
+            &[],
+            None,
+            false,
+        );
+        assert!(result.contains("## MCP servers"));
+        assert!(result.contains("- **safari-mcp** (`deferred`, 2 tools): Browser automation.\n"));
+        assert!(result.contains("- **ToolSearch**:"));
+        assert!(result.contains("Only these tools are available directly."));
+        assert!(!result.contains("- **mcp__safari-mcp__list_tabs**"));
+    }
+
+    #[test]
+    fn format_tool_list_section_summarizes_direct_mcp_servers() {
+        let result = format_tool_list_section_with_mcp(
+            SandboxPolicy::WorkspaceWrite,
+            &[],
+            &[fixture_mcp_server(McpExposure::Direct)],
+            &[fixture_mcp_tool()],
+            None,
+            false,
+        );
+        assert!(result.contains("- **safari-mcp** (`direct`, 2 tools): Browser automation.\n"));
+        assert!(result.contains("- **mcp__safari-mcp__list_tabs**: List open tabs.\n"));
+        assert!(!result.contains("- **ToolSearch**:"));
+        assert!(result.contains("Only these tools are available."));
+    }
+
+    #[test]
+    fn format_tool_list_section_omits_hidden_mcp_servers() {
+        let result = format_tool_list_section_with_mcp(
+            SandboxPolicy::WorkspaceWrite,
+            &[],
+            &[fixture_mcp_server(McpExposure::Hidden)],
+            &[],
+            None,
+            false,
+        );
+        assert!(!result.contains("safari-mcp"));
+        assert!(!result.contains("## MCP servers"));
     }
 
     #[test]

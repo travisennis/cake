@@ -498,7 +498,9 @@ impl Agent {
         self.tool_call_count += u32::try_from(function_calls.len()).unwrap_or(u32::MAX);
         let tool_plans = self.plan_tool_calls(function_calls).await?;
         self.record_hook_blocked_denials(&tool_plans);
-        Ok(self.run_tool_plans(tool_plans).await)
+        let results = self.run_tool_plans(tool_plans).await;
+        self.activate_pending_mcp_tools();
+        Ok(results)
     }
 
     async fn plan_tool_calls(

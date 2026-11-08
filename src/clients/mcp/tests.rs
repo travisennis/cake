@@ -3,7 +3,7 @@ use std::path::Path;
 
 use super::*;
 use crate::clients::mcp::client::choose_protocol;
-use crate::config::mcp::McpServerConfig;
+use crate::config::mcp::{McpExposure, McpServerConfig};
 
 const FIXTURE: &str = include_str!("fixtures/fake_mcp_server.py");
 
@@ -16,6 +16,8 @@ fn fixture_config(directory: &Path, era: &str, timeout_secs: u64) -> McpServerCo
         args: vec![script.display().to_string()],
         env: BTreeMap::from([("FAKE_MCP_ERA".to_string(), era.to_string())]),
         timeout_secs,
+        description: Some("Fixture server".to_string()),
+        exposure: McpExposure::Deferred,
         source: directory.join("mcp.json"),
     }
 }
@@ -34,6 +36,8 @@ async fn legacy_server_negotiates_and_lists_every_page() {
     let (_directory, server) = connect("legacy", 10).await;
 
     assert_eq!(server.name, "fake");
+    assert_eq!(server.description.as_deref(), Some("Fixture server"));
+    assert_eq!(server.exposure, McpExposure::Deferred);
     assert_eq!(server.protocol_version, "2025-11-25");
     assert_eq!(server.server_info.as_deref(), Some("fake-legacy"));
     let names: Vec<&str> = server.tools.iter().map(|tool| tool.name.as_str()).collect();
@@ -141,6 +145,8 @@ async fn a_process_that_exits_before_handshake_is_reported() {
         args: vec!["-c".to_string(), "echo nope; exit 1".to_string()],
         env: BTreeMap::new(),
         timeout_secs: 5,
+        description: None,
+        exposure: McpExposure::Direct,
         source: directory.path().join("mcp.json"),
     };
 

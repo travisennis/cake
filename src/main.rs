@@ -881,6 +881,9 @@ impl CodingAssistant {
         }
         let mut servers = Vec::new();
         for config in &discovery.servers {
+            if config.exposure == crate::config::mcp::McpExposure::Hidden {
+                continue;
+            }
             match crate::clients::mcp::connect_server(config, current_dir).await {
                 Ok(server) => servers.push(server),
                 Err(error) => {

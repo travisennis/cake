@@ -114,7 +114,7 @@ The sandbox also cannot promise confidentiality from a model or provider once co
 
 ## Trusted extensions
 
-Hooks are user or project control-plane commands. Toolbox tools are user-provided executables exposed to the model. MCP servers are user-provided executables that expose a tool protocol. Gate executables enforce command policy. All four run with the Cake process's ambient host authority, outside the Bash sandbox. Only enable hooks, toolbox directories, MCP servers, and gate executables you trust. Project hook files, project-local `.cake/tools` entries, and `.cake/mcp.json` are loaded only after the project trust record matches.
+Hooks are user or project control-plane commands. Toolbox tools are user-provided executables exposed to the model. MCP servers are user-provided executables that expose a tool protocol. Gate executables enforce command policy. All four run with the Cake process's ambient host authority, outside the Bash sandbox. Only enable hooks, toolbox directories, MCP servers, and gate executables you trust. Project hook files, project-local `.cake/tools` entries, and `.cake/mcp.json` are loaded only after the project trust record matches. MCP `exposure` controls model visibility only: `hidden` prevents startup, but `deferred` and `direct` servers are equally trusted and unsandboxed.
 
 `PreToolUse` hooks are a primary enforcement path for in-process mutations (Edit and Write) and for toolbox calls, which run unsandboxed. Hooks evaluate the same structured `tool_input` the tool will act on, so a payload whose raw JSON is malformed but repairable cannot bypass a hook that inspects the tool's structured arguments.
 

@@ -42,7 +42,7 @@ fn write_fixture_server(env: &TestEnv) -> PathBuf {
     script
 }
 
-fn write_global_mcp_config(env: &TestEnv, script: &Path, era: &str) {
+fn write_global_mcp_config(env: &TestEnv, script: &Path, era: &str, exposure: &str) {
     let config_dir = env.home_dir.join(".config").join("cake");
     fs::create_dir_all(&config_dir).expect("failed to create global config directory");
     let config = serde_json::json!({
@@ -50,7 +50,8 @@ fn write_global_mcp_config(env: &TestEnv, script: &Path, era: &str) {
             "fixture": {
                 "command": "python3",
                 "args": [script.display().to_string()],
-                "env": { "FAKE_MCP_ERA": era }
+                "env": { "FAKE_MCP_ERA": era },
+                "exposure": exposure
             }
         }
     });
@@ -71,6 +72,22 @@ fn tool_call_response() -> serde_json::Value {
                 "call_id": "call-1",
                 "name": "mcp__fixture__echo",
                 "arguments": "{\"message\": \"hello\"}"
+            }
+        ],
+        "usage": { "input_tokens": 10, "output_tokens": 5, "total_tokens": 15 }
+    })
+}
+
+fn tool_search_response() -> serde_json::Value {
+    serde_json::json!({
+        "id": "resp-search",
+        "output": [
+            {
+                "type": "function_call",
+                "id": "fc-search",
+                "call_id": "call-search",
+                "name": "ToolSearch",
+                "arguments": "{\"query\": \"echo\"}"
             }
         ],
         "usage": { "input_tokens": 10, "output_tokens": 5, "total_tokens": 15 }
@@ -119,13 +136,37 @@ async fn mount_two_turn_provider(mock_server: &MockServer) {
         .await;
 }
 
+/// Mount search, MCP dispatch, then final answer for deferred MCP coverage.
+async fn mount_deferred_provider(mock_server: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(tool_search_response()))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(mock_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(tool_call_response()))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(mock_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(final_response()))
+        .expect(1)
+        .mount(mock_server)
+        .await;
+}
+
 #[tokio::test]
 async fn global_mcp_server_is_registered_and_called() {
     let env = TestEnv::new("cake-mcp-e2e-test");
     let mock_server = MockServer::start().await;
     write_responses_settings(&env, &mock_server.uri());
     let script = write_fixture_server(&env);
-    write_global_mcp_config(&env, &script, "modern");
+    write_global_mcp_config(&env, &script, "modern", "direct");
     mount_two_turn_provider(&mock_server).await;
 
     let output = env
@@ -153,6 +194,10 @@ async fn global_mcp_server_is_registered_and_called() {
         "system prompt should list the MCP tool: {session}"
     );
     assert!(
+        !session.contains("- **ToolSearch**:"),
+        "a direct server should not advertise ToolSearch: {session}"
+    );
+    assert!(
         session.contains("echo: hello"),
         "session should record the MCP tool result: {session}"
     );
@@ -170,12 +215,115 @@ async fn global_mcp_server_is_registered_and_called() {
 }
 
 #[tokio::test]
+async fn deferred_mcp_tool_is_discovered_and_called() {
+    let env = TestEnv::new("cake-mcp-deferred-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+    let script = write_fixture_server(&env);
+    write_global_mcp_config(&env, &script, "modern", "deferred");
+    mount_deferred_provider(&mock_server).await;
+
+    let output = env
+        .command()
+        .arg("say hello through the deferred fixture")
+        .env(TEST_KEY, "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+
+    assert!(
+        output.status.success(),
+        "cake should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let session = session_file_contents(&env);
+    assert!(
+        session.contains("## MCP servers"),
+        "the prompt should summarize MCP servers: {session}"
+    );
+    assert!(
+        session.contains("`deferred`, 4 tools"),
+        "the prompt should mark the server deferred: {session}"
+    );
+    assert!(
+        session.contains("- **ToolSearch**:"),
+        "the prompt should advertise ToolSearch: {session}"
+    );
+    assert!(
+        !session.contains("- **mcp__fixture__echo**:"),
+        "a deferred tool must not be listed eagerly: {session}"
+    );
+    assert!(
+        session.contains("echo: hello"),
+        "the activated tool should run: {session}"
+    );
+
+    let requests = mock_server
+        .received_requests()
+        .await
+        .expect("recorded requests");
+    assert_eq!(requests.len(), 3, "search, tool, and final turns");
+    let first = String::from_utf8_lossy(&requests[0].body);
+    assert!(first.contains("\"ToolSearch\""), "{first}");
+    assert!(
+        !first.contains("\"mcp__fixture__echo\""),
+        "deferred tool schema must not be sent before activation: {first}"
+    );
+    let second = String::from_utf8_lossy(&requests[1].body);
+    assert!(
+        second.contains("mcp__fixture__echo"),
+        "the activated tool schema should be sent on the next turn: {second}"
+    );
+}
+
+#[tokio::test]
+async fn explicit_tool_selection_falls_back_to_direct_registration() {
+    let env = TestEnv::new("cake-mcp-selected-tool-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+    let script = write_fixture_server(&env);
+    write_global_mcp_config(&env, &script, "modern", "deferred");
+    mount_two_turn_provider(&mock_server).await;
+
+    let output = env
+        .command()
+        .args([
+            "--tools",
+            "mcp__fixture__echo",
+            "say hello through the selected fixture",
+        ])
+        .env(TEST_KEY, "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+
+    assert!(
+        output.status.success(),
+        "cake should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let session = session_file_contents(&env);
+    assert!(
+        session.contains("- **mcp__fixture__echo**:"),
+        "an explicitly selected deferred tool should be listed directly: {session}"
+    );
+    assert!(
+        !session.contains("- **ToolSearch**:"),
+        "ToolSearch is not in the exact-name allowlist: {session}"
+    );
+    assert!(session.contains("echo: hello"));
+}
+
+#[tokio::test]
 async fn legacy_mcp_server_also_works() {
     let env = TestEnv::new("cake-mcp-legacy-test");
     let mock_server = MockServer::start().await;
     write_responses_settings(&env, &mock_server.uri());
     let script = write_fixture_server(&env);
-    write_global_mcp_config(&env, &script, "legacy");
+    write_global_mcp_config(&env, &script, "legacy", "direct");
     mount_two_turn_provider(&mock_server).await;
 
     let output = env
@@ -193,6 +341,50 @@ async fn legacy_mcp_server_also_works() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(session_file_contents(&env).contains("echo: hello"));
+}
+
+#[tokio::test]
+async fn hidden_mcp_server_is_neither_started_nor_advertised() {
+    let env = TestEnv::new("cake-mcp-hidden-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+    let config_dir = env.home_dir.join(".config").join("cake");
+    fs::create_dir_all(&config_dir).expect("failed to create global config directory");
+    fs::write(
+        config_dir.join("mcp.json"),
+        r#"{"mcpServers":{"broken":{"command":"/nonexistent/server","exposure":"hidden"}}}"#,
+    )
+    .expect("failed to write global mcp.json");
+
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(final_response()))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let output = env
+        .command()
+        .arg("say hello")
+        .env(TEST_KEY, "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+
+    assert!(
+        output.status.success(),
+        "cake should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("skipping MCP server"),
+        "a hidden server must not be started: {stderr}"
+    );
+    let session = session_file_contents(&env);
+    assert!(!session.contains("broken"), "{session}");
+    assert!(!session.contains("- **ToolSearch**:"), "{session}");
 }
 
 #[tokio::test]

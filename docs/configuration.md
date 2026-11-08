@@ -444,7 +444,9 @@ Cake is a Model Context Protocol client over stdio. Server definitions use the e
   "mcpServers": {
     "safari-mcp": {
       "command": "/usr/bin/safaridriver",
-      "args": ["--mcp"]
+      "args": ["--mcp"],
+      "description": "Safari browser automation",
+      "exposure": "deferred"
     }
   }
 }
@@ -458,23 +460,32 @@ Cake reads these sources in increasing precedence:
 
 Later files replace earlier servers with the same name. Relative `--mcp-config` paths resolve from the invocation directory. A missing global or project file is ignored; a missing, unreadable, or malformed `--mcp-config` file is an input error and exits `3`. A malformed auto-discovered file, an unsupported transport, and an invalid server entry produce a warning and are skipped. `--no-project-config` also ignores an explicit `--mcp-config` path inside a checkout's `.cake/` tree.
 
-A server entry supports `command` (required), `args`, `env` (additional environment variables; values are never logged), `disabled`, and `timeout_secs` (per request, default 60, clamped to 1--3600). `type` must be `stdio` when present. `url` entries are recognized but rejected with a warning because HTTP transports are not implemented yet. Server names are local labels of 1--32 ASCII letters, digits, `_`, or `-`.
+A server entry supports `command` (required), `args`, `env` (additional environment variables; values are never logged), `disabled`, `timeout_secs` (per request, default 60, clamped to 1--3600), `description` (one line shown in the model's MCP server summary), and `exposure`. `exposure` is one of:
+
+- `deferred` (default): the server's tools stay out of the request until the model calls `ToolSearch`; the prompt shows only the server name, description, and tool count.
+- `direct`: every discovered tool is registered eagerly and listed with the other tools, matching the original MCP behavior.
+- `hidden`: the server is neither started nor shown to the model.
+
+`type` must be `stdio` when present. `url` entries are recognized but rejected with a warning because HTTP transports are not implemented yet. Server names are local labels of 1--32 ASCII letters, digits, `_`, or `-`.
 
 Manage the user-owned global file from the CLI:
 
 ```text
 cake mcp add safari-mcp -- /usr/bin/safaridriver --mcp
-cake mcp add fixture --env FAKE_MCP_ERA=modern --timeout-secs 30 -- python3 server.py
+cake mcp add fixture --description "Fixture tools" --exposure direct \
+  --env FAKE_MCP_ERA=modern --timeout-secs 30 -- python3 server.py
 cake mcp list
 cake mcp get safari-mcp --json
 cake mcp remove safari-mcp
 ```
 
-`add` and `remove` edit only `<config>/cake/mcp.json`. `add` replaces an entry with the same name and preserves every other top-level key and server entry; both commands write atomically with owner-only permissions. A malformed existing file is reported and left untouched. `list` and `get` resolve the same sources a run uses, including a trusted project file, but do not start a server; they report only enabled, valid definitions, so a disabled or malformed entry is skipped exactly as a run skips it. `--json` emits the diagnostic document. Output never includes environment variable values, only their names. `--url` is accepted for parity with other clients but rejected, because Cake implements only stdio transports. `cake debug mcp` connects and lists tools.
+`add` accepts `--description TEXT` and `--exposure direct|deferred|hidden` and replaces an entry with the same name. It and `remove` edit only `<config>/cake/mcp.json`, preserve every other top-level key and server entry, and write atomically with owner-only permissions. A malformed existing file is reported and left untouched. `list` and `get` resolve the same sources a run uses, including a trusted project file, but do not start a server; they report only enabled, valid definitions, so a disabled or malformed entry is skipped exactly as a run skips it. Their output includes `description` and `exposure`. `--json` emits the diagnostic document. Output never includes environment variable values, only their names. `--url` is accepted for parity with other clients but rejected, because Cake implements only stdio transports. `cake debug mcp` connects and lists tools and reports both fields.
 
 Project `.cake/mcp.json` is authority-bearing because it names an executable; it is discovered only after the project trust record matches and is skipped by `--no-project-config`. MCP servers run as trusted executables outside the Bash sandbox with Cake's ambient environment. Under `read-only`, none are started. A server that fails to start or handshake is skipped with a warning; `cake debug mcp` shows the diagnostic and the tools of the servers that did start.
 
-Discovered tools are registered as `mcp__<server>__<tool>`; characters a provider function name rejects become `_`, and a name beyond the 64-character provider limit is truncated with a stable hash suffix. `[tools].enabled` and `--tools` select MCP tools by that registered name, and the system prompt lists them with the other tools. `notifications/tools/list_changed` is logged but does not change a live run; restart Cake to pick up a new tool list.
+Discovered tools are registered as `mcp__<server>__<tool>`; characters a provider function name rejects become `_`, and a name beyond the 64-character provider limit is truncated with a stable hash suffix. A `deferred` server contributes a compact `## MCP servers` prompt section and a searchable catalog instead of tool definitions. `ToolSearch` ranks each catalog entry's registered name, description, and argument-schema text, returns up to five matches by default, and activates the selected definitions for the next model turn. Activation lasts for the invocation; a resumed session starts with deferred tools inactive.
+
+`[tools].enabled` and `--tools` select MCP tools by registered name. When the exact-name allowlist excludes `ToolSearch`, Cake registers the permitted deferred tools directly so an explicit selection still works. If another tool already owns the `ToolSearch` name, Cake also falls back to direct registration with a warning. `notifications/tools/list_changed` is logged but does not change a live run; restart Cake to pick up a new tool list.
 
 Supported protocol eras are legacy `initialize` (`2025-11-25`) and modern per-request metadata (`2026-07-28`), selected with the `server/discover` probe. Resources, prompts, sampling, elicitation, roots, tasks, extensions, HTTP transports, and OAuth are not implemented.
 
@@ -483,6 +494,8 @@ cake debug mcp                  # connect and list servers and tools
 cake debug mcp --json           # diagnostic document
 cake debug mcp --mcp-config ./mcp.json
 ```
+
+`cake debug mcp` reports a `hidden` server without connecting, and reports `description` and `exposure` for every entry.
 
 Safari 27 exposes its developer automation this way. Enable Develop settings and "Allow remote automation and external agents", add the `safari-mcp` entry above, and run `cake debug mcp` to confirm the connection.
 

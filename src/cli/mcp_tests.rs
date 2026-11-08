@@ -12,6 +12,10 @@ fn parses_add_with_env_args_and_timeout() {
         "TOKEN=",
         "--timeout-secs",
         "30",
+        "--description",
+        "Fixture server for tests",
+        "--exposure",
+        "hidden",
         "--",
         "python3",
         "server.py",
@@ -23,6 +27,11 @@ fn parses_add_with_env_args_and_timeout() {
         panic!("expected mcp add");
     };
     assert_eq!(args.name, "fixture");
+    assert_eq!(
+        args.description.as_deref(),
+        Some("Fixture server for tests")
+    );
+    assert!(matches!(args.exposure, ExposureArg::Hidden));
     assert_eq!(
         args.env,
         vec![
@@ -111,6 +120,8 @@ fn text_output_names_environment_variables_without_values() {
         args: vec!["server.py".to_string()],
         env: vec!["FAKE_MCP_ERA".to_string()],
         timeout_secs: 30,
+        description: Some("Fixture server for tests".to_string()),
+        exposure: McpExposure::Deferred,
         source: "/tmp/mcp.json".to_string(),
     };
     let mut output = String::new();
@@ -118,6 +129,11 @@ fn text_output_names_environment_variables_without_values() {
 
     assert!(output.contains("command: python3 server.py"), "{output}");
     assert!(output.contains("env: FAKE_MCP_ERA"), "{output}");
+    assert!(
+        output.contains("description: Fixture server for tests"),
+        "{output}"
+    );
+    assert!(output.contains("exposure: deferred"), "{output}");
     assert!(output.contains("timeout: 30s"), "{output}");
     assert!(!output.contains("modern"), "{output}");
 }

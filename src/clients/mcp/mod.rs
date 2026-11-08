@@ -25,7 +25,7 @@ use tracing::warn;
 
 pub use client::McpClient;
 
-use crate::config::mcp::{McpServerConfig, registered_tool_name};
+use crate::config::mcp::{McpExposure, McpServerConfig, registered_tool_name};
 
 /// Protocol version used for modern per-request metadata.
 pub const MODERN_PROTOCOL_VERSION: &str = "2026-07-28";
@@ -58,6 +58,10 @@ pub struct McpTool {
 pub struct McpServer {
     /// Local instance name from configuration.
     pub name: String,
+    /// Optional one-line description from configuration.
+    pub description: Option<String>,
+    /// How this server's tools reach the model.
+    pub exposure: McpExposure,
     /// Tools discovered at startup, in server order.
     pub tools: Vec<McpTool>,
     /// Live connection used by tool executors.
@@ -73,6 +77,8 @@ impl std::fmt::Debug for McpServer {
         formatter
             .debug_struct("McpServer")
             .field("name", &self.name)
+            .field("description", &self.description)
+            .field("exposure", &self.exposure)
             .field("tools", &self.tools.len())
             .field("protocol_version", &self.protocol_version)
             .field("server_info", &self.server_info)
@@ -109,6 +115,8 @@ pub async fn connect_server(
                 let server_info = client.server_info();
                 Ok(McpServer {
                     name: config.name.clone(),
+                    description: config.description.clone(),
+                    exposure: config.exposure,
                     tools,
                     client: Arc::new(client),
                     protocol_version: protocol.version.clone(),

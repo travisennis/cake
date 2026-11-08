@@ -67,6 +67,31 @@ fn add_writes_a_global_entry() {
         "modern"
     );
     assert_eq!(config["mcpServers"]["fixture"]["timeout_secs"], 30);
+    assert_eq!(
+        config["mcpServers"]["fixture"]["description"],
+        "Fixture server for tests"
+    );
+    assert_eq!(config["mcpServers"]["fixture"]["exposure"], "direct");
+}
+
+#[test]
+fn add_defaults_to_deferred_exposure() {
+    let env = TestEnv::new("cake-mcp-manage-default-exposure");
+
+    let output = run(
+        &env,
+        &["mcp", "add", "fixture", "--", "python3", "server.py"],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+
+    let config = read_config(&global_config_path(&env));
+    assert!(
+        config["mcpServers"]["fixture"].get("exposure").is_none(),
+        "the default exposure should be omitted from the file"
+    );
+    let listed = run(&env, &["mcp", "list", "--json"]);
+    let document = document(&listed);
+    assert_eq!(document["data"]["servers"][0]["exposure"], "deferred");
 }
 
 #[test]
@@ -93,6 +118,11 @@ fn list_reports_the_entry_as_json_and_text() {
     assert!(text.contains("fixture"), "{text}");
     assert!(text.contains("command: python3 server.py --flag"), "{text}");
     assert!(text.contains("env: FAKE_MCP_ERA"), "{text}");
+    assert!(
+        text.contains("description: Fixture server for tests"),
+        "{text}"
+    );
+    assert!(text.contains("exposure: direct"), "{text}");
     assert!(text.contains("timeout: 30s"), "{text}");
     assert!(!text.contains("modern"), "{text}");
 }
@@ -145,6 +175,10 @@ fn add_fixture(env: &TestEnv) -> Output {
             "FAKE_MCP_ERA=modern",
             "--timeout-secs",
             "30",
+            "--description",
+            "Fixture server for tests",
+            "--exposure",
+            "direct",
             "--",
             "python3",
             "server.py",
@@ -162,6 +196,8 @@ fn assert_listed_entry(entry: &serde_json::Value) {
     assert_eq!(entry["args"][0], "server.py");
     assert_eq!(entry["env"][0], "FAKE_MCP_ERA");
     assert_eq!(entry["timeout_secs"], 30);
+    assert_eq!(entry["description"], "Fixture server for tests");
+    assert_eq!(entry["exposure"], "direct");
     assert!(
         entry["source"]
             .as_str()

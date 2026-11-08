@@ -19,8 +19,8 @@ use crate::cli::{
 };
 use crate::config::DataDir;
 use crate::config::mcp::{
-    self, DEFAULT_MCP_TIMEOUT_SECS, McpConfigLoad, McpManageError, McpServerConfig, McpServerDraft,
-    valid_env_name,
+    self, DEFAULT_MCP_TIMEOUT_SECS, McpConfigLoad, McpExposure, McpManageError, McpServerConfig,
+    McpServerDraft, valid_env_name,
 };
 
 /// Manage configured MCP server definitions.
@@ -29,7 +29,7 @@ use crate::config::mcp::{
 Examples:
   cake mcp list
   cake mcp add safari-mcp -- /usr/bin/safaridriver --mcp
-  cake mcp add fixture --env FAKE_MCP_ERA=modern -- python3 server.py
+  cake mcp add fixture --description 'Fixture tools' --env FAKE_MCP_ERA=modern -- python3 server.py
   cake mcp get safari-mcp --json
   cake mcp remove safari-mcp")]
 pub struct McpCommand {
@@ -97,9 +97,33 @@ struct AddArgs {
     /// Per-request timeout in seconds (default 60, maximum 3600)
     #[arg(long, value_name = "SECONDS")]
     timeout_secs: Option<u64>,
+    /// One-line description shown in the MCP server summary
+    #[arg(long, value_name = "TEXT")]
+    description: Option<String>,
+    /// Tool exposure: direct, deferred, or hidden
+    #[arg(long, value_enum, default_value_t = ExposureArg::Deferred)]
+    exposure: ExposureArg,
     /// Executable and arguments to launch the server; provide after `--`
     #[arg(trailing_var_arg = true, num_args = 0.., value_name = "COMMAND")]
     command: Vec<String>,
+}
+
+/// CLI spelling of [`McpExposure`].
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum ExposureArg {
+    Direct,
+    Deferred,
+    Hidden,
+}
+
+impl From<ExposureArg> for McpExposure {
+    fn from(value: ExposureArg) -> Self {
+        match value {
+            ExposureArg::Direct => Self::Direct,
+            ExposureArg::Deferred => Self::Deferred,
+            ExposureArg::Hidden => Self::Hidden,
+        }
+    }
 }
 
 impl CmdRunner for McpCommand {
@@ -162,6 +186,8 @@ fn add_command(args: &AddArgs) -> anyhow::Result<()> {
         args: args.command.iter().skip(1).cloned().collect(),
         env: args.env.iter().cloned().collect::<BTreeMap<_, _>>(),
         timeout_secs: args.timeout_secs.unwrap_or(DEFAULT_MCP_TIMEOUT_SECS),
+        description: args.description.clone(),
+        exposure: args.exposure.into(),
     };
     let path = global_path();
     mcp::upsert_server(&path, &draft)?;
@@ -300,6 +326,9 @@ struct McpEntry {
     args: Vec<String>,
     env: Vec<String>,
     timeout_secs: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    exposure: McpExposure,
     source: String,
 }
 
@@ -311,6 +340,8 @@ impl From<&McpServerConfig> for McpEntry {
             args: config.args.clone(),
             env: config.env.keys().cloned().collect(),
             timeout_secs: config.timeout_secs,
+            description: config.description.clone(),
+            exposure: config.exposure,
             source: config.source.display().to_string(),
         }
     }
@@ -328,6 +359,10 @@ fn format_entry(entry: &McpEntry, output: &mut String) {
     if !entry.env.is_empty() {
         _ = writeln!(output, "  env: {}", entry.env.join(", "));
     }
+    if let Some(description) = &entry.description {
+        _ = writeln!(output, "  description: {description}");
+    }
+    _ = writeln!(output, "  exposure: {}", entry.exposure.as_str());
     _ = writeln!(output, "  timeout: {}s", entry.timeout_secs);
 }
 

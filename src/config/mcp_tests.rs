@@ -79,7 +79,53 @@ fn parses_standard_mcp_servers_shape() {
     assert_eq!(server.args, ["--mcp"]);
     assert_eq!(server.env.get("SAFARI_TOKEN").unwrap(), "secret");
     assert_eq!(server.timeout_secs, DEFAULT_MCP_TIMEOUT_SECS);
+    assert_eq!(server.description, None);
+    assert_eq!(server.exposure, McpExposure::Deferred);
     assert_eq!(server.source, global);
+}
+
+#[test]
+fn parses_description_and_exposure() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("mcp.json");
+    write(
+        &path,
+        r#"{
+          "mcpServers": {
+            "safari": {
+              "command": "safari",
+              "description": "  Browser automation.  ",
+              "exposure": "hidden"
+            },
+            "defaulted": {"command": "cmd"}
+          }
+        }"#,
+    );
+
+    let load = discover(
+        tmp.path(),
+        tmp.path(),
+        &[path],
+        &trust(TrustState::NotRequired),
+        ProjectConfigMode::Enforce,
+    );
+
+    assert!(load.warnings.is_empty(), "{:?}", load.warnings);
+    assert_eq!(load.servers.len(), 2);
+    let safari = load
+        .servers
+        .iter()
+        .find(|server| server.name == "safari")
+        .unwrap();
+    assert_eq!(safari.description.as_deref(), Some("Browser automation."));
+    assert_eq!(safari.exposure, McpExposure::Hidden);
+    let defaulted = load
+        .servers
+        .iter()
+        .find(|server| server.name == "defaulted")
+        .unwrap();
+    assert_eq!(defaulted.description, None);
+    assert_eq!(defaulted.exposure, McpExposure::Deferred);
 }
 
 #[test]
@@ -265,6 +311,8 @@ fn invalid_servers_are_skipped_with_warnings() {
             "empty": {},
             "nul": {"command": "three\u0000four"},
             "bad-env": {"command": "four", "env": {"9BAD": "x"}},
+            "bad-exposure": {"command": "four", "exposure": "eager"},
+            "bad-description": {"command": "four", "description": "bad\u0000text"},
             "disabled": {"command": "five", "disabled": true},
             "ok": {"command": "six", "timeout_secs": 99999}
           }
@@ -286,7 +334,7 @@ fn invalid_servers_are_skipped_with_warnings() {
         .collect();
     assert_eq!(names, ["ok"]);
     assert_eq!(load.servers[0].timeout_secs, MAX_MCP_TIMEOUT_SECS);
-    assert_eq!(load.warnings.len(), 6, "{:?}", load.warnings);
+    assert_eq!(load.warnings.len(), 8, "{:?}", load.warnings);
 }
 
 #[test]
@@ -350,6 +398,8 @@ fn environment_map_is_preserved_in_server_source_order() {
         Vec::new(),
         BTreeMap::from([("A".to_string(), "1".to_string())]),
         None,
+        McpExposure::Direct,
+        None,
         Path::new("mcp.json"),
     );
     assert_eq!(server.env.get("A").unwrap(), "1");
@@ -362,6 +412,8 @@ fn draft(name: &str) -> McpServerDraft {
         args: vec!["server.py".to_string()],
         env: BTreeMap::from([("FAKE_MCP_ERA".to_string(), "modern".to_string())]),
         timeout_secs: 30,
+        description: None,
+        exposure: McpExposure::default(),
     }
 }
 
@@ -379,6 +431,8 @@ fn upsert_creates_a_discoverable_global_entry() {
     assert_eq!(entry["args"][0], "server.py");
     assert_eq!(entry["env"]["FAKE_MCP_ERA"], "modern");
     assert_eq!(entry["timeout_secs"], 30);
+    assert!(entry.get("description").is_none());
+    assert!(entry.get("exposure").is_none());
 
     let load = discover(
         tmp.path(),
@@ -436,6 +490,23 @@ fn upsert_omits_default_timeout_and_empty_collections() {
 }
 
 #[test]
+fn upsert_writes_description_and_non_default_exposure() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = global_config_path(tmp.path());
+    let mut configured = draft("fixture");
+    configured.description = Some("  Browser automation.  ".to_string());
+    configured.exposure = McpExposure::Hidden;
+
+    upsert_server(&path, &configured).unwrap();
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let entry = &parsed["mcpServers"]["fixture"];
+    assert_eq!(entry["description"], "Browser automation.");
+    assert_eq!(entry["exposure"], "hidden");
+}
+
+#[test]
 fn upsert_leaves_a_malformed_file_untouched() {
     let tmp = tempfile::tempdir().unwrap();
     let path = global_config_path(tmp.path());
@@ -480,6 +551,13 @@ fn upsert_rejects_an_invalid_draft() {
     assert!(matches!(
         upsert_server(&path, &invalid_env),
         Err(McpManageError::InvalidEnv { .. })
+    ));
+
+    let mut invalid_description = draft("fixture");
+    invalid_description.description = Some("bad\0description".to_string());
+    assert!(matches!(
+        upsert_server(&path, &invalid_description),
+        Err(McpManageError::InvalidDescription { .. })
     ));
     assert!(!path.exists(), "validation must not create the file");
 }

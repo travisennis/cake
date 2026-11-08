@@ -19,6 +19,11 @@
 //! }
 //! ```
 //!
+//! An entry may also carry a one-line `description` and an `exposure` of
+//! `direct`, `deferred` (the default), or `hidden`. `deferred` keeps tool
+//! schemas out of the request until `ToolSearch` selects them; `hidden`
+//! prevents the server from starting at all.
+//!
 //! Discovery only reads and validates configuration. Starting servers and
 //! speaking the protocol live in `clients::mcp`. `cake mcp add` and
 //! `cake mcp remove` edit the user-owned global file through this module.
@@ -31,7 +36,7 @@ use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::config::trust::{ProjectConfigMode, ProjectTrustReport};
@@ -50,6 +55,42 @@ pub const DEFAULT_MCP_TIMEOUT_SECS: u64 = 60;
 
 /// Maximum timeout accepted from configuration.
 pub const MAX_MCP_TIMEOUT_SECS: u64 = 3_600;
+
+/// How a configured server's tools are exposed to the model.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpExposure {
+    /// Register every tool eagerly, as Cake did before deferred loading.
+    Direct,
+    /// Keep tool schemas out of the request until the model searches for one.
+    #[default]
+    Deferred,
+    /// Never advertise or start the server.
+    Hidden,
+}
+
+impl McpExposure {
+    /// Parse the lowercase value accepted by `mcp.json` and `cake mcp add`.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "direct" => Some(Self::Direct),
+            "deferred" => Some(Self::Deferred),
+            "hidden" => Some(Self::Hidden),
+            _ => None,
+        }
+    }
+
+    /// Lowercase value written to `mcp.json` and human-readable output.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Deferred => "deferred",
+            Self::Hidden => "hidden",
+        }
+    }
+}
 
 /// Maximum length of a server name. Leaves room for the prefix, separators,
 /// one tool-name character, and a truncation hash within the 64-character
@@ -77,6 +118,10 @@ pub struct McpServerConfig {
     pub env: BTreeMap<String, String>,
     /// Per-request timeout in seconds, clamped to 1..=3600.
     pub timeout_secs: u64,
+    /// Optional one-line description shown in the MCP server summary.
+    pub description: Option<String>,
+    /// How this server's tools reach the model.
+    pub exposure: McpExposure,
     /// File the definition came from, for diagnostics.
     pub source: PathBuf,
 }
@@ -144,6 +189,11 @@ struct RawMcpServer {
     disabled: bool,
     #[serde(default)]
     timeout_secs: Option<u64>,
+    #[serde(default)]
+    description: Option<String>,
+    /// Parsed after shape validation so one bad entry does not skip the file.
+    #[serde(default)]
+    exposure: Option<String>,
 }
 
 /// Discover and merge MCP server definitions.
@@ -374,6 +424,8 @@ fn resolve_server(
         ));
         return None;
     }
+    let exposure = parse_exposure(name, raw.exposure.as_deref(), source, warnings)?;
+    let description = parse_description(name, raw.description.as_deref(), source, warnings).ok()?;
     if raw.url.is_some() {
         warnings.push(format!(
             "ignoring MCP server '{name}' in {}: remote HTTP servers are not supported; \
@@ -392,7 +444,69 @@ fn resolve_server(
         ));
         return None;
     }
-    let Some(command) = raw.command.as_deref().map(str::trim) else {
+    let (command, args) = parse_command(name, raw.command.as_deref(), raw.args, source, warnings)?;
+    let env = parse_env(name, raw.env, source, warnings)?;
+    Some(build_server(
+        name,
+        &command,
+        args,
+        env,
+        description,
+        exposure,
+        raw.timeout_secs,
+        source,
+    ))
+}
+
+/// Parse the optional exposure label.
+fn parse_exposure(
+    name: &str,
+    value: Option<&str>,
+    source: &Path,
+    warnings: &mut Vec<String>,
+) -> Option<McpExposure> {
+    let Some(value) = value else {
+        return Some(McpExposure::default());
+    };
+    if let Some(exposure) = McpExposure::parse(value) {
+        return Some(exposure);
+    }
+    warnings.push(format!(
+        "ignoring MCP server '{name}' in {}: exposure must be 'direct', 'deferred', or 'hidden'",
+        source.display()
+    ));
+    None
+}
+
+/// Parse the optional one-line description.
+fn parse_description(
+    name: &str,
+    value: Option<&str>,
+    source: &Path,
+    warnings: &mut Vec<String>,
+) -> Result<Option<String>, ()> {
+    match value.map(str::trim) {
+        Some(description) if description.contains('\0') => {
+            warnings.push(format!(
+                "ignoring MCP server '{name}' in {}: description may not contain a NUL byte",
+                source.display()
+            ));
+            Err(())
+        },
+        Some(description) if !description.is_empty() => Ok(Some(description.to_string())),
+        _ => Ok(None),
+    }
+}
+
+/// Validate the executable and its arguments.
+fn parse_command(
+    name: &str,
+    command: Option<&str>,
+    args: Option<Vec<String>>,
+    source: &Path,
+    warnings: &mut Vec<String>,
+) -> Option<(String, Vec<String>)> {
+    let Some(command) = command.map(str::trim) else {
         warnings.push(format!(
             "ignoring MCP server '{name}' in {}: 'command' is required",
             source.display()
@@ -406,7 +520,7 @@ fn resolve_server(
         ));
         return None;
     }
-    let args = raw.args.unwrap_or_default();
+    let args = args.unwrap_or_default();
     if args.iter().any(|arg| arg.contains('\0')) {
         warnings.push(format!(
             "ignoring MCP server '{name}' in {}: arguments may not contain NUL bytes",
@@ -414,15 +528,18 @@ fn resolve_server(
         ));
         return None;
     }
-    let Some(env) = raw.env else {
-        return Some(build_server(
-            name,
-            command,
-            args,
-            BTreeMap::new(),
-            raw.timeout_secs,
-            source,
-        ));
+    Some((command.to_string(), args))
+}
+
+/// Validate the optional environment map.
+fn parse_env(
+    name: &str,
+    env: Option<BTreeMap<String, String>>,
+    source: &Path,
+    warnings: &mut Vec<String>,
+) -> Option<BTreeMap<String, String>> {
+    let Some(env) = env else {
+        return Some(BTreeMap::new());
     };
     if let Some((key, _)) = env
         .iter()
@@ -435,22 +552,21 @@ fn resolve_server(
         ));
         return None;
     }
-    Some(build_server(
-        name,
-        command,
-        args,
-        env,
-        raw.timeout_secs,
-        source,
-    ))
+    Some(env)
 }
 
 /// Apply timeout defaults and clamping.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one constructor for the resolved server shape"
+)]
 fn build_server(
     name: &str,
     command: &str,
     args: Vec<String>,
     env: BTreeMap<String, String>,
+    description: Option<String>,
+    exposure: McpExposure,
     timeout_secs: Option<u64>,
     source: &Path,
 ) -> McpServerConfig {
@@ -462,6 +578,8 @@ fn build_server(
         timeout_secs: timeout_secs
             .unwrap_or(DEFAULT_MCP_TIMEOUT_SECS)
             .clamp(1, MAX_MCP_TIMEOUT_SECS),
+        description,
+        exposure,
         source: source.to_path_buf(),
     }
 }
@@ -551,6 +669,10 @@ pub struct McpServerDraft {
     pub env: BTreeMap<String, String>,
     /// Per-request timeout in seconds.
     pub timeout_secs: u64,
+    /// Optional one-line description shown in the MCP server summary.
+    pub description: Option<String>,
+    /// How the server's tools reach the model.
+    pub exposure: McpExposure,
 }
 
 /// A failure while reading or editing MCP server definitions.
@@ -569,6 +691,12 @@ pub enum McpManageError {
     #[error("invalid MCP command for '{name}': provide a non-empty executable after `--`")]
     InvalidCommand {
         /// The server the command belongs to.
+        name: String,
+    },
+    /// The description contains a NUL byte.
+    #[error("invalid MCP description for '{name}': description may not contain a NUL byte")]
+    InvalidDescription {
+        /// The server the description belongs to.
         name: String,
     },
     /// An environment variable name is not a portable name.
@@ -636,6 +764,7 @@ impl McpManageError {
         match self {
             Self::InvalidName { .. }
             | Self::InvalidCommand { .. }
+            | Self::InvalidDescription { .. }
             | Self::InvalidEnv { .. }
             | Self::InvalidTimeout { .. }
             | Self::UnsupportedUrl { .. }
@@ -694,6 +823,15 @@ fn validate_draft(draft: &McpServerDraft) -> Result<(), McpManageError> {
     }
     if draft.command.trim().is_empty() || draft.command.contains('\0') {
         return Err(McpManageError::InvalidCommand {
+            name: draft.name.clone(),
+        });
+    }
+    if draft
+        .description
+        .as_deref()
+        .is_some_and(|description| description.contains('\0'))
+    {
+        return Err(McpManageError::InvalidDescription {
             name: draft.name.clone(),
         });
     }
@@ -785,6 +923,23 @@ fn server_entry(draft: &McpServerDraft) -> serde_json::Value {
         entry.insert(
             "timeout_secs".to_string(),
             serde_json::json!(draft.timeout_secs),
+        );
+    }
+    if let Some(description) = draft
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|description| !description.is_empty())
+    {
+        entry.insert(
+            "description".to_string(),
+            serde_json::Value::String(description.to_string()),
+        );
+    }
+    if draft.exposure != McpExposure::default() {
+        entry.insert(
+            "exposure".to_string(),
+            serde_json::Value::String(draft.exposure.as_str().to_string()),
         );
     }
     serde_json::Value::Object(entry)

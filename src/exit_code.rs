@@ -995,6 +995,9 @@ mod tests {
             McpManageError::InvalidCommand {
                 name: "fixture".to_string(),
             },
+            McpManageError::InvalidDescription {
+                name: "fixture".to_string(),
+            },
             McpManageError::InvalidEnv {
                 name: "fixture".to_string(),
                 key: "BAD-NAME".to_string(),

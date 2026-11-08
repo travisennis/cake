@@ -24,7 +24,11 @@ use std::path::Path;
 use chrono::Local;
 use tracing::{debug, warn};
 
-use crate::clients::{ExternalToolInfo, SandboxPolicy, format_tool_list_section_with_mcp};
+use crate::clients::{
+    ExternalServerInfo, ExternalToolInfo, SandboxPolicy, format_tool_list_section_with_mcp,
+    tool_search_enabled,
+};
+use crate::config::mcp::McpExposure;
 use crate::config::toolbox::ToolboxTool;
 use crate::config::{AgentsFile, SkillCatalog};
 use crate::types::Role;
@@ -320,9 +324,31 @@ fn builtin_prompt(
 ) -> String {
     let builtin = BUILTIN_SYSTEM_PROMPT.trim().to_string();
     if builtin.contains("{{AVAILABLE_TOOLS}}") {
+        let mcp_server_infos: Vec<ExternalServerInfo> = mcp_servers
+            .iter()
+            .filter(|server| server.exposure != McpExposure::Hidden)
+            .filter_map(|server| {
+                let enabled_tool_count = server
+                    .tools
+                    .iter()
+                    .filter(|tool| tool_enabled(&tool.registered_name, enabled_tools))
+                    .count();
+                (enabled_tool_count > 0).then(|| ExternalServerInfo {
+                    name: server.name.clone(),
+                    description: server.description.clone(),
+                    exposure: effective_mcp_exposure(server.exposure, enabled_tools),
+                    tool_count: server.tools.len(),
+                    enabled_tool_count,
+                })
+            })
+            .collect();
         let mcp_tools: Vec<ExternalToolInfo> = mcp_servers
             .iter()
+            .filter(|server| {
+                effective_mcp_exposure(server.exposure, enabled_tools) == McpExposure::Direct
+            })
             .flat_map(|server| server.tools.iter())
+            .filter(|tool| tool_enabled(&tool.registered_name, enabled_tools))
             .map(|tool| ExternalToolInfo {
                 name: tool.registered_name.clone(),
                 description: tool.description.clone(),
@@ -333,6 +359,7 @@ fn builtin_prompt(
             &format_tool_list_section_with_mcp(
                 sandbox_policy,
                 toolbox_tools,
+                &mcp_server_infos,
                 &mcp_tools,
                 enabled_tools,
                 supports_images,
@@ -340,6 +367,21 @@ fn builtin_prompt(
         )
     } else {
         builtin
+    }
+}
+
+/// Whether an exact-name allowlist permits a tool. `None` permits every tool.
+fn tool_enabled(name: &str, enabled_tools: Option<&[String]>) -> bool {
+    enabled_tools.is_none_or(|names| names.iter().any(|enabled| enabled == name))
+}
+
+/// A deferred server becomes direct when the allowlist excludes `ToolSearch`,
+/// because that is the only surface that can load its tools.
+fn effective_mcp_exposure(exposure: McpExposure, enabled_tools: Option<&[String]>) -> McpExposure {
+    if exposure == McpExposure::Deferred && !tool_search_enabled(enabled_tools) {
+        McpExposure::Direct
+    } else {
+        exposure
     }
 }
 

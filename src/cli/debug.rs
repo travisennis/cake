@@ -181,6 +181,9 @@ struct McpServerReport {
     env: Vec<String>,
     source: String,
     timeout_secs: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    exposure: crate::config::mcp::McpExposure,
     status: &'static str,
     protocol_version: Option<String>,
     server_info: Option<String>,
@@ -319,12 +322,18 @@ async fn report_server(
         env: config.env.keys().cloned().collect(),
         source: config.source.display().to_string(),
         timeout_secs: config.timeout_secs,
+        description: config.description.clone(),
+        exposure: config.exposure,
         status: "failed",
         protocol_version: None,
         server_info: None,
         error: None,
         tools: Vec::new(),
     };
+    if config.exposure == crate::config::mcp::McpExposure::Hidden {
+        report.status = "hidden";
+        return report;
+    }
     match connect_server(config, current_dir).await {
         Ok(server) => {
             report.status = "ready";
@@ -363,6 +372,10 @@ fn format_mcp_report(reports: &[McpServerReport]) -> String {
             .join(" ");
         _ = writeln!(output, "  command: {command}");
         _ = writeln!(output, "  timeout: {}s", report.timeout_secs);
+        _ = writeln!(output, "  exposure: {}", report.exposure.as_str());
+        if let Some(description) = &report.description {
+            _ = writeln!(output, "  description: {description}");
+        }
         if !report.env.is_empty() {
             _ = writeln!(output, "  env: {}", report.env.join(", "));
         }
@@ -726,6 +739,12 @@ mod tests {
             env: vec!["SAFARI_TOKEN".to_string()],
             source: "/home/user/.config/cake/mcp.json".to_string(),
             timeout_secs: 60,
+            description: Some("Browser automation".to_string()),
+            exposure: if status == "hidden" {
+                crate::config::mcp::McpExposure::Hidden
+            } else {
+                crate::config::mcp::McpExposure::Direct
+            },
             status,
             protocol_version: (status == "ready").then(|| "2026-07-28".to_string()),
             server_info: (status == "ready").then(|| "Safari".to_string()),
@@ -749,11 +768,21 @@ mod tests {
         assert!(ready.contains("safari-mcp (ready)"));
         assert!(ready.contains("/usr/bin/safaridriver --mcp"));
         assert!(ready.contains("env: SAFARI_TOKEN"));
+        assert!(ready.contains("exposure: direct"));
+        assert!(ready.contains("description: Browser automation"));
         assert!(ready.contains("list_tabs -> mcp__safari-mcp__list_tabs"));
 
         let failed = format_mcp_report(&[fixture_mcp_report("failed")]);
         assert!(failed.contains("safari-mcp (failed)"));
         assert!(failed.contains("error: connection closed"));
+    }
+
+    #[test]
+    fn mcp_text_report_marks_hidden_servers() {
+        let hidden = format_mcp_report(&[fixture_mcp_report("hidden")]);
+        assert!(hidden.contains("safari-mcp (hidden)"));
+        assert!(hidden.contains("exposure: hidden"));
+        assert!(!hidden.contains("protocol:"));
     }
 
     #[test]
@@ -776,6 +805,11 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
         assert_eq!(value["status"], "warning");
         assert_eq!(value["data"]["servers"][0]["status"], "failed");
+        assert_eq!(value["data"]["servers"][0]["exposure"], "direct");
+        assert_eq!(
+            value["data"]["servers"][0]["description"],
+            "Browser automation"
+        );
         assert_eq!(value["checks"][0]["id"], CHECK_MCP_SERVER);
     }
 }
