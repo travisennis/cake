@@ -55,9 +55,13 @@ pub fn tool_search_enabled(enabled_tools: Option<&[String]>) -> bool {
 }
 
 /// Build the `ToolSearch` registry entry.
+///
+/// `active` is shared with the agent so a later search can report tools that
+/// are already registered instead of claiming they will become available.
 pub fn tool_search_entry(
     entries: Vec<ToolSearchEntry>,
     pending: Arc<Mutex<Vec<String>>>,
+    active: Arc<Mutex<HashSet<String>>>,
 ) -> ToolEntry {
     let definition = Tool {
         type_: "function".to_string(),
@@ -93,7 +97,8 @@ pub fn tool_search_entry(
     ToolEntry::new(definition, move |_context, _call_id, arguments| {
         let entries = entries.clone();
         let pending = Arc::clone(&pending);
-        Box::pin(async move { execute(&entries, &pending, &arguments) })
+        let active = Arc::clone(&active);
+        Box::pin(async move { execute(&entries, &pending, &active, &arguments) })
     })
     .read_safe()
     .repairs_arguments()
@@ -112,6 +117,7 @@ struct SearchArguments {
 fn execute(
     entries: &[ToolSearchEntry],
     pending: &Mutex<Vec<String>>,
+    active: &Mutex<HashSet<String>>,
     arguments: &str,
 ) -> Result<ToolResult, ToolError> {
     let args: SearchArguments = serde_json::from_str(arguments)
@@ -123,15 +129,33 @@ fn execute(
         ));
     }
     let limit = args.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
-    let matches = search(entries, &args.query, args.server.as_deref(), limit);
+    // Rank the whole catalog before applying the result limit: an active tool
+    // may outrank a new one, and hiding the new match would be misleading.
+    let matches = search(entries, &args.query, args.server.as_deref(), usize::MAX);
     if matches.is_empty() {
         return Ok(text_result(no_match_message(entries, &args.query)));
     }
+    let active_names = active
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let (active_matches, new_matches): (Vec<_>, Vec<_>) = matches
+        .into_iter()
+        .partition(|entry| active_names.contains(&entry.registered_name));
+    let new_matches: Vec<_> = new_matches.into_iter().take(limit).collect();
     pending
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .extend(matches.iter().map(|entry| entry.registered_name.clone()));
-    Ok(text_result(render_matches(&matches)))
+        .extend(
+            new_matches
+                .iter()
+                .map(|entry| entry.registered_name.clone()),
+        );
+    Ok(text_result(render_matches(
+        &new_matches,
+        &active_matches,
+        &args.query,
+    )))
 }
 
 const fn text_result(output: String) -> ToolResult {
@@ -143,23 +167,64 @@ const fn text_result(output: String) -> ToolResult {
     }
 }
 
-fn render_matches(matches: &[&ToolSearchEntry]) -> String {
-    let (noun, availability) = if matches.len() == 1 {
-        ("tool", "It is available on the next turn.")
+fn render_matches(
+    new_matches: &[&ToolSearchEntry],
+    active_matches: &[&ToolSearchEntry],
+    query: &str,
+) -> String {
+    let mut output = String::new();
+    if new_matches.is_empty() {
+        _ = write!(output, "No new MCP tools matched '{query}'.");
     } else {
-        ("tools", "They are available on the next turn.")
-    };
-    let mut output = format!("Found {} MCP {noun}. {availability}\n", matches.len());
-    for entry in matches {
+        let (noun, availability) = if new_matches.len() == 1 {
+            ("tool", "It is available on the next turn.")
+        } else {
+            ("tools", "They are available on the next turn.")
+        };
         _ = writeln!(
             output,
-            "- {} ({}): {}",
-            entry.registered_name,
-            entry.server,
-            concise_description(&entry.description)
+            "Found {} new MCP {noun}. {availability}",
+            new_matches.len()
+        );
+        for entry in new_matches {
+            _ = writeln!(
+                output,
+                "- {} ({}): {}",
+                entry.registered_name,
+                entry.server,
+                concise_description(&entry.description)
+            );
+        }
+    }
+    if !active_matches.is_empty() {
+        output.push('\n');
+        let (noun, verb) = if active_matches.len() == 1 {
+            ("tool", "is")
+        } else {
+            ("tools", "are")
+        };
+        _ = writeln!(
+            output,
+            "{} matching MCP {noun} {verb} already active: {}.",
+            active_matches.len(),
+            active_names(active_matches)
         );
     }
     output
+}
+
+fn active_names(active_matches: &[&ToolSearchEntry]) -> String {
+    let mut names = active_matches
+        .iter()
+        .take(MAX_LIMIT)
+        .map(|entry| entry.registered_name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let omitted = active_matches.len().saturating_sub(MAX_LIMIT);
+    if omitted > 0 {
+        _ = write!(names, " (+{omitted} more)");
+    }
+    names
 }
 
 fn no_match_message(entries: &[ToolSearchEntry], query: &str) -> String {
@@ -448,11 +513,7 @@ mod tests {
         assert!(!tool_search_enabled(Some(&["Read".to_string()])));
     }
 
-    #[test]
-    fn executor_returns_matches_and_records_activation() {
-        let entries = fixture_entries();
-        let pending = Arc::new(Mutex::new(Vec::new()));
-        let entry = tool_search_entry(entries, Arc::clone(&pending));
+    fn execute_search(entry: &ToolEntry, query: &str) -> ToolResult {
         let context = Arc::new(ToolContext::with_temp_dirs(
             std::env::temp_dir(),
             Vec::new(),
@@ -460,16 +521,119 @@ mod tests {
             Vec::new(),
             Vec::new(),
         ));
-        let result = futures::executor::block_on((entry.execute)(
+        futures::executor::block_on((entry.execute)(
             context,
             "call-1".to_string(),
-            r#"{"query":"list tabs"}"#.to_string(),
+            serde_json::json!({ "query": query }).to_string(),
         ))
-        .expect("search should succeed");
+        .expect("search should succeed")
+    }
+
+    #[test]
+    fn executor_returns_matches_and_records_activation() {
+        let entries = fixture_entries();
+        let pending = Arc::new(Mutex::new(Vec::new()));
+        let entry = tool_search_entry(
+            entries,
+            Arc::clone(&pending),
+            Arc::new(Mutex::new(HashSet::new())),
+        );
+        let result = execute_search(&entry, "list tabs");
+        assert!(result.output.contains("Found 1 new MCP tool."));
         assert!(result.output.contains("mcp__fixture__list_tabs"));
         assert_eq!(
             *pending.lock().unwrap(),
             vec!["mcp__fixture__list_tabs".to_string()]
         );
+    }
+
+    #[test]
+    fn executor_reports_an_active_tool_without_reactivating_it() {
+        let entries = fixture_entries();
+        let pending = Arc::new(Mutex::new(Vec::new()));
+        let active = Arc::new(Mutex::new(HashSet::from([
+            "mcp__fixture__list_tabs".to_string()
+        ])));
+        let entry = tool_search_entry(entries, Arc::clone(&pending), active);
+        let result = execute_search(&entry, "list tabs");
+
+        assert!(
+            result
+                .output
+                .contains("1 matching MCP tool is already active: mcp__fixture__list_tabs."),
+            "{}",
+            result.output
+        );
+        assert!(
+            !result.output.contains("available on the next turn"),
+            "{}",
+            result.output
+        );
+        assert!(pending.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn executor_activates_only_new_matches_when_an_active_tool_also_matches() {
+        let entries = vec![
+            entry(
+                "list_tabs",
+                "List open browser tabs.",
+                serde_json::json!({"type": "object", "properties": {}}),
+            ),
+            entry(
+                "open_browser",
+                "Open a browser window.",
+                serde_json::json!({"type": "object", "properties": {}}),
+            ),
+        ];
+        let pending = Arc::new(Mutex::new(Vec::new()));
+        let active = Arc::new(Mutex::new(HashSet::from([
+            "mcp__fixture__list_tabs".to_string()
+        ])));
+        let entry = tool_search_entry(entries, Arc::clone(&pending), active);
+        let result = execute_search(&entry, "browser");
+
+        assert!(
+            result.output.contains("Found 1 new MCP tool."),
+            "{}",
+            result.output
+        );
+        assert!(
+            result
+                .output
+                .contains("1 matching MCP tool is already active: mcp__fixture__list_tabs."),
+            "{}",
+            result.output
+        );
+        assert_eq!(
+            *pending.lock().unwrap(),
+            vec!["mcp__fixture__open_browser".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_second_search_after_activation_reports_no_new_tools() {
+        let entries = fixture_entries();
+        let pending = Arc::new(Mutex::new(Vec::new()));
+        let active = Arc::new(Mutex::new(HashSet::new()));
+        let entry = tool_search_entry(entries, Arc::clone(&pending), Arc::clone(&active));
+
+        let first = execute_search(&entry, "list tabs");
+        assert!(first.output.contains("available on the next turn"));
+        let selected = std::mem::take(&mut *pending.lock().unwrap());
+        active.lock().unwrap().extend(selected);
+
+        let second = execute_search(&entry, "list tabs");
+        assert!(
+            second.output.contains("already active"),
+            "{}",
+            second.output
+        );
+        assert!(
+            !second.output.contains("available on the next turn"),
+            "{}",
+            second.output
+        );
+        assert!(pending.lock().unwrap().is_empty());
     }
 }

@@ -621,6 +621,18 @@ pub enum SessionRecord {
         path: PathBuf,
     },
 
+    /// MCP tools activated by `ToolSearch` during one tool batch.
+    ///
+    /// The record is additive to format version 4. It stores only registered
+    /// names, so resume revalidates them against the live MCP catalog instead
+    /// of replaying stale schemas.
+    McpToolsActivated {
+        session_id: String,
+        task_id: String,
+        timestamp: DateTime<Utc>,
+        tools: Vec<String>,
+    },
+
     HookEvent(HookEventData),
 
     Reasoning(ReasoningData),
@@ -661,7 +673,8 @@ pub enum ReplayErrorKind {
 /// `session_meta` and `prompt_context`, so live output cannot be mistaken for a
 /// complete resumable session file. `cake replay` reuses the same vocabulary
 /// and additionally emits `session_meta`, `prompt_context`, `skill_activated`,
-/// and, on failure, `replay_error`. New variants and fields are additive.
+/// `mcp_tools_activated`, and, on failure, `replay_error`. New variants and
+/// fields are additive.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamRecord {
@@ -711,6 +724,18 @@ pub enum StreamRecord {
         timestamp: DateTime<Utc>,
         name: String,
         path: PathBuf,
+    },
+
+    /// MCP tools activated by `ToolSearch` during one tool batch.
+    ///
+    /// The record is additive to format version 4. It stores only registered
+    /// names, so resume revalidates them against the live MCP catalog instead
+    /// of replaying stale schemas.
+    McpToolsActivated {
+        session_id: String,
+        task_id: String,
+        timestamp: DateTime<Utc>,
+        tools: Vec<String>,
     },
 
     HookEvent(HookEventData),
@@ -811,6 +836,17 @@ impl From<StreamRecord> for SessionRecord {
                 name,
                 path,
             },
+            StreamRecord::McpToolsActivated {
+                session_id,
+                task_id,
+                timestamp,
+                tools,
+            } => Self::McpToolsActivated {
+                session_id,
+                task_id,
+                timestamp,
+                tools,
+            },
             StreamRecord::HookEvent(d) => Self::HookEvent(d),
             StreamRecord::Reasoning(d) => Self::Reasoning(d),
             StreamRecord::TaskComplete(d) => Self::TaskComplete(d),
@@ -883,25 +919,46 @@ impl From<SessionRecord> for StreamRecord {
             SessionRecord::Message(d) => Self::Message(d),
             SessionRecord::FunctionCall(d) => Self::FunctionCall(d),
             SessionRecord::FunctionCallOutput(d) => Self::FunctionCallOutput(d),
-            SessionRecord::SkillActivated {
-                session_id,
-                task_id,
-                timestamp,
-                name,
-                path,
-            } => Self::SkillActivated {
-                session_id,
-                task_id,
-                timestamp,
-                name,
-                path,
-            },
+            record @ (SessionRecord::SkillActivated { .. }
+            | SessionRecord::McpToolsActivated { .. }) => session_activation_stream_record(record),
             SessionRecord::HookEvent(d) => Self::HookEvent(d),
             SessionRecord::Reasoning(d) => Self::Reasoning(d),
             SessionRecord::TaskComplete(d) => Self::TaskComplete(d),
             SessionRecord::Compaction(d) => Self::Compaction(d),
             SessionRecord::TurnUsage(d) => Self::TurnUsage(d),
         }
+    }
+}
+
+/// Convert one activation metadata record without growing the main conversion
+/// match past its complexity ceiling.
+fn session_activation_stream_record(record: SessionRecord) -> StreamRecord {
+    match record {
+        SessionRecord::SkillActivated {
+            session_id,
+            task_id,
+            timestamp,
+            name,
+            path,
+        } => StreamRecord::SkillActivated {
+            session_id,
+            task_id,
+            timestamp,
+            name,
+            path,
+        },
+        SessionRecord::McpToolsActivated {
+            session_id,
+            task_id,
+            timestamp,
+            tools,
+        } => StreamRecord::McpToolsActivated {
+            session_id,
+            task_id,
+            timestamp,
+            tools,
+        },
+        _ => unreachable!("only activation records are converted here"),
     }
 }
 
@@ -996,6 +1053,7 @@ impl SessionRecord {
             | Self::TaskStart(_)
             | Self::PromptContext { .. }
             | Self::SkillActivated { .. }
+            | Self::McpToolsActivated { .. }
             | Self::HookEvent(_)
             | Self::TaskComplete(_)
             | Self::Compaction(_)
@@ -1067,6 +1125,7 @@ impl SessionRecord {
             | Self::TaskStart(_)
             | Self::PromptContext { .. }
             | Self::SkillActivated { .. }
+            | Self::McpToolsActivated { .. }
             | Self::HookEvent(_)
             | Self::TaskComplete(_)
             | Self::Compaction(_)

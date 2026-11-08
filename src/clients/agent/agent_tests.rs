@@ -5423,3 +5423,58 @@ mod termination_tests;
 #[cfg(test)]
 #[path = "image_recovery_tests.rs"]
 mod image_recovery_tests;
+
+#[tokio::test]
+async fn restored_mcp_tools_are_revalidated_against_the_live_catalog() {
+    let directory = tempfile::tempdir().expect("temp directory");
+    let script = directory.path().join("fake_mcp_server.py");
+    std::fs::write(&script, include_str!("../mcp/fixtures/fake_mcp_server.py"))
+        .expect("fixture server");
+    let config = crate::config::mcp::McpServerConfig {
+        name: "fixture".to_string(),
+        command: "python3".to_string(),
+        args: vec![script.display().to_string()],
+        env: std::collections::BTreeMap::from([("FAKE_MCP_ERA".to_string(), "modern".to_string())]),
+        timeout_secs: 10,
+        description: Some("Fixture server".to_string()),
+        exposure: crate::config::mcp::McpExposure::Deferred,
+        source: directory.path().join("mcp.json"),
+    };
+    let server = crate::clients::mcp::connect_server(&config, directory.path())
+        .await
+        .expect("fixture server should connect");
+    let mut hidden = server.clone();
+    hidden.exposure = crate::config::mcp::McpExposure::Hidden;
+
+    let restored = test_agent()
+        .with_mcp_servers(vec![server.clone()])
+        .with_active_mcp_tools([
+            "mcp__fixture__echo".to_string(),
+            "mcp__fixture__missing".to_string(),
+        ]);
+    let names = restored.tool_names();
+    assert!(
+        names.contains(&"mcp__fixture__echo".to_string()),
+        "{names:?}"
+    );
+    assert!(names.contains(&"ToolSearch".to_string()), "{names:?}");
+    assert!(!names.contains(&"mcp__fixture__missing".to_string()));
+
+    let hidden_agent = test_agent()
+        .with_mcp_servers(vec![hidden])
+        .with_active_mcp_tools(["mcp__fixture__echo".to_string()]);
+    assert!(
+        !hidden_agent
+            .tool_names()
+            .contains(&"mcp__fixture__echo".to_string())
+    );
+
+    let enabled = ["Read".to_string()];
+    let filtered = test_agent()
+        .with_mcp_servers(vec![server.clone()])
+        .with_enabled_tools(Some(&enabled))
+        .with_active_mcp_tools(["mcp__fixture__echo".to_string()]);
+    assert!(filtered.tool_names().is_empty());
+
+    server.shutdown().await;
+}

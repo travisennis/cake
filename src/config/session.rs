@@ -346,6 +346,22 @@ impl Session {
             .collect()
     }
 
+    /// Returns the MCP tool names activated by `ToolSearch` in this session.
+    ///
+    /// Records are additive, so the union of every activation batch is the
+    /// current set. Resume and fork revalidate each name against the live MCP
+    /// catalog and the current tool allowlist before registering it.
+    pub fn activated_mcp_tools(&self) -> HashSet<String> {
+        self.records
+            .iter()
+            .flat_map(|record| match record {
+                SessionRecord::McpToolsActivated { tools, .. } => tools.as_slice(),
+                _ => &[],
+            })
+            .cloned()
+            .collect()
+    }
+
     /// Loads a v4 append-only session from a JSONL file.
     ///
     /// # Errors
@@ -839,6 +855,55 @@ mod tests {
 
         let last = session.last_turn_usage().unwrap();
         assert_eq!(last.input_tokens, 2000);
+    }
+
+    #[test]
+    fn activated_mcp_tools_unions_every_activation_batch() {
+        let mut session = make_test_session();
+        session.records.push(meta_record(&session));
+        session.records.push(SessionRecord::McpToolsActivated {
+            session_id: session.id.to_string(),
+            task_id: "task-1".to_string(),
+            timestamp: chrono::Utc::now(),
+            tools: vec!["mcp__fixture__echo".to_string()],
+        });
+        session.records.push(SessionRecord::McpToolsActivated {
+            session_id: session.id.to_string(),
+            task_id: "task-2".to_string(),
+            timestamp: chrono::Utc::now(),
+            tools: vec![
+                "mcp__fixture__echo".to_string(),
+                "mcp__fixture__list_tabs".to_string(),
+            ],
+        });
+
+        assert_eq!(
+            session.activated_mcp_tools(),
+            HashSet::from([
+                "mcp__fixture__echo".to_string(),
+                "mcp__fixture__list_tabs".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn activated_mcp_tools_survive_a_compaction_checkpoint() {
+        let mut session = make_test_session();
+        session.records.push(meta_record(&session));
+        session.records.push(SessionRecord::McpToolsActivated {
+            session_id: session.id.to_string(),
+            task_id: "task-1".to_string(),
+            timestamp: chrono::Utc::now(),
+            tools: vec!["mcp__fixture__echo".to_string()],
+        });
+        session
+            .records
+            .push(checkpoint_record(&session, "checkpoint-1", "summary"));
+
+        assert_eq!(
+            session.activated_mcp_tools(),
+            HashSet::from(["mcp__fixture__echo".to_string()])
+        );
     }
 
     #[test]

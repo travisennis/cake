@@ -5,7 +5,7 @@ Data sources:
   (or {CAKE_DATA_DIR}/sessions). Record types span format versions:
   session_meta/session_start/init, message, function_call,
   function_call_output, reasoning, hook_event, prompt_context,
-  task_start, task_complete, result, skill_activated.
+  task_start, task_complete, result, skill_activated, mcp_tools_activated.
 - Telemetry sidecars: ~/.cache/cake/session-telemetry/{uuid}.ndjson
   Record types: telemetry_init, api_attempt_in_flight, api_attempt,
   gate_startup, gate_decision, gate_evidence, retry_scheduled, retry_wait,

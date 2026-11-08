@@ -109,14 +109,26 @@ fn final_response() -> serde_json::Value {
     })
 }
 
-fn session_file_contents(env: &TestEnv) -> String {
+fn session_file_path(env: &TestEnv) -> PathBuf {
     let sessions_dir = env.data_dir.join("sessions");
     let entries: Vec<_> = fs::read_dir(&sessions_dir)
         .expect("sessions directory should exist")
         .collect::<Result<Vec<_>, _>>()
         .expect("sessions directory should be readable");
     assert_eq!(entries.len(), 1, "expected exactly one session file");
-    fs::read_to_string(entries[0].path()).expect("session file should be readable")
+    entries[0].path()
+}
+
+fn session_file_contents(env: &TestEnv) -> String {
+    fs::read_to_string(session_file_path(env)).expect("session file should be readable")
+}
+
+fn session_id(env: &TestEnv) -> String {
+    session_file_path(env)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .expect("session file should have a UUID name")
+        .to_string()
 }
 
 /// Mount the two-turn provider conversation used by the dispatch test.
@@ -126,6 +138,23 @@ async fn mount_two_turn_provider(mock_server: &MockServer) {
         .respond_with(ResponseTemplate::new(200).set_body_json(tool_call_response()))
         .up_to_n_times(1)
         .expect(1)
+        .mount(mock_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(final_response()))
+        .expect(1)
+        .mount(mock_server)
+        .await;
+}
+
+/// Mount two searches, then a final answer, for the active-result display test.
+async fn mount_repeated_search_provider(mock_server: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(tool_search_response()))
+        .up_to_n_times(2)
+        .expect(2)
         .mount(mock_server)
         .await;
     Mock::given(method("POST"))
@@ -275,6 +304,152 @@ async fn deferred_mcp_tool_is_discovered_and_called() {
     assert!(
         second.contains("mcp__fixture__echo"),
         "the activated tool schema should be sent on the next turn: {second}"
+    );
+
+    let activation = session
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|record| record["type"] == "mcp_tools_activated")
+        .expect("the session should record the MCP activation");
+    assert_eq!(
+        activation["tools"],
+        serde_json::json!(["mcp__fixture__echo"]),
+        "the activation record should carry only registered names"
+    );
+}
+
+#[tokio::test]
+async fn a_second_tool_search_reports_the_tool_as_already_active() {
+    let env = TestEnv::new("cake-mcp-active-search-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+    let script = write_fixture_server(&env);
+    write_global_mcp_config(&env, &script, "modern", "deferred");
+    mount_repeated_search_provider(&mock_server).await;
+
+    let output = env
+        .command()
+        .arg("search twice for the fixture tool")
+        .env(TEST_KEY, "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+    assert!(
+        output.status.success(),
+        "cake should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let session = session_file_contents(&env);
+    assert!(
+        session.contains("Found 1 new MCP tool."),
+        "the first search should load the tool: {session}"
+    );
+    assert!(
+        session.contains("already active: mcp__fixture__echo."),
+        "the second search should report the active tool: {session}"
+    );
+    assert_eq!(
+        session.matches("\"type\":\"mcp_tools_activated\"").count(),
+        1,
+        "the second search must not record another activation: {session}"
+    );
+}
+
+#[tokio::test]
+async fn resumed_session_rehydrates_deferred_mcp_tool_activation() {
+    let env = TestEnv::new("cake-mcp-resume-test");
+    let first_server = MockServer::start().await;
+    write_responses_settings(&env, &first_server.uri());
+    let script = write_fixture_server(&env);
+    write_global_mcp_config(&env, &script, "modern", "deferred");
+    mount_deferred_provider(&first_server).await;
+
+    let first = env
+        .command()
+        .arg("say hello through the deferred fixture")
+        .env(TEST_KEY, "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+    assert!(
+        first.status.success(),
+        "the first run should succeed. stderr: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let session_id = session_id(&env);
+
+    let resume_server = MockServer::start().await;
+    write_responses_settings(&env, &resume_server.uri());
+    mount_two_turn_provider(&resume_server).await;
+
+    let resumed = env
+        .command()
+        .args(["--resume", &session_id, "call the tool again"])
+        .env(TEST_KEY, "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake --resume");
+    assert!(
+        resumed.status.success(),
+        "the resumed run should succeed. stderr: {}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+
+    let requests = resume_server
+        .received_requests()
+        .await
+        .expect("recorded resume requests");
+    assert_eq!(
+        requests.len(),
+        2,
+        "the resumed run should call the tool without another search turn"
+    );
+    let first_request = String::from_utf8_lossy(&requests[0].body);
+    assert!(
+        first_request.contains("mcp__fixture__echo"),
+        "the restored tool schema should be present on the first resumed request: {first_request}"
+    );
+
+    let second_resume_server = MockServer::start().await;
+    write_responses_settings(&env, &second_resume_server.uri());
+    mount_two_turn_provider(&second_resume_server).await;
+
+    let resumed_again = env
+        .command()
+        .args(["--resume", &session_id, "call the tool a third time"])
+        .env(TEST_KEY, "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute the second cake --resume");
+    assert!(
+        resumed_again.status.success(),
+        "the second resumed run should succeed. stderr: {}",
+        String::from_utf8_lossy(&resumed_again.stderr)
+    );
+    let requests = second_resume_server
+        .received_requests()
+        .await
+        .expect("recorded second resume requests");
+    assert_eq!(
+        requests.len(),
+        2,
+        "a second resume should still call the tool without another search turn"
+    );
+    assert!(
+        String::from_utf8_lossy(&requests[0].body).contains("mcp__fixture__echo"),
+        "the restored tool schema should still be present on the second resume"
+    );
+
+    let session = session_file_contents(&env);
+    assert_eq!(
+        session.matches("\"type\":\"mcp_tools_activated\"").count(),
+        1,
+        "resume must not re-record an already-activated tool: {session}"
     );
 }
 

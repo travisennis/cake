@@ -261,6 +261,26 @@ class LoaderWindowTest(unittest.TestCase):
             )
             self.assertEqual(len(sessions), 1)
 
+    def test_mcp_activation_record_is_accepted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self._write(directory, "mcp.jsonl", [
+                {"type": "session_meta", "model": "m", "working_directory": "/p",
+                 "timestamp": T(days=-1)},
+                *task_start("a", T(days=-1)),
+                {"type": "mcp_tools_activated", "task_id": "a",
+                 "timestamp": T(days=-1), "tools": ["mcp__fixture__echo"]},
+                *task_complete("a"),
+            ], mtime=NOW)
+            sessions, warnings = cakelib.load_sessions(
+                pathlib.Path(directory), NOW - timedelta(days=7), None, None,
+            )
+            self.assertEqual(warnings, 0)
+            self.assertEqual(len(sessions), 1)
+            self.assertTrue(any(
+                record.get("type") == "mcp_tools_activated"
+                for record in sessions[0].records
+            ))
+
 
 class TelemetryWindowTest(unittest.TestCase):
     def _write(self, directory, name, records, mtime):

@@ -1473,6 +1473,42 @@ fn snapshot_session_json_skill_activated() {
 }
 
 #[test]
+fn snapshot_session_json_mcp_tools_activated() {
+    let record = SessionRecord::McpToolsActivated {
+        session_id: fixed_session_id(),
+        task_id: fixed_task_id(),
+        timestamp: fixed_timestamp(),
+        tools: vec![
+            "mcp__fixture__echo".to_string(),
+            "mcp__fixture__list_tabs".to_string(),
+        ],
+    };
+
+    insta::assert_json_snapshot!(
+        "session_json_mcp_tools_activated",
+        session_record_json(record)
+    );
+}
+
+#[test]
+fn snapshot_stream_record_json_mcp_tools_activated() {
+    let record = StreamRecord::McpToolsActivated {
+        session_id: fixed_session_id(),
+        task_id: fixed_task_id(),
+        timestamp: fixed_timestamp(),
+        tools: vec![
+            "mcp__fixture__echo".to_string(),
+            "mcp__fixture__list_tabs".to_string(),
+        ],
+    };
+
+    insta::assert_json_snapshot!(
+        "stream_record_json_mcp_tools_activated",
+        serde_json::to_value(record).unwrap()
+    );
+}
+
+#[test]
 fn snapshot_session_json_hook_event_with_optional_fields() {
     let record = SessionRecord::HookEvent(hook_event_data_with_optional_fields());
 
@@ -1697,6 +1733,12 @@ fn session_record_to_stream_record_preserves_json() {
             timestamp: fixed_timestamp(),
             name: "debugging-cake".to_string(),
             path: PathBuf::from("/workspace/cake/.agents/skills/debugging-cake/SKILL.md"),
+        },
+        SessionRecord::McpToolsActivated {
+            session_id: fixed_session_id(),
+            task_id: fixed_task_id(),
+            timestamp: fixed_timestamp(),
+            tools: vec!["mcp__fixture__echo".to_string()],
         },
     ];
 

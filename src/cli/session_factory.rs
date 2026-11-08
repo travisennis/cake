@@ -116,6 +116,7 @@ impl crate::CodingAssistant {
         // Seed once-per-session activation dedup from the persisted records so
         // a resumed run does not re-emit "first observed" for known skills.
         let activated_skills = restored.activated_skills();
+        let activated_mcp_tools = restored.activated_mcp_tools();
 
         let agent = Agent::new(resolved.clone(), initial_messages)
             .with_session_id(restored.id)
@@ -125,6 +126,7 @@ impl crate::CodingAssistant {
             .with_toolbox_tools(toolbox_tools)
             .with_mcp_servers(mcp_servers)
             .with_enabled_tools(enabled_tools)
+            .with_active_mcp_tools(activated_mcp_tools)
             // Flattened rather than layered: the CLI prints only the outermost
             // error, and the underlying diagnostic is the useful part.
             .with_context_seed(seed)
@@ -200,13 +202,15 @@ impl crate::CodingAssistant {
         enabled_tools: Option<&[String]>,
         task_id: uuid::Uuid,
     ) -> anyhow::Result<RunSession> {
+        let activated_mcp_tools = restored.activated_mcp_tools();
         let agent = Agent::new(resolved.clone(), initial_messages)
             .with_task_id(task_id)
             .with_model_config_name(model_config_name.clone())
             .with_tool_context(tool_context)
             .with_toolbox_tools(toolbox_tools)
             .with_mcp_servers(mcp_servers)
-            .with_enabled_tools(enabled_tools);
+            .with_enabled_tools(enabled_tools)
+            .with_active_mcp_tools(activated_mcp_tools);
         let new_id = agent.session_id();
         // Re-envelope the seed's checkpoint for this session before restoring
         // it, so the in-memory checkpoint and the copied record below agree.
@@ -239,6 +243,17 @@ impl crate::CodingAssistant {
                     timestamp: *timestamp,
                     name: name.clone(),
                     path: path.clone(),
+                }),
+                SessionRecord::McpToolsActivated {
+                    task_id,
+                    timestamp,
+                    tools,
+                    ..
+                } => Some(SessionRecord::McpToolsActivated {
+                    session_id: new_id.to_string(),
+                    task_id: task_id.clone(),
+                    timestamp: *timestamp,
+                    tools: tools.clone(),
                 }),
                 // Copy only the latest checkpoint, re-enveloped for this
                 // session at its original position among the copied records,
@@ -537,6 +552,17 @@ mod tests {
         restored
     }
 
+    fn session_with_activated_mcp_tool(id: uuid::Uuid) -> Session {
+        let mut restored = Session::new(id, PathBuf::from("/work"));
+        restored.records.push(SessionRecord::McpToolsActivated {
+            session_id: id.to_string(),
+            task_id: "task-1".to_string(),
+            timestamp: chrono::Utc::now(),
+            tools: vec!["mcp__fixture__echo".to_string()],
+        });
+        restored
+    }
+
     #[test]
     fn omitted_image_warning_names_the_count_and_model_identity() {
         let warning = super::omitted_history_images_warning(false, 2, "glm-5.1", "fast")
@@ -804,6 +830,42 @@ mod tests {
                     Some(SessionRecord::SkillActivated { name, .. }) if name == "debugging-cake"
                 )
         ));
+    }
+
+    #[test]
+    fn forked_session_copies_mcp_activation_records() {
+        let restored = session_with_activated_mcp_tool(uuid::Uuid::new_v4());
+
+        let run = crate::CodingAssistant::forked_client_and_session(
+            &restored,
+            test_resolved_model_config(),
+            "test".to_string(),
+            PathBuf::from("/work"),
+            &[(crate::types::Role::System, "test".to_string())],
+            HashMap::new(),
+            test_tool_context(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            uuid::Uuid::new_v4(),
+        )
+        .expect("fork should succeed");
+
+        let new_session_id = run.agent.session_id().to_string();
+        let Some(SessionPersistencePlan::Create { seed_records }) = run.persistence.as_ref() else {
+            panic!("a fork persists a new session");
+        };
+        let activation = seed_records
+            .iter()
+            .find_map(|record| match record {
+                SessionRecord::McpToolsActivated {
+                    session_id, tools, ..
+                } => Some((session_id, tools)),
+                _ => None,
+            })
+            .expect("the fork should seed the MCP activation record");
+        assert_eq!(activation.0, &new_session_id);
+        assert_eq!(activation.1.clone(), vec!["mcp__fixture__echo".to_string()]);
     }
 
     // ---- build_client_and_session run-mode coverage ----

@@ -499,7 +499,7 @@ impl Agent {
         let tool_plans = self.plan_tool_calls(function_calls).await?;
         self.record_hook_blocked_denials(&tool_plans);
         let results = self.run_tool_plans(tool_plans).await;
-        self.activate_pending_mcp_tools();
+        self.activate_pending_mcp_tools()?;
         Ok(results)
     }
 

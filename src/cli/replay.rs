@@ -333,6 +333,27 @@ mod tests {
     }
 
     #[test]
+    fn load_records_accepts_mcp_tool_activation_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let activation = serde_json::to_string(&SessionRecord::McpToolsActivated {
+            session_id: SESSION_ID.to_string(),
+            task_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+            timestamp: chrono::Utc::now(),
+            tools: vec!["mcp__fixture__echo".to_string()],
+        })
+        .unwrap();
+        let path = write_session(dir.path(), &[&meta_line(), &activation]);
+
+        let records = load_records(&path, Uuid::parse_str(SESSION_ID).unwrap()).unwrap();
+        assert_eq!(records.len(), 2);
+        assert!(matches!(
+            &records[1],
+            SessionRecord::McpToolsActivated { tools, .. }
+                if tools == &["mcp__fixture__echo"]
+        ));
+    }
+
+    #[test]
     fn load_records_rejects_unsupported_format_version() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_session(dir.path(), &[&meta_line()]);

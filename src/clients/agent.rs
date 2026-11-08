@@ -153,8 +153,9 @@ pub struct Agent {
     deferred_mcp_tools: Vec<DeferredMcpTool>,
     /// Registered names selected by `ToolSearch` during the current tool batch.
     pending_tool_activations: Arc<Mutex<Vec<String>>>,
-    /// Deferred tools already added to the registry.
-    active_mcp_tools: HashSet<String>,
+    /// Deferred tools already added to the registry. Shared with `ToolSearch`
+    /// so a later search can distinguish active tools from new matches.
+    active_mcp_tools: Arc<Mutex<HashSet<String>>>,
     /// Whether this agent installed the `ToolSearch` entry.
     tool_search_installed: bool,
     tool_context: Arc<ToolContext>,
@@ -225,7 +226,7 @@ impl Agent {
             enabled_tool_names: None,
             deferred_mcp_tools: Vec::new(),
             pending_tool_activations: Arc::new(Mutex::new(Vec::new())),
-            active_mcp_tools: HashSet::new(),
+            active_mcp_tools: Arc::new(Mutex::new(HashSet::new())),
             tool_search_installed: false,
             tool_context: Arc::new(ToolContext::from_current_process()),
             session_id: uuid::Uuid::new_v4(),
@@ -395,7 +396,7 @@ impl Agent {
         tool: &McpTool,
         client: Arc<McpClient>,
         supports_images: bool,
-    ) {
+    ) -> bool {
         if self.tools.has(&tool.registered_name) {
             tracing::warn!(
                 target: "cake",
@@ -404,10 +405,11 @@ impl Agent {
                 tool.name,
                 tool.registered_name
             );
-            return;
+            return false;
         }
         self.tools
             .push_entry(mcp_tool_entry(server, tool, client, supports_images));
+        true
     }
 
     /// Install `ToolSearch`, or fall back to direct registration when the
@@ -450,6 +452,7 @@ impl Agent {
         self.tools.push_entry(tool_search_entry(
             entries,
             Arc::clone(&self.pending_tool_activations),
+            Arc::clone(&self.active_mcp_tools),
         ));
         self.tool_search_installed = true;
     }
@@ -480,21 +483,29 @@ impl Agent {
         }
     }
 
-    /// Register tools selected by a `ToolSearch` call before the next request.
-    fn activate_pending_mcp_tools(&mut self) {
-        let selected = {
-            let mut pending = self
-                .pending_tool_activations
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            std::mem::take(&mut *pending)
-        };
-        if selected.is_empty() {
-            return;
+    /// Re-register tools that were active before this invocation.
+    ///
+    /// Names are revalidated against the live catalog and the current
+    /// allowlist; a server that disappeared, changed exposure, or had a tool
+    /// removed is ignored rather than failing the resume.
+    pub fn with_active_mcp_tools(mut self, names: impl IntoIterator<Item = String>) -> Self {
+        if self.tool_context.sandbox_policy == SandboxPolicy::ReadOnly {
+            return self;
         }
         let supports_images = self.config.model_config.supports_images;
-        for name in selected {
-            if !self.mcp_tool_enabled(&name) || !self.active_mcp_tools.insert(name.clone()) {
+        for name in names {
+            if !self.mcp_tool_enabled(&name) {
+                tracing::debug!(
+                    target: "cake",
+                    "Ignoring restored MCP tool '{name}': excluded by the tool allowlist"
+                );
+                continue;
+            }
+            if self.tools.has(&name) {
+                self.active_mcp_tools
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(name);
                 continue;
             }
             let Some(deferred) = self
@@ -503,16 +514,87 @@ impl Agent {
                 .find(|deferred| deferred.tool.registered_name == name)
                 .cloned()
             else {
-                self.active_mcp_tools.remove(&name);
+                tracing::debug!(
+                    target: "cake",
+                    "Ignoring restored MCP tool '{name}': not present in the live deferred catalog"
+                );
                 continue;
             };
-            self.register_mcp_tool(
+            if self.register_mcp_tool(
                 &deferred.server,
                 &deferred.tool,
                 Arc::clone(&deferred.client),
                 supports_images,
-            );
+            ) {
+                self.active_mcp_tools
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(name);
+            }
         }
+        self
+    }
+
+    /// Register tools selected by a `ToolSearch` call before the next request.
+    /// A successful batch is appended to the session so resume can restore it.
+    fn activate_pending_mcp_tools(&mut self) -> anyhow::Result<()> {
+        let selected = {
+            let mut pending = self
+                .pending_tool_activations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::mem::take(&mut *pending)
+        };
+        if selected.is_empty() {
+            return Ok(());
+        }
+        let supports_images = self.config.model_config.supports_images;
+        let mut activated = Vec::new();
+        for name in selected {
+            if !self.mcp_tool_enabled(&name) {
+                continue;
+            }
+            let already_active = self
+                .active_mcp_tools
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(&name);
+            if already_active {
+                continue;
+            }
+            let Some(deferred) = self
+                .deferred_mcp_tools
+                .iter()
+                .find(|deferred| deferred.tool.registered_name == name)
+                .cloned()
+            else {
+                continue;
+            };
+            if !self.register_mcp_tool(
+                &deferred.server,
+                &deferred.tool,
+                Arc::clone(&deferred.client),
+                supports_images,
+            ) {
+                continue;
+            }
+            self.active_mcp_tools
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(name.clone());
+            activated.push(name);
+        }
+        if activated.is_empty() {
+            return Ok(());
+        }
+        activated.sort_unstable();
+        let record = SessionRecord::McpToolsActivated {
+            session_id: self.session_id.to_string(),
+            task_id: self.task_id.to_string(),
+            timestamp: chrono::Utc::now(),
+            tools: activated,
+        };
+        self.persist_record(&record)
     }
 
     /// Restrict the registry to an exact-name allowlist. An absent selection
