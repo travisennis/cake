@@ -170,7 +170,7 @@ bash_session_output_max_bytes = 1048576 # Unread output kept per session
 bash_session_max = 16                    # Concurrent running commands
 bash_session_max_seconds = 3600          # Hard wall clock per command
 bash_session_exited_ttl_seconds = 600    # Retention after exit
-read_default_end_line = 200     # Read default window (lines; default 200)
+read_default_end_line = 500     # Read default window (lines; default 500)
 read_max_output_bytes = 100000  # Read output and Edit input cap (bytes; default 100000)
 read_max_line_bytes = 10000     # Read per-line cap (bytes; default 10000)
 read_image_max_bytes = 5242880  # ReadImage image cap (bytes; default 5 MiB)
@@ -183,8 +183,8 @@ hook_output_limit = 65536       # Hook stdout/stderr cap per hook (bytes; defaul
 - `bash_session_max`: maximum concurrently running Bash sessions. Completed sessions are retained up to four times this count.
 - `bash_session_max_seconds`: hard wall clock in seconds; reaching it terminates the process group.
 - `bash_session_exited_ttl_seconds`: seconds a completed session remains available for late or repeated reads, subject to the completed-session count cap.
-- `read_default_end_line`: default Read window in lines when the model omits `end_line`. `"unlimited"` reads to the end of the file.
-- `read_max_output_bytes`: maximum bytes of Read output before truncation at a UTF-8 boundary and maximum bytes of an input file Edit will read. `"unlimited"` disables both caps.
+- `read_default_end_line`: default Read window in lines when the model omits `end_line`. The compiled default is 500. `"unlimited"` reads to the end of the file.
+- `read_max_output_bytes`: maximum bytes of Read output before line-aligned truncation with a `continue with start_line=...` resume hint, and maximum bytes of an input file Edit will read. A byte-cap stop never delivers a partial line. `"unlimited"` disables both caps.
 - `read_max_line_bytes`: maximum bytes delivered for a single Read line before it is truncated with a marker at a UTF-8 boundary. The cap bounds memory for newline-free giant lines. `"unlimited"` re-enables reading a whole line into memory, which can starve memory for such a file.
 - `read_image_max_bytes`: maximum bytes of an image the ReadImage tool will read and send to the provider. A larger file is rejected with a model-visible error, and the read itself stops at the cap. An image whose longest edge exceeds 2048 pixels is downscaled before sending, so a large screenshot reaches the model as a readable picture instead of a rejected request. `"unlimited"` disables the cap.
 - `hook_output_limit`: maximum bytes of hook stdout and stderr captured per hook invocation. `"unlimited"` disables truncation.

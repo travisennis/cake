@@ -1169,7 +1169,7 @@ mod error_tests {
         })
         .to_string();
         let expected_tool_output = format!(
-            "File: {}\nLines 1-2/3\n     1: alpha\n     2: beta\n[... 1 more lines ...]",
+            "File: {}\nLines 1-2/3\n     1: alpha\n     2: beta\n[... 1 more lines; continue with start_line=3 ...]",
             fixture_path.display()
         );
 

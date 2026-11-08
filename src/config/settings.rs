@@ -655,11 +655,11 @@ pub struct LimitsSettingsOverlay {
     #[serde(default)]
     pub bash_session_exited_ttl_seconds: Option<PositiveLimit>,
     /// Default Read window in lines when the model omits `end_line`. Absent
-    /// uses the compiled default of 200; `"unlimited"` reads to the end of
+    /// uses the compiled default of 500; `"unlimited"` reads to the end of
     /// the file.
     #[serde(default)]
     pub read_default_end_line: Option<Limit>,
-    /// Maximum bytes of Read output before it is truncated at a UTF-8
+    /// Maximum bytes of Read output before it is truncated at a line
     /// boundary, and maximum bytes of input Edit will read. Absent uses the
     /// compiled default of 100,000; `"unlimited"` disables both caps.
     #[serde(default)]
@@ -711,10 +711,10 @@ pub struct ToolLimits {
     pub bash_session_max: usize,
     pub bash_session_max_seconds: u64,
     pub bash_session_exited_ttl_seconds: u64,
-    /// Default Read window in lines (default 200).
+    /// Default Read window in lines (default 500).
     pub read_default_end_line: Option<usize>,
-    /// Maximum bytes of Read output before truncation and of an input file
-    /// Edit will read (default 100,000).
+    /// Maximum bytes of line-aligned Read output before truncation and of an
+    /// input file Edit will read (default 100,000).
     pub read_max_output_bytes: Option<usize>,
     /// Maximum bytes delivered for a single Read line (default 10,000).
     pub read_max_line_bytes: Option<usize>,
@@ -735,7 +735,7 @@ pub const DEFAULT_BASH_SESSION_MAX: u32 = 16;
 pub const DEFAULT_BASH_SESSION_MAX_SECONDS: u32 = 3_600;
 pub const DEFAULT_BASH_SESSION_EXITED_TTL_SECONDS: u32 = 600;
 /// Compiled default for [`ToolLimits::read_default_end_line`].
-pub const DEFAULT_READ_DEFAULT_END_LINE: u32 = 200;
+pub const DEFAULT_READ_DEFAULT_END_LINE: u32 = 500;
 /// Compiled default for [`ToolLimits::read_max_output_bytes`].
 pub const DEFAULT_READ_MAX_OUTPUT_BYTES: u32 = 100_000;
 /// Compiled default for [`ToolLimits::read_max_line_bytes`], matching the

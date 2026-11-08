@@ -32,11 +32,13 @@ pub(super) fn read_tool() -> super::Tool {
                 },
                 "start_line": {
                     "type": "integer",
+                    "minimum": 1,
                     "description": "First line to read (1-indexed, inclusive). Default: 1"
                 },
                 "end_line": {
                     "type": "integer",
-                    "description": "Last line to read (1-indexed, inclusive). Default: the configured read_default_end_line window (200 out of the box; start_line+window-1 when start_line given)"
+                    "minimum": 1,
+                    "description": "Last line to read (1-indexed, inclusive). Default: the configured read_default_end_line window (500 out of the box; start_line+window-1 when start_line given)"
                 }
             },
             "required": ["path"]
@@ -149,21 +151,41 @@ const BINARY_DETECTION_BYTES: usize = 8192;
 // re-enables the pre-#362 whole-line-in-memory behavior. `read-description.txt`
 // documents the config and must change with it.
 
-/// Read and format a file with line numbers
+/// Read and format a file with line numbers.
 fn read_file(
     path: &Path,
     start_line: Option<usize>,
     end_line: Option<usize>,
     limits: &ToolLimits,
 ) -> Result<super::ToolResult, String> {
-    // Default line range (1-indexed from caller, convert to 0-indexed).
-    let start = start_line.unwrap_or(1).saturating_sub(1);
-    let end_requested =
-        end_requested_line(start, start_line, end_line, limits.read_default_end_line);
+    let start_value = start_line.unwrap_or(1);
+    let line_cap = limits.read_max_line_bytes.unwrap_or(usize::MAX);
 
     let file = std::fs::File::open(path)
         .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?;
     let mut reader = BufReader::new(file);
+
+    if start_value == 0 {
+        let total_lines = count_lines_to_eof(&mut reader, path, line_cap)?;
+        return Err(invalid_range_error(
+            path,
+            "start_line must be 1 or greater",
+            total_lines,
+        ));
+    }
+    if end_line == Some(0) {
+        let total_lines = count_lines_to_eof(&mut reader, path, line_cap)?;
+        return Err(invalid_range_error(
+            path,
+            "end_line must be 1 or greater",
+            total_lines,
+        ));
+    }
+
+    // Default line range (1-indexed from caller, convert to 0-indexed).
+    let start = start_value - 1;
+    let end_requested =
+        end_requested_line(start, start_line, end_line, limits.read_default_end_line);
     read_from_reader(&mut reader, start, end_requested, path, limits)
 }
 
@@ -173,8 +195,10 @@ fn read_file(
 /// - Each line is read into a reused buffer capped at `read_max_line_bytes`
 ///   bytes; the rest of an over-long line is consumed and discarded, so a
 ///   newline-free giant line cannot grow memory (or per-line allocation).
-/// - In-window lines accumulate into a single `String` only while it stays
-///   under `read_max_output_bytes`; the byte cap trims the exact return.
+/// - In-window lines accumulate into a single `String` only while the running
+///   body fits `read_max_output_bytes`. The header and footer are then checked
+///   against the same cap, and whole lines are dropped until the result fits,
+///   so a byte cap never cuts a line or invalidates the reported range.
 /// - After the last emitted line, at most [`EXTRA_LINES_TO_COUNT`] more lines
 ///   are read to decide the footer. EOF within that budget yields the exact
 ///   total; otherwise the header and footer use "at least N" phrasing, which
@@ -190,23 +214,29 @@ fn read_from_reader<R: BufRead>(
     path: &Path,
     limits: &ToolLimits,
 ) -> Result<super::ToolResult, String> {
-    // The window is empty by request: nothing can be shown, so count to EOF
-    // for the exact total in the message.
     let line_cap = limits.read_max_line_bytes.unwrap_or(usize::MAX);
     if start > end_requested {
         let total_lines = count_lines_to_eof(reader, path, line_cap)?;
-        return Ok(no_content_result(path, total_lines));
+        return Err(invalid_range_error(
+            path,
+            &format!(
+                "start_line ({}) is greater than end_line ({})",
+                start + 1,
+                end_requested + 1
+            ),
+            total_lines,
+        ));
     }
 
     // An unlimited budget accumulates the whole file by design.
-    let soft_cap = limits.read_max_output_bytes.unwrap_or(usize::MAX);
+    let max_bytes = limits.read_max_output_bytes;
 
-    let mut body = String::new();
+    let mut builder = BodyBuilder::new(max_bytes, line_cap);
     let mut total_lines: usize = 0;
     let mut scanned_bytes: usize = 0;
-    let mut last_emitted: Option<usize> = None;
     let mut exact = false;
     let mut line_buf = Vec::new();
+    let mut first_line_overflow = None;
 
     loop {
         let Some(line) = read_line_bounded(reader, &mut line_buf, line_cap)
@@ -225,54 +255,113 @@ fn read_from_reader<R: BufRead>(
         if i < start {
             continue; // line_buf reused, no allocation
         }
-        if emit_line(i, end_requested, &body, soft_cap) {
-            append_line(&mut body, &line, i, line_cap);
-            last_emitted = Some(i);
+
+        if let Some(attempted_len) = builder.push(i, end_requested, &line) {
+            first_line_overflow = Some(attempted_len);
+            break;
         }
 
         // Stop once the window is satisfied and a bounded number of lines
         // past the last emitted line has been counted for the footer.
-        if past_counting_budget(last_emitted, i, scanned_bytes) {
+        if past_counting_budget(builder.last_emitted, i, scanned_bytes) {
             break;
         }
     }
 
-    let Some(end) = last_emitted else {
-        // `start` lay beyond EOF; only EOF stops the loop without an
-        // emitted line, so the count is exact.
-        return Ok(no_content_result(path, total_lines));
-    };
-
-    let mut output = format!(
-        "File: {}\nLines {}-{}/{}\n{}",
-        path.display(),
-        start + 1,
-        end + 1,
-        total_label(exact, total_lines),
-        body
-    );
-
-    let mut compensation_events = Vec::new();
-    if let Some(event) = apply_output_cap(&mut output, limits.read_max_output_bytes) {
-        compensation_events.push(event);
+    if let Some(line_bytes) = first_line_overflow {
+        return Ok(read_cap_too_small_result(
+            path,
+            start + 1,
+            line_bytes,
+            max_bytes.unwrap_or(usize::MAX),
+            None,
+        ));
     }
 
-    // Note remaining lines if applicable. The count is a lower bound when
-    // the read stopped at the counting budget, so say "at least".
-    append_more_lines(&mut output, end, total_lines, exact);
+    let Some(end) = builder.last_emitted else {
+        return no_line_result(path, start, total_lines);
+    };
 
-    Ok(super::ToolResult {
-        output,
-        images: Vec::new(),
-        compensation_events,
-        permission_denials: Vec::new(),
-    })
+    Ok(build_read_result(ReadResultInput {
+        path,
+        start,
+        end,
+        total_lines,
+        exact,
+        body: builder.body,
+        line_ends: builder.line_ends,
+        max_bytes,
+        cap_stopped: builder.cap_stopped,
+    }))
 }
 
-/// Whether line `i` belongs in the output. The first in-window line is always
-/// emitted; later lines stop once the running body reaches the byte budget.
-const fn emit_line(i: usize, end_requested: usize, body: &str, soft_cap: usize) -> bool {
-    i <= end_requested && (body.is_empty() || body.len() < soft_cap)
+/// No line at `start` exists. An empty file is a normal result; a non-empty
+/// file means the requested start line is past EOF.
+fn no_line_result(
+    path: &Path,
+    start: usize,
+    total_lines: usize,
+) -> Result<super::ToolResult, String> {
+    if total_lines == 0 {
+        Ok(empty_file_result(path))
+    } else {
+        Err(start_past_eof_error(path, start + 1, total_lines))
+    }
+}
+
+/// Accumulates delivered lines until the requested window closes or the body
+/// reaches the byte budget. Counted-but-undelivered lines stay out of `body`.
+struct BodyBuilder {
+    body: String,
+    line_ends: Vec<usize>,
+    last_emitted: Option<usize>,
+    body_budget: usize,
+    line_cap: usize,
+    cap_stopped: bool,
+    window_closed: bool,
+}
+
+impl BodyBuilder {
+    fn new(max_bytes: Option<usize>, line_cap: usize) -> Self {
+        Self {
+            body: String::new(),
+            line_ends: Vec::new(),
+            last_emitted: None,
+            body_budget: max_bytes.unwrap_or(usize::MAX),
+            line_cap,
+            cap_stopped: false,
+            window_closed: false,
+        }
+    }
+
+    /// Try to append one in-window line. Returns the attempted body length when
+    /// the first line alone exceeds the byte budget; otherwise `None`.
+    fn push(&mut self, i: usize, end_requested: usize, line: &BoundedLine<'_>) -> Option<usize> {
+        if self.window_closed {
+            return None;
+        }
+        if i > end_requested {
+            self.window_closed = true;
+            return None;
+        }
+
+        let checkpoint = self.body.len();
+        append_line(&mut self.body, line, i, self.line_cap);
+        if self.body.len() <= self.body_budget {
+            self.line_ends.push(self.body.len());
+            self.last_emitted = Some(i);
+            return None;
+        }
+
+        let attempted_len = self.body.len();
+        self.body.truncate(checkpoint);
+        if self.last_emitted.is_none() {
+            return Some(attempted_len);
+        }
+        self.cap_stopped = true;
+        self.window_closed = true;
+        None
+    }
 }
 
 /// Append one numbered line to the body, marking a line truncated at the
@@ -439,55 +528,187 @@ fn total_label(exact: bool, total_lines: usize) -> String {
     }
 }
 
-/// Truncate `output` to the byte cap at a UTF-8 boundary, returning the
-/// telemetry event when truncation happened. An unlimited budget
-/// (`read_max_output_bytes = "unlimited"`) never truncates.
-fn apply_output_cap(
-    output: &mut String,
+/// The delivered lines and the metadata needed to size and format the result.
+struct ReadResultInput<'a> {
+    path: &'a Path,
+    start: usize,
+    end: usize,
+    total_lines: usize,
+    exact: bool,
+    body: String,
+    line_ends: Vec<usize>,
     max_bytes: Option<usize>,
-) -> Option<CompensationEventTelemetry> {
-    if let Some(max_bytes) = max_bytes
-        && output.len() > max_bytes
-    {
-        let reserve = 100; // bytes for the truncation marker
-        let byte_end = output.floor_char_boundary(max_bytes.saturating_sub(reserve));
-        let mut truncated = {
-            #[expect(
-                clippy::string_slice,
-                reason = "floor_char_boundary guarantees a char boundary"
-            )]
-            output[..byte_end].to_string()
-        };
-        _ = write!(
-            truncated,
-            "\n[... output truncated at {max_bytes} bytes ...]"
+    cap_stopped: bool,
+}
+
+/// Build the final result from the delivered body, dropping whole lines until
+/// the header, body, and footer fit the configured output budget.
+fn build_read_result(input: ReadResultInput<'_>) -> super::ToolResult {
+    let ReadResultInput {
+        path,
+        start,
+        mut end,
+        total_lines,
+        exact,
+        mut body,
+        line_ends,
+        max_bytes,
+        mut cap_stopped,
+    } = input;
+    let first_line_bytes = line_ends.first().copied().unwrap_or(body.len());
+    let mut delivered = line_ends.len();
+
+    loop {
+        let header = format_header(path, start, end, total_lines, exact);
+        let footer = more_lines_footer(
+            end,
+            total_lines,
+            exact,
+            if cap_stopped { max_bytes } else { None },
         );
-        *output = truncated;
-        Some(CompensationEventTelemetry::new(
-            CompensationKind::OutputTruncation,
-            Some("Read".to_string()),
-        ))
-    } else {
-        None
+        let total_len = header.len() + body.len() + footer.as_ref().map_or(0, String::len);
+
+        if max_bytes.is_none_or(|cap| total_len <= cap) {
+            let mut output = header;
+            output.push_str(&body);
+            if let Some(footer) = footer {
+                output.push_str(&footer);
+            }
+            let compensation_events = if cap_stopped {
+                vec![CompensationEventTelemetry::new(
+                    CompensationKind::OutputTruncation,
+                    Some("Read".to_string()),
+                )]
+            } else {
+                Vec::new()
+            };
+            return super::ToolResult {
+                output,
+                images: Vec::new(),
+                compensation_events,
+                permission_denials: Vec::new(),
+            };
+        }
+
+        cap_stopped = true;
+        let needed = total_len;
+        delivered = delivered.saturating_sub(1);
+        body.truncate(if delivered == 0 {
+            0
+        } else {
+            line_ends[delivered - 1]
+        });
+        if delivered == 0 {
+            return read_cap_too_small_result(
+                path,
+                start + 1,
+                first_line_bytes,
+                max_bytes.unwrap_or(needed),
+                Some(needed),
+            );
+        }
+        end = start + delivered - 1;
     }
 }
 
-/// Append the remaining-lines footer, using "at least" when the count is a
-/// lower bound.
-fn append_more_lines(output: &mut String, end: usize, total_lines: usize, exact: bool) {
-    if end < total_lines.saturating_sub(1) {
-        let remaining = total_lines.saturating_sub(end + 1);
-        if exact {
-            _ = write!(output, "\n[... {remaining} more lines ...]");
-        } else {
-            _ = write!(output, "\n[... at least {remaining} more lines ...]");
-        }
+/// Format the `File:` and `Lines X-Y/Z` header for the delivered range.
+fn format_header(path: &Path, start: usize, end: usize, total_lines: usize, exact: bool) -> String {
+    format!(
+        "File: {}\nLines {}-{}/{}\n",
+        path.display(),
+        start + 1,
+        end + 1,
+        total_label(exact, total_lines)
+    )
+}
+
+/// The single footer shape for a stopped read: how many lines remain and where
+/// to resume. A byte-cap stop also names the cap. `None` at EOF.
+fn more_lines_footer(
+    end: usize,
+    total_lines: usize,
+    exact: bool,
+    cap: Option<usize>,
+) -> Option<String> {
+    let remaining = total_lines.saturating_sub(end.saturating_add(1));
+    if remaining == 0 {
+        return None;
     }
+    let resume = end.saturating_add(2);
+    let count = if exact {
+        format!("{remaining} more lines")
+    } else {
+        format!("at least {remaining} more lines")
+    };
+    let cap = cap.map_or(String::new(), |cap| {
+        format!("output truncated at {cap} bytes; ")
+    });
+    Some(format!(
+        "\n[... {cap}{count}; continue with start_line={resume} ...]"
+    ))
+}
+
+/// A clear result for a byte cap too small to hold the header, one line, and
+/// the footer. It never cuts a line or reports a range it did not deliver.
+fn read_cap_too_small_result(
+    path: &Path,
+    line: usize,
+    line_bytes: usize,
+    cap: usize,
+    needed: Option<usize>,
+) -> super::ToolResult {
+    let needed = needed.map_or(String::new(), |needed| {
+        format!("; the first line plus the Read header and footer needs {needed} bytes")
+    });
+    super::ToolResult {
+        output: format!(
+            "File: {}\n[... output truncated at {cap} bytes; line {line} needs {line_bytes} bytes{needed} ...]",
+            path.display()
+        ),
+        images: Vec::new(),
+        compensation_events: vec![CompensationEventTelemetry::new(
+            CompensationKind::OutputTruncation,
+            Some("Read".to_string()),
+        )],
+        permission_denials: Vec::new(),
+    }
+}
+
+/// An empty file has no range to report and no truncation.
+fn empty_file_result(path: &Path) -> super::ToolResult {
+    super::ToolResult {
+        output: format!("File: {}\n0 lines total\n(file is empty)", path.display()),
+        images: Vec::new(),
+        compensation_events: Vec::new(),
+        permission_denials: Vec::new(),
+    }
+}
+
+/// The model-visible error for a range that is invalid before any line is read.
+fn invalid_range_error(path: &Path, detail: &str, total_lines: usize) -> String {
+    format!(
+        "Invalid Read range for '{}': {detail}; the file has {}.",
+        path.display(),
+        lines_label(total_lines)
+    )
+}
+
+/// The model-visible error for a start line beyond the last line.
+fn start_past_eof_error(path: &Path, start_line: usize, total_lines: usize) -> String {
+    format!(
+        "Invalid Read range for '{}': start_line ({start_line}) is past the end of the file ({}).",
+        path.display(),
+        lines_label(total_lines)
+    )
+}
+
+fn lines_label(lines: usize) -> String {
+    format!("{lines} line{}", if lines == 1 { "" } else { "s" })
 }
 
 /// Count every line of `reader` to EOF, reusing one buffer capped at
-/// `read_max_line_bytes` per line (no per-line allocation). Used when the window
-/// is empty by request and the message needs the exact total.
+/// `read_max_line_bytes` per line (no per-line allocation). Used when an invalid
+/// range needs the exact total in the model-visible error.
 fn count_lines_to_eof<R: BufRead>(
     reader: &mut R,
     path: &Path,
@@ -547,19 +768,6 @@ fn reject_binary_line(line: &BoundedLine<'_>, path: &Path) -> Result<(), String>
         Err(binary_file_error(path))
     } else {
         Ok(())
-    }
-}
-
-/// The "no content to show" result, reporting the exact total.
-fn no_content_result(path: &Path, total_lines: usize) -> super::ToolResult {
-    super::ToolResult {
-        output: format!(
-            "File: {}\n{total_lines} lines total\n(start_line > end_line, no content to show)",
-            path.display()
-        ),
-        images: Vec::new(),
-        compensation_events: Vec::new(),
-        permission_denials: Vec::new(),
     }
 }
 
@@ -625,11 +833,12 @@ mod tests {
     }
 
     #[test]
-    fn default_read_still_1_to_200() {
-        // Neither start_line nor end_line should still default to 1-200.
+    fn default_read_is_1_to_500() {
+        // Neither start_line nor end_line defaults to the compiled 500-line
+        // window.
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("test.txt");
-        let lines: Vec<String> = (1..=600).map(|i| format!("Line {i}")).collect();
+        let lines: Vec<String> = (1..=501).map(|i| format!("Line {i}")).collect();
         fs::write(&file_path, lines.join("\n")).unwrap();
 
         let args = serde_json::json!({
@@ -638,9 +847,16 @@ mod tests {
         .to_string();
 
         let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
-        assert!(result.output.contains("Lines 1-200/600"));
-        assert!(result.output.contains("Line 200"));
-        assert!(result.output.contains("[... 400 more lines ...]"));
+        assert!(result.output.contains("Lines 1-500/501"));
+        assert!(result.output.contains("   500: Line 500"));
+        assert!(result.output.contains("     1: Line 1"));
+        assert!(
+            result
+                .output
+                .contains("[... 1 more lines; continue with start_line=501 ...]")
+        );
+        assert!(!result.output.contains("   501: "));
+        assert!(result.compensation_events.is_empty());
     }
 
     #[test]
@@ -658,13 +874,18 @@ mod tests {
 
         let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
         assert!(result.output.contains("Lines 1-2/3"));
-        assert!(result.output.contains("[... 1 more lines ...]"));
+        assert!(
+            result
+                .output
+                .contains("[... 1 more lines; continue with start_line=3 ...]")
+        );
+        assert!(result.compensation_events.is_empty());
     }
 
     #[test]
-    fn start_line_after_end_line_reports_exact_total() {
-        // An empty requested window (start_line > end_line) counts to EOF so
-        // the message can report the exact total without understating it.
+    fn start_line_after_end_line_is_rejected_with_total() {
+        // An invalid requested window counts to EOF so the error can report
+        // the exact total without understating it.
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         fs::write(&file_path, "a\nb\nc\nd\ne").unwrap();
@@ -676,9 +897,12 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
-        assert!(result.output.contains("5 lines total"));
-        assert!(result.output.contains("no content to show"));
+        let err = execute_read(&ToolContext::from_current_process(), &args).unwrap_err();
+        assert!(
+            err.contains("start_line (4) is greater than end_line (2)"),
+            "{err}"
+        );
+        assert!(err.contains("5 lines"), "{err}");
     }
 
     #[test]
@@ -767,7 +991,7 @@ mod tests {
     #[test]
     fn start_line_without_end_line_returns_window() {
         // When start_line is provided without end_line, the window should be
-        // start_line..start_line+199, not the absolute 1-200 default.
+        // start_line..start_line+499, not the absolute 1-500 default.
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let lines: Vec<String> = (1..=720).map(|i| format!("Line {i}")).collect();
@@ -780,16 +1004,21 @@ mod tests {
         .to_string();
 
         let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
-        // Should read lines 200-399 (file ends before start_line+199)
-        assert!(result.output.contains("Lines 200-399/720"));
+        assert!(result.output.contains("Lines 200-699/720"));
         assert!(result.output.contains("   200: Line 200"));
-        assert!(result.output.contains("   399: Line 399"));
+        assert!(result.output.contains("   699: Line 699"));
         assert!(!result.output.contains("Line 199"));
+        assert!(!result.output.contains("   700: "));
+        assert!(
+            result
+                .output
+                .contains("[... 21 more lines; continue with start_line=700 ...]")
+        );
     }
 
     #[test]
     fn start_line_without_end_line_window_in_middle() {
-        // When the file is long enough, start_line+199 should be the end.
+        // When the file is long enough, start_line+499 should be the end.
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let lines: Vec<String> = (1..=1000).map(|i| format!("Line {i}")).collect();
@@ -802,17 +1031,21 @@ mod tests {
         .to_string();
 
         let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
-        assert!(result.output.contains("Lines 300-499/1000"));
+        assert!(result.output.contains("Lines 300-799/1000"));
         assert!(result.output.contains("   300: Line 300"));
-        assert!(result.output.contains("   499: Line 499"));
+        assert!(result.output.contains("   799: Line 799"));
         assert!(!result.output.contains("Line 299"));
-        assert!(!result.output.contains("Line 800"));
-        assert!(result.output.contains("[... 501 more lines ...]"));
+        assert!(!result.output.contains("   800: "));
+        assert!(
+            result
+                .output
+                .contains("[... 201 more lines; continue with start_line=800 ...]")
+        );
     }
 
     #[test]
-    fn start_line_at_end_of_file() {
-        // start_line beyond the file should show the "no content" message.
+    fn start_line_at_end_of_file_is_rejected() {
+        // start_line beyond the file is an invalid range, not an empty window.
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let lines: Vec<String> = (1..=10).map(|i| format!("Line {i}")).collect();
@@ -824,8 +1057,12 @@ mod tests {
         })
         .to_string();
 
-        let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
-        assert!(result.output.contains("no content to show"));
+        let err = execute_read(&ToolContext::from_current_process(), &args).unwrap_err();
+        assert!(
+            err.contains("start_line (20) is past the end of the file"),
+            "{err}"
+        );
+        assert!(err.contains("10 lines"), "{err}");
     }
 
     #[test]
@@ -853,7 +1090,11 @@ mod tests {
         assert!(result.output.contains("Lines 1-200/at least 1200"));
         assert!(result.output.contains("   200: Line number 200"));
         assert!(!result.output.contains("Line number 201"));
-        assert!(result.output.contains("[... at least 1000 more lines ...]"));
+        assert!(
+            result
+                .output
+                .contains("[... at least 1000 more lines; continue with start_line=201 ...]")
+        );
     }
 
     /// A reader that counts bytes served to the caller, used to assert that
@@ -1210,6 +1451,99 @@ mod tests {
     fn read_max_output_bytes_override_truncates_at_custom_cap() {
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("big.txt");
+        let lines: Vec<String> = (1..=100)
+            .map(|i| format!("line {i:03} {}", "x".repeat(20)))
+            .collect();
+        fs::write(&file_path, lines.join("\n")).unwrap();
+
+        let mut context = ToolContext::from_current_process();
+        let mut limits = crate::config::settings::ToolLimits::defaults();
+        limits.read_max_output_bytes = Some(1000);
+        context.limits = limits;
+
+        let args = serde_json::json!({ "path": file_path.to_str().unwrap() }).to_string();
+        let result = execute_read(&context, &args).unwrap();
+        assert!(result.output.contains("output truncated at 1000 bytes"));
+        assert!(result.output.contains("continue with start_line="));
+        assert!(
+            result.output.len() <= 1000,
+            "output is {} bytes but cap is 1000",
+            result.output.len()
+        );
+        assert_eq!(
+            result.compensation_events.len(),
+            1,
+            "truncation must record exactly one output_truncation event"
+        );
+    }
+
+    #[test]
+    fn byte_cap_truncation_ends_on_a_complete_line_and_resumes() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("aligned.txt");
+        let lines: Vec<String> = (1..=80)
+            .map(|i| format!("line {i:03} {}", "y".repeat(50)))
+            .collect();
+        fs::write(&file_path, lines.join("\n")).unwrap();
+
+        let mut context = ToolContext::from_current_process();
+        let mut limits = crate::config::settings::ToolLimits::defaults();
+        limits.read_max_output_bytes = Some(800);
+        context.limits = limits;
+
+        let args = serde_json::json!({ "path": file_path.to_str().unwrap() }).to_string();
+        let result = execute_read(&context, &args).unwrap();
+        let output = &result.output;
+        assert!(output.len() <= 800);
+
+        let header = output.lines().nth(1).expect("header line");
+        assert!(header.starts_with("Lines 1-"), "{header}");
+        assert!(header.ends_with("/80"), "{header}");
+        let delivered_end: usize = header
+            .strip_prefix("Lines 1-")
+            .unwrap()
+            .split('/')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(delivered_end < 80);
+
+        let last_numbered = output
+            .lines()
+            .filter_map(|line| line.split_once(": "))
+            .filter_map(|(number, _)| number.trim().parse::<usize>().ok())
+            .next_back()
+            .expect("numbered body line");
+        assert_eq!(last_numbered, delivered_end);
+        assert!(output.contains("output truncated at 800 bytes"), "{output}");
+        assert!(
+            output.contains(&format!("continue with start_line={}", delivered_end + 1)),
+            "{output}"
+        );
+        assert_eq!(result.compensation_events.len(), 1);
+
+        // Resume at the reported line: the next read starts exactly there, so
+        // consecutive ranges lose no line and repeat none.
+        let resume = delivered_end + 1;
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "start_line": resume
+        })
+        .to_string();
+        let next = execute_read(&context, &args).unwrap();
+        assert!(
+            next.output
+                .contains(&format!("{resume:>6}: line {resume:03} ")),
+            "{}",
+            next.output
+        );
+    }
+
+    #[test]
+    fn byte_cap_too_small_for_first_line_is_clear() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("giant-line.txt");
         fs::write(&file_path, "x".repeat(5000)).unwrap();
 
         let mut context = ToolContext::from_current_process();
@@ -1220,17 +1554,76 @@ mod tests {
         let args = serde_json::json!({ "path": file_path.to_str().unwrap() }).to_string();
         let result = execute_read(&context, &args).unwrap();
         assert!(
-            result
-                .output
-                .contains("[... output truncated at 1000 bytes ...]")
+            result.output.contains("output truncated at 1000 bytes"),
+            "{}",
+            result.output
         );
-        assert!(result.output.len() < 5000);
+        assert!(result.output.contains("line 1 needs"), "{}", result.output);
+        assert!(!result.output.contains("xxxxx"), "{}", result.output);
+        assert_eq!(result.compensation_events.len(), 1);
+    }
+
+    #[test]
+    fn byte_cap_too_small_for_header_and_first_line_is_clear() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("one-line.txt");
+        fs::write(&file_path, "z".repeat(200)).unwrap();
+
+        let mut context = ToolContext::from_current_process();
+        let mut limits = crate::config::settings::ToolLimits::defaults();
+        limits.read_max_output_bytes = Some(220);
+        context.limits = limits;
+
+        let args = serde_json::json!({ "path": file_path.to_str().unwrap() }).to_string();
+        let result = execute_read(&context, &args).unwrap();
         assert!(
             result
-                .compensation_events
-                .iter()
-                .any(|e| e.kind == crate::session_telemetry::CompensationKind::OutputTruncation),
-            "truncation must record an output_truncation event"
+                .output
+                .contains("plus the Read header and footer needs"),
+            "{}",
+            result.output
+        );
+        assert_eq!(result.compensation_events.len(), 1);
+    }
+
+    #[test]
+    fn zero_line_numbers_are_rejected() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("three.txt");
+        fs::write(&file_path, "a\nb\nc").unwrap();
+
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "start_line": 0
+        })
+        .to_string();
+        let err = execute_read(&ToolContext::from_current_process(), &args).unwrap_err();
+        assert!(err.contains("start_line must be 1 or greater"), "{err}");
+        assert!(err.contains("3 lines"), "{err}");
+
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "end_line": 0
+        })
+        .to_string();
+        let err = execute_read(&ToolContext::from_current_process(), &args).unwrap_err();
+        assert!(err.contains("end_line must be 1 or greater"), "{err}");
+        assert!(err.contains("3 lines"), "{err}");
+    }
+
+    #[test]
+    fn empty_file_is_reported_without_a_range_error() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("empty.txt");
+        fs::write(&file_path, "").unwrap();
+
+        let args = serde_json::json!({ "path": file_path.to_str().unwrap() }).to_string();
+        let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
+        assert!(result.output.contains("0 lines total"), "{}", result.output);
+        assert!(
+            result.output.contains("(file is empty)"),
+            "{}",
+            result.output
         );
     }
 

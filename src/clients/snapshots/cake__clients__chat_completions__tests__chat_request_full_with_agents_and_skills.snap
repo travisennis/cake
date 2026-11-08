@@ -155,12 +155,13 @@ expression: value
     },
     {
       "function": {
-        "description": "Read a file's contents. Returns line-numbered content. Supports reading specific line ranges to avoid loading large files entirely.\n\nBehavior:\n- Defaults to reading lines 1-200 (the configured read_default_end_line window; configurable in [limits]). Provide start_line/end_line for large files.\n- Returns a \"N more lines\" note when the file extends beyond the requested range; large files may report \"at least N more lines\" because the exact total is not read to the end of the file.\n- Truncates any line longer than the configured read_max_line_bytes cap with a \"... (line truncated to N bytes)\" marker, so a single huge line cannot exhaust the window. Configurable in [limits].\n- Rejects files with null bytes. Detection covers at least the first 8 KiB and all bytes read for the requested range; large ranged reads stop at a bounded point.\n- Rejects directory paths (use Bash with ls, find, or tree for directory listings).\n\nWarning: Ranged and truncated reads return only the requested region. Do not compose old_text for an Edit from content outside the returned lines — the match will fail.\n",
+        "description": "Read a file's contents. Returns line-numbered content. Supports reading specific line ranges to avoid loading large files entirely.\n\nBehavior:\n- Defaults to reading lines 1-500 (the configured read_default_end_line window; configurable in [limits]). Provide start_line/end_line for large files.\n- Returns a \"N more lines; continue with start_line=X\" note when the file extends beyond the delivered range; large files may report \"at least N more lines\" because the exact total is not read to the end of the file.\n- When read_max_output_bytes stops delivery, the output ends at a complete line and names the byte cap and the start_line to resume from. Configurable in [limits].\n- Truncates any line longer than the configured read_max_line_bytes cap with a \"... (line truncated to N bytes)\" marker, so a single huge line cannot exhaust the window. Configurable in [limits].\n- Rejects files with null bytes. Detection covers at least the first 8 KiB and all bytes read for the requested range; large ranged reads stop at a bounded point.\n- Rejects invalid ranges (line numbers below 1, start_line greater than end_line, or start_line past EOF) and reports the file's line count.\n- Rejects directory paths (use Bash with ls, find, or tree for directory listings).\n\nWarning: Ranged and truncated reads return only the requested region. Do not compose old_text for an Edit from content outside the returned lines — the match will fail.\n",
         "name": "Read",
         "parameters": {
           "properties": {
             "end_line": {
-              "description": "Last line to read (1-indexed, inclusive). Default: the configured read_default_end_line window (200 out of the box; start_line+window-1 when start_line given)",
+              "description": "Last line to read (1-indexed, inclusive). Default: the configured read_default_end_line window (500 out of the box; start_line+window-1 when start_line given)",
+              "minimum": 1,
               "type": "integer"
             },
             "intent": {
@@ -173,6 +174,7 @@ expression: value
             },
             "start_line": {
               "description": "First line to read (1-indexed, inclusive). Default: 1",
+              "minimum": 1,
               "type": "integer"
             }
           },
