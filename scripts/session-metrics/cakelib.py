@@ -734,20 +734,24 @@ READ_ONLY_MESSAGES = (
 NO_MATCH_CATEGORY = "no-match (old_text not found)"
 
 
-def sandbox_notice(output: str) -> bool:
+def sandbox_notice(name: str, output: str) -> bool:
     """True when `output` carries `bash.rs`'s `[Sandbox restriction]` notice.
 
     The notice is a *line* cake composes after the denied command's own output,
-    so requiring the line start is what stops Read's numbered lines and Edit's
-    `+`/`-`/space-prefixed diff lines from reading as a denial. Requiring the
-    notice's own sentence, rather than the bare marker, also keeps a `cat`,
-    `sed`, or search result that prints the marker — or a truncated copy of the
-    notice — out of the denial buckets (issue #561).
+    so requiring the line start is what stops Edit's `+`/`-`/space-prefixed
+    diff lines from reading as a denial. Read returns unnumbered file content
+    and never runs a Bash command, so a Read result is excluded by name even
+    when a file line starts with the notice. Requiring the notice's own
+    sentence, rather than the bare marker, also keeps a `cat`, `sed`, or search
+    result that prints the marker — or a truncated copy of the notice — out of
+    the denial buckets (issue #561).
     """
+    if name == "Read":
+        return False
     return any(line.startswith(SANDBOX_NOTICE_PREFIX) for line in output.splitlines())
 
 
-def is_tool_failure(output: str) -> bool:
+def is_tool_failure(name: str, output: str) -> bool:
     """True when a stored tool output reports a failure the model saw.
 
     Detection is on the first line, matching how `agent_loop.rs` records both
@@ -759,7 +763,7 @@ def is_tool_failure(output: str) -> bool:
     return (
         first.startswith(ERROR_PREFIX)
         or first.startswith(HOOK_BLOCKED_PREFIX)
-        or sandbox_notice(output)
+        or sandbox_notice(name, output)
     )
 
 
@@ -777,13 +781,14 @@ def pair_tool_calls(records: list[dict]) -> list[ToolCall]:
             if call is None:
                 continue
             output = rec.get("output") or ""
+            name = call.get("name", "unknown")
             calls.append(ToolCall(
                 seq=seq,
-                name=call.get("name", "unknown"),
+                name=name,
                 call_id=call.get("call_id", ""),
                 arguments=call.get("arguments", ""),
                 output=output,
-                ok=not is_tool_failure(output),
+                ok=not is_tool_failure(name, output),
                 timestamp=call.get("timestamp"),
             ))
             seq += 1
@@ -810,7 +815,7 @@ def classify_tool_error(name: str, output: str) -> str:
         return "duplicate-mutation guard"
     if HOOK_BLOCKED_PREFIX in first:
         return "hook-blocked"
-    if sandbox_notice(output):
+    if sandbox_notice(name, output):
         return "sandbox-blocked"
     if "BLOCKED" in first:
         # Only the Bash command-safety judge emits a bare BLOCKED first line:

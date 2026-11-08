@@ -151,7 +151,7 @@ const BINARY_DETECTION_BYTES: usize = 8192;
 // re-enables the pre-#362 whole-line-in-memory behavior. `read-description.txt`
 // documents the config and must change with it.
 
-/// Read and format a file with line numbers.
+/// Read and format a file with range metadata.
 fn read_file(
     path: &Path,
     start_line: Option<usize>,
@@ -189,7 +189,7 @@ fn read_file(
     read_from_reader(&mut reader, start, end_requested, path, limits)
 }
 
-/// Read a line range from an open reader and format it with line numbers.
+/// Read a line range from an open reader and format it with range metadata.
 ///
 /// The work is bounded rather than proportional to the file:
 /// - Each line is read into a reused buffer capped at `read_max_line_bytes`
@@ -346,7 +346,7 @@ impl BodyBuilder {
         }
 
         let checkpoint = self.body.len();
-        append_line(&mut self.body, line, i, self.line_cap);
+        append_line(&mut self.body, line, self.line_cap);
         if self.body.len() <= self.body_budget {
             self.line_ends.push(self.body.len());
             self.last_emitted = Some(i);
@@ -364,13 +364,13 @@ impl BodyBuilder {
     }
 }
 
-/// Append one numbered line to the body, marking a line truncated at the
+/// Append one unnumbered line to the body, marking a line truncated at the
 /// per-line byte cap.
-fn append_line(body: &mut String, line: &BoundedLine<'_>, i: usize, cap: usize) {
+fn append_line(body: &mut String, line: &BoundedLine<'_>, cap: usize) {
     if !body.is_empty() {
         body.push('\n');
     }
-    _ = write!(body, "{:>6}: {}", i + 1, line.text);
+    body.push_str(line.text);
     append_truncation_marker(body, line.truncated, cap);
 }
 
@@ -792,10 +792,45 @@ mod tests {
         .to_string();
 
         let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
-        assert!(result.output.contains("File:"));
-        assert!(result.output.contains("     1: Line 1"));
-        assert!(result.output.contains("     2: Line 2"));
-        assert!(result.output.contains("     3: Line 3"));
+        assert_eq!(
+            result.output,
+            format!(
+                "File: {}\nLines 1-3/3\nLine 1\nLine 2\nLine 3",
+                file_path.canonicalize().unwrap().display()
+            )
+        );
+    }
+
+    #[test]
+    fn read_body_can_be_used_directly_as_edit_old_text() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("direct-edit.txt");
+        fs::write(&file_path, "alpha\nbeta\ngamma").unwrap();
+
+        let read_args = serde_json::json!({
+            "path": file_path.to_str().unwrap()
+        })
+        .to_string();
+        let read = execute_read(&ToolContext::from_current_process(), &read_args).unwrap();
+        let body = read.output.lines().skip(2).collect::<Vec<_>>().join("\n");
+        assert_eq!(body, "alpha\nbeta\ngamma");
+
+        let edit_args = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "edits": [{
+                "old_text": body,
+                "new_text": "alpha\nBETA\ngamma"
+            }]
+        })
+        .to_string();
+        let edit =
+            super::super::edit::execute_edit(&ToolContext::from_current_process(), &edit_args)
+                .unwrap();
+        assert!(edit.output.contains("Applied 1 edit"), "{}", edit.output);
+        assert_eq!(
+            fs::read_to_string(&file_path).unwrap(),
+            "alpha\nBETA\ngamma"
+        );
     }
 
     #[test]
@@ -812,12 +847,13 @@ mod tests {
         .to_string();
 
         let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
-        assert!(result.output.contains("Lines 2-4/5"));
-        assert!(result.output.contains("     2: Line 2"));
-        assert!(result.output.contains("     3: Line 3"));
-        assert!(result.output.contains("     4: Line 4"));
-        assert!(!result.output.contains("Line 1"));
-        assert!(!result.output.contains("Line 5"));
+        assert_eq!(
+            result.output,
+            format!(
+                "File: {}\nLines 2-4/5\nLine 2\nLine 3\nLine 4\n[... 1 more lines; continue with start_line=5 ...]",
+                file_path.canonicalize().unwrap().display()
+            )
+        );
     }
 
     #[test]
@@ -847,15 +883,15 @@ mod tests {
         .to_string();
 
         let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
-        assert!(result.output.contains("Lines 1-500/501"));
-        assert!(result.output.contains("   500: Line 500"));
-        assert!(result.output.contains("     1: Line 1"));
-        assert!(
-            result
-                .output
-                .contains("[... 1 more lines; continue with start_line=501 ...]")
+        let output_lines: Vec<&str> = result.output.lines().collect();
+        assert_eq!(output_lines.len(), 503);
+        assert_eq!(output_lines[1], "Lines 1-500/501");
+        assert_eq!(output_lines[2], "Line 1");
+        assert_eq!(output_lines[501], "Line 500");
+        assert_eq!(
+            output_lines.last().copied(),
+            Some("[... 1 more lines; continue with start_line=501 ...]")
         );
-        assert!(!result.output.contains("   501: "));
         assert!(result.compensation_events.is_empty());
     }
 
@@ -970,11 +1006,7 @@ mod tests {
         let args = serde_json::json!({ "path": link.to_str().unwrap() }).to_string();
         let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
 
-        assert!(
-            result.output.contains("     1: Line 1"),
-            "{}",
-            result.output
-        );
+        assert_eq!(result.output.lines().nth(2), Some("Line 1"));
     }
 
     /// Create a named pipe with no writer, which blocks `File::open` until the
@@ -1004,15 +1036,14 @@ mod tests {
         .to_string();
 
         let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
-        assert!(result.output.contains("Lines 200-699/720"));
-        assert!(result.output.contains("   200: Line 200"));
-        assert!(result.output.contains("   699: Line 699"));
-        assert!(!result.output.contains("Line 199"));
-        assert!(!result.output.contains("   700: "));
-        assert!(
-            result
-                .output
-                .contains("[... 21 more lines; continue with start_line=700 ...]")
+        let output_lines: Vec<&str> = result.output.lines().collect();
+        assert_eq!(output_lines.len(), 503);
+        assert_eq!(output_lines[1], "Lines 200-699/720");
+        assert_eq!(output_lines[2], "Line 200");
+        assert_eq!(output_lines[501], "Line 699");
+        assert_eq!(
+            output_lines.last().copied(),
+            Some("[... 21 more lines; continue with start_line=700 ...]")
         );
     }
 
@@ -1031,15 +1062,14 @@ mod tests {
         .to_string();
 
         let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
-        assert!(result.output.contains("Lines 300-799/1000"));
-        assert!(result.output.contains("   300: Line 300"));
-        assert!(result.output.contains("   799: Line 799"));
-        assert!(!result.output.contains("Line 299"));
-        assert!(!result.output.contains("   800: "));
-        assert!(
-            result
-                .output
-                .contains("[... 201 more lines; continue with start_line=800 ...]")
+        let output_lines: Vec<&str> = result.output.lines().collect();
+        assert_eq!(output_lines.len(), 503);
+        assert_eq!(output_lines[1], "Lines 300-799/1000");
+        assert_eq!(output_lines[2], "Line 300");
+        assert_eq!(output_lines[501], "Line 799");
+        assert_eq!(
+            output_lines.last().copied(),
+            Some("[... 201 more lines; continue with start_line=800 ...]")
         );
     }
 
@@ -1087,13 +1117,13 @@ mod tests {
         .to_string();
 
         let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
-        assert!(result.output.contains("Lines 1-200/at least 1200"));
-        assert!(result.output.contains("   200: Line number 200"));
-        assert!(!result.output.contains("Line number 201"));
-        assert!(
-            result
-                .output
-                .contains("[... at least 1000 more lines; continue with start_line=201 ...]")
+        let output_lines: Vec<&str> = result.output.lines().collect();
+        assert_eq!(output_lines[1], "Lines 1-200/at least 1200");
+        assert_eq!(output_lines[2], "Line number 1");
+        assert_eq!(output_lines[201], "Line number 200");
+        assert_eq!(
+            output_lines.last().copied(),
+            Some("[... at least 1000 more lines; continue with start_line=201 ...]")
         );
     }
 
@@ -1424,8 +1454,9 @@ mod tests {
 
         let args = serde_json::json!({ "path": file_path.to_str().unwrap() }).to_string();
         let result = execute_read(&context, &args).unwrap();
-        assert!(result.output.contains("Lines 1-10/50"));
-        assert!(result.output.contains("    10: Line 10"));
+        assert_eq!(result.output.lines().nth(1), Some("Lines 1-10/50"));
+        assert_eq!(result.output.lines().nth(2), Some("Line 1"));
+        assert_eq!(result.output.lines().nth(11), Some("Line 10"));
         assert!(!result.output.contains("Line 11"));
     }
 
@@ -1443,8 +1474,9 @@ mod tests {
 
         let args = serde_json::json!({ "path": file_path.to_str().unwrap() }).to_string();
         let result = execute_read(&context, &args).unwrap();
-        assert!(result.output.contains("Lines 1-600/600"));
-        assert!(result.output.contains("   600: Line 600"));
+        assert_eq!(result.output.lines().nth(1), Some("Lines 1-600/600"));
+        assert_eq!(result.output.lines().nth(2), Some("Line 1"));
+        assert_eq!(result.output.lines().last(), Some("Line 600"));
     }
 
     #[test]
@@ -1509,13 +1541,16 @@ mod tests {
             .unwrap();
         assert!(delivered_end < 80);
 
-        let last_numbered = output
+        let body_lines: Vec<&str> = output
             .lines()
-            .filter_map(|line| line.split_once(": "))
-            .filter_map(|(number, _)| number.trim().parse::<usize>().ok())
-            .next_back()
-            .expect("numbered body line");
-        assert_eq!(last_numbered, delivered_end);
+            .filter(|line| line.starts_with("line "))
+            .collect();
+        assert_eq!(body_lines.len(), delivered_end);
+        let last_body = body_lines.last().expect("body line");
+        assert!(
+            last_body.starts_with(&format!("line {delivered_end:03} ")),
+            "{output}"
+        );
         assert!(output.contains("output truncated at 800 bytes"), "{output}");
         assert!(
             output.contains(&format!("continue with start_line={}", delivered_end + 1)),
@@ -1534,7 +1569,8 @@ mod tests {
         let next = execute_read(&context, &args).unwrap();
         assert!(
             next.output
-                .contains(&format!("{resume:>6}: line {resume:03} ")),
+                .lines()
+                .any(|line| line.starts_with(&format!("line {resume:03} "))),
             "{}",
             next.output
         );
@@ -1736,8 +1772,8 @@ mod tests {
 
     #[test]
     fn read_truncates_newline_free_giant_line() {
-        // The delivered line is truncated with a marker, the numbering is
-        // unchanged, and the file still totals exactly one line.
+        // The delivered line is truncated with a marker, the body is
+        // unnumbered, and the file still totals exactly one line.
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("minified.json");
         fs::write(&file_path, "y".repeat(20_000)).unwrap();
@@ -1746,7 +1782,8 @@ mod tests {
         let result = execute_read(&ToolContext::from_current_process(), &args).unwrap();
         let output = &result.output;
         assert!(output.contains("Lines 1-1/1"));
-        assert!(output.contains("     1: "));
+        let body = output.lines().nth(2).expect("body line");
+        assert!(body.starts_with('y'), "{output}");
         assert!(
             output.contains("... (line truncated to 10000 bytes)"),
             "marker missing from: {output}"

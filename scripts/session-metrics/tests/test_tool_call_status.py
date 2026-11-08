@@ -126,15 +126,15 @@ class ToolCallOkTest(unittest.TestCase):
 class SandboxNoticeScopingTest(unittest.TestCase):
     """The notice counts on its shape, not on the tool that carries it (#561).
 
-    Read prefixes line numbers and Edit embeds a unified diff, so a file that
-    quotes `[Sandbox restriction]` reaches the transcript as quoted text. A
-    failed call is still a failure on its own tool's terms.
+    Read returns unnumbered file content and Edit embeds a unified diff, so a
+    file that quotes `[Sandbox restriction]` reaches the transcript as quoted
+    text. A failed call is still a failure on its own tool's terms.
     """
 
     def test_read_quoting_the_marker_is_not_a_failure(self):
         calls = cakelib.pair_tool_calls(records_for([
             "File: /repo/src/clients/tools/bash.rs\nLines 1209-1209/1400\n"
-            "  1209:             [Sandbox restriction]: This command was blocked by "
+            "[Sandbox restriction]: This command was blocked by "
             "the filesystem sandbox.\\\n"
         ], name="Read"))
         self.assertTrue(calls[0].ok)

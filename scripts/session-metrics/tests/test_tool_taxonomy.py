@@ -122,12 +122,12 @@ class SandboxNoticeScopingTest(unittest.TestCase):
                 )
 
     def test_quoting_the_notice_keeps_the_tools_own_category(self):
-        """Read and Edit prefix every line, so neither can emit a notice line."""
+        """Read returns unnumbered text; Edit prefixes every diff line."""
         cases = [
-            # A Read failure whose body quotes the marker. Read numbers lines.
+            # A Read failure whose body quotes the marker at line start.
             ("Read",
              "Error: Failed to read file '/repo/src/clients/tools/bash.rs': invalid "
-             "UTF-8\n\n  1209: [Sandbox restriction]: This command was blocked by "
+             "UTF-8\n\n[Sandbox restriction]: This command was blocked by "
              "the filesystem sandbox.",
              "path/file access"),
             # Edit's success output is a diff; a failing Edit can quote the same

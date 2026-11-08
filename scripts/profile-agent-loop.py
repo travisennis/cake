@@ -23,7 +23,7 @@ API_KEY_ENV = "CAKE_PROFILE_API_KEY"
 XCTRACE_TIME_LIMIT = "30s"
 READ_OUTPUT_MARKERS = (
     "Lines 1-32/32",
-    *(f"{number:>6}: profile line {number}" for number in range(1, 33)),
+    *(f"profile line {number}" for number in range(1, 33)),
 )
 
 
