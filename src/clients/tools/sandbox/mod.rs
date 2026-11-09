@@ -106,8 +106,8 @@ pub(super) struct SandboxConfig {
     /// Directories the user granted directly --- `settings_dirs`,
     /// `additional_dirs`, and `skill_dirs` --- in lexical and canonical form.
     ///
-    /// Captured before `partition_read_only` demotes settings directories out
-    /// of `writable`, so it survives the read-only policy. Used only to decide
+    /// Captured before the read-only policy demotes settings directories out
+    /// of the writable set, so it survives that demotion. Used only to decide
     /// whether a Bash call may select a directory as its `cwd`; the platform
     /// sandbox profiles never read it.
     pub user_grants: Vec<PathBuf>,
@@ -123,6 +123,307 @@ const SCM_CLI_PATHS: &[&str] = &[
     ".local/share/glab-cli",
     ".local/state/glab-cli",
 ];
+
+/// Credential-bearing paths that the in-process file tools never expose.
+///
+/// A file entry denies exactly that path; a directory entry denies its
+/// subtree. Entries are expanded under the resolved home directory and stored
+/// in both lexical and canonical form so a symlink cannot bypass them.
+const DENIED_HOME_PATHS: &[(&str, DenyKind)] = &[
+    (".ssh", DenyKind::Directory),
+    (".aws", DenyKind::Directory),
+    (".azure", DenyKind::Directory),
+    (".config/gcloud", DenyKind::Directory),
+    (".kube", DenyKind::Directory),
+    (".docker/config.json", DenyKind::File),
+    (".config/gh", DenyKind::Directory),
+    (".config/glab-cli", DenyKind::Directory),
+    (".npmrc", DenyKind::File),
+    (".yarnrc", DenyKind::File),
+    (".yarnrc.yml", DenyKind::File),
+    (".cargo/credentials", DenyKind::File),
+    (".cargo/credentials.toml", DenyKind::File),
+    (".netrc", DenyKind::File),
+    (".git-credentials", DenyKind::File),
+    ("Library/Keychains", DenyKind::Directory),
+];
+
+/// Whether a denied path names a single file or a directory subtree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DenyKind {
+    File,
+    Directory,
+}
+
+/// One credential-bearing path that wins over every ordinary grant.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the in-process validator consumes the deny list in Milestone 2"
+    )
+)]
+#[derive(Clone, Debug)]
+pub(super) struct DeniedPath {
+    path: PathBuf,
+    canonical: Option<PathBuf>,
+    kind: DenyKind,
+}
+
+impl DeniedPath {
+    fn new(path: PathBuf, kind: DenyKind) -> Self {
+        let canonical = path.canonicalize().ok();
+        Self {
+            path,
+            canonical,
+            kind,
+        }
+    }
+
+    fn matches(&self, path: &Path, canonical: Option<&Path>) -> bool {
+        let matches_candidate = |candidate: &Path| match self.kind {
+            DenyKind::File => {
+                self.path == candidate || self.canonical.as_deref() == Some(candidate)
+            },
+            DenyKind::Directory => {
+                candidate.starts_with(&self.path)
+                    || self
+                        .canonical
+                        .as_deref()
+                        .is_some_and(|denied| candidate.starts_with(denied))
+            },
+        };
+
+        matches_candidate(path) || canonical.is_some_and(matches_candidate)
+    }
+}
+
+/// The single owner of resolved filesystem grants.
+///
+/// The OS sandbox and the in-process file tools intentionally see different
+/// projections of this value: Bash may write toolchain caches and can read
+/// OS-only paths, while the in-process tools keep toolchain paths read-only and
+/// apply the credential deny list. Building both views from one value prevents
+/// the two enforcement layers from drifting.
+#[derive(Clone, Debug)]
+pub(super) struct PathGrants {
+    /// Paths the in-process tools may read and write.
+    pub read_write: Vec<PathBuf>,
+    /// Paths the in-process tools may read but not write.
+    pub read_only: Vec<PathBuf>,
+    /// Toolchain paths Bash may write under `WorkspaceWrite`.
+    pub sandbox_writable: Vec<PathBuf>,
+    /// OS-only read paths excluded from the in-process projection.
+    pub sandbox_only_read: Vec<PathBuf>,
+    /// Credential paths that win over every ordinary grant.
+    pub denied: Vec<DeniedPath>,
+    /// User-granted directories used for Bash `cwd` admission.
+    pub user_grants: Vec<PathBuf>,
+    /// The policy this value was built for.
+    pub policy: SandboxPolicy,
+}
+
+impl PathGrants {
+    /// Build the grant value from the resolved path inputs.
+    ///
+    /// `additional_dirs` are read-only grants from `--add-dir` and
+    /// `[sandbox].read_only`; `settings_dirs` are read-write grants from
+    /// `settings.toml` and `directories`; `skill_dirs` are read-only grants.
+    /// `home` is the resolved account home, or `None` when it is unavailable.
+    pub(super) fn build(
+        policy: SandboxPolicy,
+        cwd: &Path,
+        temp_dirs: &[PathBuf],
+        additional_dirs: &[PathBuf],
+        settings_dirs: &[PathBuf],
+        skill_dirs: &[PathBuf],
+        home: Option<&Path>,
+    ) -> Self {
+        let mut read_write = vec![cwd.to_path_buf()];
+        read_write.extend(temp_dirs.iter().cloned());
+        read_write.extend(resolve_linked_worktree_dirs(cwd));
+        push_dirs_with_canonical(&mut read_write, settings_dirs);
+        let read_write = deduplicated_with_canonical(&read_write);
+
+        let mut sandbox_writable = Vec::new();
+        if let Some(home) = home {
+            Self::extend_with_toolchain_paths(&mut sandbox_writable, home);
+        }
+        let sandbox_writable = deduplicated_with_canonical(&sandbox_writable);
+
+        let (mut read_only, sandbox_only_read) = Self::system_read_paths(home);
+        push_dirs_with_canonical(&mut read_only, additional_dirs);
+        push_dirs_with_canonical(&mut read_only, skill_dirs);
+        read_only.extend(sandbox_writable.iter().cloned());
+        let read_only = dedup_vec(read_only);
+
+        let user_grants = dedup_vec({
+            let mut grants = Vec::new();
+            push_dirs_with_canonical(&mut grants, settings_dirs);
+            push_dirs_with_canonical(&mut grants, additional_dirs);
+            push_dirs_with_canonical(&mut grants, skill_dirs);
+            grants
+        });
+
+        let (read_write, read_only, sandbox_writable) = if policy == SandboxPolicy::ReadOnly {
+            Self::demote_read_write(read_write, temp_dirs, read_only)
+        } else {
+            (read_write, read_only, sandbox_writable)
+        };
+
+        Self {
+            read_write,
+            read_only,
+            sandbox_writable,
+            sandbox_only_read,
+            denied: Self::denied_paths(home),
+            user_grants,
+            policy,
+        }
+    }
+
+    /// Whether `path` is a denied credential path.
+    ///
+    /// The lexical path and its canonical form are both checked, so a symlink
+    /// from a granted directory to a denied file still fails closed.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the in-process validator consumes the deny list in Milestone 2"
+        )
+    )]
+    pub(super) fn is_denied(&self, path: &Path) -> bool {
+        let canonical = path.canonicalize().ok();
+        self.denied
+            .iter()
+            .any(|denied| denied.matches(path, canonical.as_deref()))
+    }
+
+    fn denied_paths(home: Option<&Path>) -> Vec<DeniedPath> {
+        let Some(home) = home else {
+            return Vec::new();
+        };
+        DENIED_HOME_PATHS
+            .iter()
+            .map(|(relative, kind)| DeniedPath::new(home.join(relative), *kind))
+            .collect()
+    }
+
+    /// Swap the writable/read-only split for the read-only policy.
+    ///
+    /// Temp directories stay writable; every other read-write grant is demoted
+    /// into the read-only set. Toolchain paths are already read-only to the
+    /// in-process tools and become read-only to Bash as well.
+    fn demote_read_write(
+        read_write: Vec<PathBuf>,
+        temp_dirs: &[PathBuf],
+        mut read_only: Vec<PathBuf>,
+    ) -> (Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>) {
+        let mut temp_set = std::collections::HashSet::new();
+        for dir in temp_dirs {
+            temp_set.insert(dir.clone());
+            if let Ok(canonical) = dir.canonicalize() {
+                temp_set.insert(canonical);
+            }
+        }
+
+        let writable = deduplicated_with_canonical(temp_dirs);
+        for path in read_write {
+            if temp_set.contains(&path) {
+                continue;
+            }
+            read_only.push(path.clone());
+            if let Ok(canonical) = path.canonicalize() {
+                read_only.push(canonical);
+            }
+        }
+
+        (writable, dedup_vec(read_only), Vec::new())
+    }
+
+    /// Split the built-in read paths into the in-process grant set and the
+    /// Linux-only OS projection. Landlock grants `/proc`, `/dev`, and `/sys`,
+    /// but `/proc/self/environ` must never become readable through `Read`.
+    fn system_read_paths(home: Option<&Path>) -> (Vec<PathBuf>, Vec<PathBuf>) {
+        let paths = Self::get_read_execute_paths(home);
+
+        #[cfg(target_os = "linux")]
+        {
+            let mut in_process = Vec::new();
+            let mut os_only = Vec::new();
+            for path in paths {
+                if path == Path::new("/dev")
+                    || path == Path::new("/proc")
+                    || path == Path::new("/sys")
+                {
+                    os_only.push(path);
+                } else {
+                    in_process.push(path);
+                }
+            }
+            (in_process, os_only)
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            (paths, Vec::new())
+        }
+    }
+
+    /// Get built-in paths that need read and execute access.
+    fn get_read_execute_paths(home: Option<&Path>) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+
+        #[cfg(target_os = "macos")]
+        {
+            paths.extend([
+                PathBuf::from("/usr"),
+                PathBuf::from("/bin"),
+                PathBuf::from("/sbin"),
+                PathBuf::from("/Library"),
+                PathBuf::from("/System/Library"),
+                // macOS exposes command-line shims and sealed-system content
+                // through Cryptex paths. npm's script runner may touch this
+                // path while resolving its shell, even when the final shell is
+                // /bin/sh.
+                PathBuf::from("/System/Cryptexes"),
+                PathBuf::from("/Applications"),
+                PathBuf::from("/opt/homebrew"),
+                PathBuf::from("/opt/local"),
+                PathBuf::from("/etc"),
+                PathBuf::from("/private/etc"),
+                PathBuf::from("/private/var"),
+                PathBuf::from("/dev"),
+                PathBuf::from("/var"),
+            ]);
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            paths.extend([
+                PathBuf::from("/usr"),
+                PathBuf::from("/bin"),
+                PathBuf::from("/sbin"),
+                PathBuf::from("/lib"),
+                PathBuf::from("/lib64"),
+                PathBuf::from("/etc/alternatives"),
+                PathBuf::from("/snap"),
+                PathBuf::from("/etc"),
+                PathBuf::from("/dev"),
+                PathBuf::from("/proc"),
+                PathBuf::from("/sys"),
+            ]);
+        }
+
+        // Git configuration (read-only).
+        if let Some(home) = home {
+            paths.extend([home.join(".config/git"), home.join(".gitattributes")]);
+        }
+
+        paths.into_iter().filter(|p| p.exists()).collect()
+    }
+}
 
 impl SandboxConfig {
     /// Build a sandbox configuration for the current context, honoring the
@@ -152,71 +453,48 @@ impl SandboxConfig {
         settings_dirs: &[std::path::PathBuf],
         skill_dirs: &[std::path::PathBuf],
     ) -> Self {
-        let mut writable = vec![cwd.to_path_buf()];
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let grants = PathGrants::build(
+            policy,
+            cwd,
+            temp_dirs,
+            additional_dirs,
+            settings_dirs,
+            skill_dirs,
+            home.as_deref(),
+        );
+        Self::from_grants(&grants)
+    }
 
-        // Add temp directories
-        writable.extend(temp_dirs.iter().cloned());
+    /// Project the shared grants into the Bash-facing path classes.
+    ///
+    /// The OS sandbox does not apply the in-process credential deny list:
+    /// Bash remains governed by the OS sandbox and the external gate, and its
+    /// diagnostics must describe what the OS profile allows.
+    pub(super) fn from_grants(grants: &PathGrants) -> Self {
+        let mut writable = grants.read_write.clone();
+        writable.extend(grants.sandbox_writable.iter().cloned());
+        let writable = dedup_vec(writable);
 
-        // If cwd is a linked git worktree (.git is a file pointing elsewhere),
-        // add the per-worktree gitdir and common git dir to the writable set
-        // so git commands can operate under the sandbox.
-        let linked_dirs = resolve_linked_worktree_dirs(cwd);
-        writable.extend(linked_dirs);
-
-        // Add user home toolchain and integration paths
-        if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-            Self::extend_with_toolchain_paths(&mut writable, &home);
-        }
-
-        // Add settings directories from settings.toml as read-write
-        push_dirs_with_canonical(&mut writable, settings_dirs);
-
-        // Include both original and canonical paths to handle symlinks
-        // (e.g., /tmp → /private/tmp on macOS)
-        let writable = deduplicated_with_canonical(&writable);
-
-        let mut read_execute = Self::get_read_execute_paths();
-
-        // Add additional directories from --add-dir flag as read-only
-        push_dirs_with_canonical(&mut read_execute, additional_dirs);
-
-        // Add skill directories as read-only (so scripts like x-fetch.js can execute)
-        push_dirs_with_canonical(&mut read_execute, skill_dirs);
-
-        // Capture the user's own grants (settings, --add-dir, skill directories)
-        // before `partition_read_only` demotes settings directories out of
-        // `writable`, so a read-only run can still select them as a working
-        // directory. The built-in read-and-execute system paths are deliberately
-        // excluded: they are not user grants, and a command started in /etc or
-        // /usr fails for reasons unrelated to the request.
-        let user_grants = dedup_vec({
-            let mut grants = Vec::new();
-            push_dirs_with_canonical(&mut grants, settings_dirs);
-            push_dirs_with_canonical(&mut grants, additional_dirs);
-            push_dirs_with_canonical(&mut grants, skill_dirs);
-            grants
-        });
-
-        // Read-only policy: keep only temp directories writable and move the
-        // workspace dir, toolchain caches, and settings dirs into the
-        // read-and-execute set. Temp directories stay read-write so commands can
-        // still produce intermediate output (pipes, mktemp, overflow temp
-        // files).
-        let (writable, read_execute) = if policy == SandboxPolicy::ReadOnly {
-            Self::partition_read_only(&writable, temp_dirs, read_execute)
-        } else {
-            // WorkspaceWrite, WorkspaceWriteInteractive, and DangerFullAccess
-            // use the same path sets; WorkspaceWriteInteractive differs only in
-            // the macOS capability rules, and DangerFullAccess skips applying
-            // the sandbox entirely.
-            (writable, read_execute)
-        };
+        let sandbox_writable: std::collections::HashSet<&Path> = grants
+            .sandbox_writable
+            .iter()
+            .map(PathBuf::as_path)
+            .collect();
+        let mut read_execute: Vec<PathBuf> = grants
+            .read_only
+            .iter()
+            .filter(|path| !sandbox_writable.contains(path.as_path()))
+            .cloned()
+            .collect();
+        read_execute.extend(grants.sandbox_only_read.iter().cloned());
+        let read_execute = dedup_vec(read_execute);
 
         let config = Self {
             writable,
             read_execute,
-            policy,
-            user_grants,
+            policy: grants.policy,
+            user_grants: grants.user_grants.clone(),
         };
 
         // On unsupported platforms, no sandbox strategy reads the config
@@ -230,43 +508,9 @@ impl SandboxConfig {
 
         config
     }
+}
 
-    /// Move every workspace/toolchain/settings path that is not a temp dir
-    /// from `writable` into `read_execute`, leaving only temp dirs writable.
-    fn partition_read_only(
-        full_writable: &[std::path::PathBuf],
-        temp_dirs: &[std::path::PathBuf],
-        mut read_execute: Vec<PathBuf>,
-    ) -> (Vec<PathBuf>, Vec<PathBuf>) {
-        // Build the set of temp paths (original and canonical) that must stay
-        // writable so a command can still produce intermediate output.
-        let mut temp_set = std::collections::HashSet::new();
-        for dir in temp_dirs {
-            temp_set.insert(dir.clone());
-            if let Ok(canonical) = dir.canonicalize() {
-                temp_set.insert(canonical);
-            }
-        }
-
-        // Writable shrinks to temp dirs only (deduplicated with canonical
-        // forms), matching the same dedup approach as the workspace-write path.
-        let writable_writable: Vec<PathBuf> = temp_dirs.to_vec();
-        let writable = deduplicated_with_canonical(&writable_writable);
-
-        // Everything that was writable and is not a temp dir becomes read-only.
-        for path in full_writable {
-            if temp_set.contains(path) {
-                continue;
-            }
-            read_execute.push(path.clone());
-            if let Ok(canonical) = path.canonicalize() {
-                read_execute.push(canonical);
-            }
-        }
-
-        (writable, dedup_vec(read_execute))
-    }
-
+impl PathGrants {
     /// Extend the writable paths with directories needed by common toolchains
     /// and CLIs.
     ///
@@ -547,60 +791,9 @@ impl SandboxConfig {
             home.join("Library/Caches/composer"),
         ]);
     }
+}
 
-    /// Get built-in paths that need read and execute access.
-    fn get_read_execute_paths() -> Vec<PathBuf> {
-        let mut paths = Vec::new();
-
-        #[cfg(target_os = "macos")]
-        {
-            paths.extend([
-                PathBuf::from("/usr"),
-                PathBuf::from("/bin"),
-                PathBuf::from("/sbin"),
-                PathBuf::from("/Library"),
-                PathBuf::from("/System/Library"),
-                // macOS exposes command-line shims and sealed-system content
-                // through Cryptex paths. npm's script runner may touch this
-                // path while resolving its shell, even when the final shell is
-                // /bin/sh.
-                PathBuf::from("/System/Cryptexes"),
-                PathBuf::from("/Applications"),
-                PathBuf::from("/opt/homebrew"),
-                PathBuf::from("/opt/local"),
-                PathBuf::from("/etc"),
-                PathBuf::from("/private/etc"),
-                PathBuf::from("/private/var"),
-                PathBuf::from("/dev"),
-                PathBuf::from("/var"),
-            ]);
-        }
-
-        #[cfg(target_os = "linux")]
-        {
-            paths.extend([
-                PathBuf::from("/usr"),
-                PathBuf::from("/bin"),
-                PathBuf::from("/sbin"),
-                PathBuf::from("/lib"),
-                PathBuf::from("/lib64"),
-                PathBuf::from("/etc/alternatives"),
-                PathBuf::from("/snap"),
-                PathBuf::from("/etc"),
-                PathBuf::from("/dev"),
-                PathBuf::from("/proc"),
-                PathBuf::from("/sys"),
-            ]);
-        }
-
-        // Git configuration (read-only).
-        if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-            paths.extend([home.join(".config/git"), home.join(".gitattributes")]);
-        }
-
-        paths.into_iter().filter(|p| p.exists()).collect()
-    }
-
+impl SandboxConfig {
     /// Whether `path` is inside any ordinary grant that permits reading or
     /// execution under this config. Use [`Self::is_path_writable`] when the
     /// operation being audited is a write.
@@ -1025,7 +1218,7 @@ fn resolve_worktree_commondir(worktree_gitdir: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use crate::clients::tools::ToolContext;
-    use crate::clients::tools::sandbox::{SandboxConfig, SandboxPolicy};
+    use crate::clients::tools::sandbox::{PathGrants, SandboxConfig, SandboxPolicy};
     use std::path::{Path, PathBuf};
     #[cfg(target_os = "macos")]
     use std::sync::{Arc, Mutex};
@@ -1351,7 +1544,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_read_execute_paths_include_cryptexes() {
-        let paths = SandboxConfig::get_read_execute_paths();
+        let paths = PathGrants::get_read_execute_paths(None);
 
         if PathBuf::from("/System/Cryptexes").exists() {
             assert!(

@@ -17,7 +17,8 @@ The durable decision is recorded in `docs/adr/056-share-bash-read-grants-with-in
 - [x] (2026-11-08) Read task 171, `AGENTS.md`, `docs/workflow/exec-plans.md`, `docs/security.md`, the sandbox module, the path validator, and the tool tests.
 - [x] (2026-11-08) Started task 171 and wrote this ExecPlan. No implementation code has changed.
 - [x] (2026-11-09) Draft ADR 056 (`docs/adr/056-share-bash-read-grants-with-in-process-file-tools.md`) as proposed. Acceptance remains the gate before code changes.
-- [ ] Milestone 1: add `PathGrants`, move grant construction into it, cache it on `ToolContext`, and make `SandboxConfig` a projection of it.
+- [x] (2026-11-09) Accept ADR 056 and add `PathGrants`, `DeniedPath`, the credential deny list, and the Bash/in-process projections. `SandboxConfig::build_with_policy` now projects from `PathGrants`; the in-process validator still uses the legacy path list, so behavior is unchanged.
+- [ ] Milestone 1: cache `PathGrants` on `ToolContext`, add `refresh_path_grants`, make `sandbox_policy` private with accessors, and update the tests that mutate policy or path inputs after construction.
 - [ ] Milestone 2: make the in-process validator consume `PathGrants`, check the credential denylist first, and preserve write behavior.
 - [ ] Milestone 3: add the acceptance and security tests, including synthetic HOME, denied symlinks, Linux-only paths, and the parity test.
 - [ ] Milestone 4: update documentation and model-visible description snapshots.
@@ -33,6 +34,8 @@ The durable decision is recorded in `docs/adr/056-share-bash-read-grants-with-in
 - Observation: `SandboxConfig::build_with_policy` reads `HOME`, `CARGO_HOME`, `RUSTUP_HOME`, `GOPATH`, `GOMODCACHE`, and `GOCACHE` on every call. Caching `PathGrants` at `ToolContext` construction changes the test pattern: tests that currently pin `HOME` around `SandboxConfig::build(&context)` must move context construction inside the pinned scope, or construct the grant value directly. This is an intentional improvement: a run must not change its filesystem grants when the process environment changes mid-run.
 
 - Observation: the deny list must distinguish files from directories. A directory entry such as `~/.ssh` denies the whole subtree; a file entry such as `~/.npmrc` must deny only that file. Treating `~/.cargo/credentials.toml` as a directory subtree would also deny `~/.cargo/registry/src/...`, which is the primary file the task wants `Read` to reach. Conversely, matching a file entry with `starts_with` would deny unrelated siblings such as `~/.npmrc.backup`.
+
+- Observation: `cargo test` can expose a `CARGO_HOME` override that points toolchain discovery at the real cargo home rather than the synthetic test HOME. Tests that need deterministic toolchain grants should use a path with no environment override (for example `~/.bun`) or pin every override explicitly.
 
 - Observation: `validate_path_with_dirs` is a private helper used only by tests today; `validate_path` is the production entry point. It can become a test-only wrapper around a new grant-aware validator without changing the model-visible contract.
 
