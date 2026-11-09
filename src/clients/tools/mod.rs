@@ -284,21 +284,6 @@ impl ToolContext {
     }
 }
 
-/// Get the additional directories from the current tool context.
-pub fn get_additional_dirs(context: &ToolContext) -> &[PathBuf] {
-    &context.additional_dirs
-}
-
-/// Get the skill directories from the current tool context.
-pub fn get_skill_dirs(context: &ToolContext) -> &[PathBuf] {
-    &context.skill_dirs
-}
-
-/// Get the settings directories from the current tool context.
-pub fn get_settings_dirs(context: &ToolContext) -> &[PathBuf] {
-    &context.settings_dirs
-}
-
 // =============================================================================
 // Module Declarations
 // =============================================================================
@@ -1200,7 +1185,8 @@ impl ToolRegistry {
 pub(super) enum PathAccess {
     /// Path is in a read-write location (cwd, temp dirs)
     ReadWrite,
-    /// Path is in a read-only location (--add-dir directories)
+    /// Path is in a read-only grant (built-in toolchain/system paths,
+    /// `--add-dir` directories, or skill directories)
     ReadOnly,
 }
 
@@ -1211,88 +1197,91 @@ pub(super) struct ValidatedPath {
     pub access: PathAccess,
 }
 
-/// Validate that a path exists and is within the current working directory, allowed temp directories,
-/// or directories added via --add-dir flag (read-only access).
+/// Classification of a canonical path against the shared grant table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PathClassification {
+    /// The path is credential-bearing and wins over every ordinary grant.
+    Denied,
+    /// The path is inside an ordinary grant.
+    Allowed(PathAccess),
+    /// The path is outside every ordinary grant.
+    Outside,
+}
+
+/// Validate that a path exists and is inside the shared grant table.
+///
+/// The working directory, temp directories, and settings directories grant
+/// read-write access; built-in toolchain and system paths, additional
+/// (`--add-dir`) directories, and skill directories grant read-only access.
+/// Credential-bearing paths are denied before either class is considered.
 ///
 /// Returns the canonical path along with its access level.
 pub(super) fn validate_path(
     context: &ToolContext,
     path_str: &str,
 ) -> Result<ValidatedPath, String> {
-    validate_path_with_dirs(
-        path_str,
-        &context.cwd,
-        &context.temp_dirs,
-        get_settings_dirs(context),
-        get_additional_dirs(context),
-        get_skill_dirs(context),
-    )
+    validate_path_with_grants(path_str, context.path_grants())
 }
 
-/// Core path validation logic, separated for testability.
-fn validate_path_with_dirs(
+/// Canonicalize a path and classify it against an explicit grant table.
+fn validate_path_with_grants(
     path_str: &str,
-    cwd: &Path,
-    temp_dirs: &[PathBuf],
-    settings_dirs: &[PathBuf],
-    additional_dirs: &[PathBuf],
-    skill_dirs: &[PathBuf],
+    grants: &sandbox::PathGrants,
 ) -> Result<ValidatedPath, String> {
     // Canonicalize the path (resolve symlinks, relative paths, etc.)
     let canonical = Path::new(path_str)
         .canonicalize()
         .map_err(|e| format!("Path not found or not accessible '{path_str}': {e}"))?;
 
-    let access = classify_resolved_path(
-        &canonical,
-        cwd,
-        temp_dirs,
-        settings_dirs,
-        additional_dirs,
-        skill_dirs,
-    )
-    .ok_or_else(|| {
-        format!(
+    match classify_resolved_path(&canonical, grants) {
+        PathClassification::Allowed(access) => Ok(ValidatedPath { canonical, access }),
+        PathClassification::Denied => Err(credential_path_denied(Path::new(path_str))),
+        PathClassification::Outside => Err(format!(
             "Path '{}' is outside the working directory",
             canonical.display()
-        )
-    })?;
-
-    Ok(ValidatedPath { canonical, access })
+        )),
+    }
 }
 
 /// Classify an already-canonicalized path against the shared grant table.
 ///
-/// The working directory, temp directories, and settings directories grant
-/// read-write access; additional (`--add-dir`) and skill directories grant
-/// read-only access; anything else lies outside every grant (`None`). The
-/// same precedence decides existing-path validation and prospective-write
-/// scheduling so overlapping grants resolve identically whether or not the
-/// target exists yet (#277).
-fn classify_resolved_path(
-    canonical: &Path,
-    cwd: &Path,
-    temp_dirs: &[PathBuf],
-    settings_dirs: &[PathBuf],
-    additional_dirs: &[PathBuf],
-    skill_dirs: &[PathBuf],
-) -> Option<PathAccess> {
-    let read_write = path_within(canonical, cwd)
-        || temp_dirs.iter().any(|dir| path_within(canonical, dir))
-        || settings_dirs.iter().any(|dir| path_within(canonical, dir));
-    if read_write {
-        return Some(PathAccess::ReadWrite);
+/// The credential denylist is checked first, then read-write grants, then
+/// read-only grants. The same precedence decides existing-path validation and
+/// prospective-write scheduling so overlapping grants resolve identically
+/// whether or not the target exists yet (#277).
+fn classify_resolved_path(canonical: &Path, grants: &sandbox::PathGrants) -> PathClassification {
+    if grants.is_denied(canonical) {
+        return PathClassification::Denied;
     }
 
-    if additional_dirs
+    if grants
+        .read_write
         .iter()
         .any(|dir| path_within(canonical, dir))
-        || skill_dirs.iter().any(|dir| path_within(canonical, dir))
     {
-        return Some(PathAccess::ReadOnly);
+        return PathClassification::Allowed(PathAccess::ReadWrite);
     }
 
-    None
+    if grants
+        .read_only
+        .iter()
+        .any(|dir| path_within(canonical, dir))
+    {
+        return PathClassification::Allowed(PathAccess::ReadOnly);
+    }
+
+    PathClassification::Outside
+}
+
+/// The single diagnostic for a path denied by the credential policy.
+///
+/// The message names the requested path and the policy classification but
+/// never reads or includes the file contents.
+fn credential_path_denied(path: &Path) -> String {
+    format!(
+        "Path '{}' is denied by the credential-path policy. In-process file tools do not expose credential-bearing files or directories.",
+        path.display()
+    )
 }
 
 /// Check if a canonical path starts with the given directory, comparing
@@ -1494,10 +1483,23 @@ fn resolve_nonexistent_path(
     // correctly (<cwd>/missing/../target → <cwd>/target).
     let (resolved_base, pending) = resolve_write_path(path);
 
+    // Reconstruct the full path before validating so a credential denial also
+    // covers a target that does not exist yet (for example a new file under
+    // ~/.ssh or a new ~/.npmrc).
+    let mut final_path = resolved_base.clone();
+    for component in &pending {
+        final_path = final_path.join(component);
+    }
+
+    let grants = context.path_grants();
+    if grants.is_denied(&final_path) {
+        return Err(credential_path_denied(path));
+    }
+
     // Validate the resolved base against the same grant table and precedence
-    // as existing files, via `path_within` (which canonicalizes each dir) so
-    // a symlinked cwd, temp, or settings dir is accepted for new files
-    // exactly as the existing-file path accepts it (#277).
+    // as existing files. `path_within` canonicalizes each grant so a symlinked
+    // cwd, temp, or settings dir is accepted for new files exactly as the
+    // existing-file path accepts it (#277).
     let canonical_base = resolved_base.canonicalize().map_err(|e| {
         format!(
             "Parent directory not found '{}': {e}",
@@ -1505,23 +1507,17 @@ fn resolve_nonexistent_path(
         )
     })?;
 
-    match classify_resolved_path(
-        &canonical_base,
-        &context.cwd,
-        get_temp_directories(context),
-        get_settings_dirs(context),
-        get_additional_dirs(context),
-        &context.skill_dirs,
-    ) {
-        Some(PathAccess::ReadWrite) => {},
-        Some(PathAccess::ReadOnly) if allow_read_only => {},
-        Some(PathAccess::ReadOnly) => {
+    match classify_resolved_path(&canonical_base, grants) {
+        PathClassification::Allowed(PathAccess::ReadWrite) => {},
+        PathClassification::Allowed(PathAccess::ReadOnly) if allow_read_only => {},
+        PathClassification::Allowed(PathAccess::ReadOnly) => {
             return Err(format!(
                 "Path '{}' is in a read-only directory (added via --add-dir). Write operations are not allowed.",
                 path.display()
             ));
         },
-        None => {
+        PathClassification::Denied => return Err(credential_path_denied(path)),
+        PathClassification::Outside => {
             return Err(format!(
                 "Path '{}' is outside the working directory",
                 path.display()
@@ -1529,17 +1525,7 @@ fn resolve_nonexistent_path(
         },
     }
 
-    // Reconstruct the full path: resolved base + pending components
-    let mut final_path = resolved_base;
-    for component in &pending {
-        final_path = final_path.join(component);
-    }
     Ok(final_path)
-}
-
-/// Get standard temporary directory paths (cached)
-pub(super) fn get_temp_directories(context: &ToolContext) -> &[PathBuf] {
-    &context.temp_dirs
 }
 
 // =============================================================================
@@ -1933,7 +1919,7 @@ mod tests {
     use super::*;
     use std::fs;
 
-    /// Verify that `validate_path_with_dirs` accepts paths within skill directories.
+    /// Verify that `validate_path` accepts paths within skill directories.
     #[test]
     fn skill_dir_path_accepted() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1949,15 +1935,10 @@ mod tests {
 
         let cwd = tmp.path().join("project");
         fs::create_dir_all(&cwd).unwrap();
+        let context =
+            ToolContext::with_temp_dirs(cwd, Vec::new(), Vec::new(), vec![skill_dir], Vec::new());
 
-        let result = validate_path_with_dirs(
-            skill_file.to_str().unwrap(),
-            &cwd,
-            &[],
-            &[],
-            &[],
-            std::slice::from_ref(&skill_dir),
-        );
+        let result = validate_path(&context, skill_file.to_str().unwrap());
         assert!(
             result.is_ok(),
             "Skill file should be readable: {:?}",
@@ -1978,15 +1959,10 @@ mod tests {
 
         let cwd = tmp.path().join("project");
         fs::create_dir_all(&cwd).unwrap();
+        let context =
+            ToolContext::with_temp_dirs(cwd, Vec::new(), Vec::new(), vec![skill_dir], Vec::new());
 
-        let result = validate_path_with_dirs(
-            nested.to_str().unwrap(),
-            &cwd,
-            &[],
-            &[],
-            &[],
-            std::slice::from_ref(&skill_dir),
-        );
+        let result = validate_path(&context, nested.to_str().unwrap());
         assert!(
             result.is_ok(),
             "Nested skill file should be readable: {:?}",
@@ -1999,22 +1975,18 @@ mod tests {
     #[test]
     fn path_outside_skill_dir_rejected() {
         let tmp = tempfile::tempdir().unwrap();
+        let outside_root = tempfile::tempdir_in("/tmp").unwrap();
         let skill_dir = tmp.path().join("fetching-x-content");
         fs::create_dir_all(&skill_dir).unwrap();
-        let outside_file = tmp.path().join("outside.md");
+        let outside_file = outside_root.path().join("outside.md");
         fs::write(&outside_file, "nope").unwrap();
 
         let cwd = tmp.path().join("project");
         fs::create_dir_all(&cwd).unwrap();
+        let context =
+            ToolContext::with_temp_dirs(cwd, Vec::new(), Vec::new(), vec![skill_dir], Vec::new());
 
-        let result = validate_path_with_dirs(
-            outside_file.to_str().unwrap(),
-            &cwd,
-            &[],
-            &[],
-            &[],
-            std::slice::from_ref(&skill_dir),
-        );
+        let result = validate_path(&context, outside_file.to_str().unwrap());
         assert!(result.is_err(), "File outside skill dir should be rejected");
     }
 
@@ -2033,15 +2005,16 @@ mod tests {
 
         let cwd = tmp.path().join("project");
         fs::create_dir_all(&cwd).unwrap();
+        let context = ToolContext::with_temp_dirs(
+            cwd,
+            Vec::new(),
+            Vec::new(),
+            vec![skill_a, skill_b],
+            Vec::new(),
+        );
 
-        let skill_dirs = [skill_a, skill_b];
-        let result_a =
-            validate_path_with_dirs(file_a.to_str().unwrap(), &cwd, &[], &[], &[], &skill_dirs);
-        assert!(result_a.is_ok());
-
-        let result_b =
-            validate_path_with_dirs(file_b.to_str().unwrap(), &cwd, &[], &[], &[], &skill_dirs);
-        assert!(result_b.is_ok());
+        assert!(validate_path(&context, file_a.to_str().unwrap()).is_ok());
+        assert!(validate_path(&context, file_b.to_str().unwrap()).is_ok());
     }
 
     #[test]
@@ -2126,7 +2099,7 @@ mod tests {
 
     #[test]
     fn concurrent_tool_contexts_validate_against_their_own_additional_dirs() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir_in("/tmp").unwrap();
         let cwd = tmp.path().join("project");
         let additional_a = tmp.path().join("reference-a");
         let additional_b = tmp.path().join("reference-b");
@@ -2171,7 +2144,7 @@ mod tests {
     }
 
     /// A new file under a symlinked settings directory must be accepted for
-    /// writes, matching the existing-file path (`validate_path_with_dirs`
+    /// writes, matching the existing-file path (`validate_path`
     /// canonicalizes each directory before comparing).
     #[cfg(unix)]
     #[test]
@@ -2234,8 +2207,9 @@ mod tests {
     #[test]
     fn write_scheduling_rejects_new_file_outside_allowed_dirs() {
         let tmp = tempfile::tempdir().unwrap();
+        let outside_root = tempfile::tempdir_in("/tmp").unwrap();
         let cwd = tmp.path().join("project");
-        let outside = tmp.path().join("elsewhere");
+        let outside = outside_root.path().join("elsewhere");
         fs::create_dir_all(&cwd).unwrap();
         fs::create_dir_all(&outside).unwrap();
 

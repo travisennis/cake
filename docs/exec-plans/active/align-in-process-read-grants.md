@@ -19,7 +19,7 @@ The durable decision is recorded in `docs/adr/056-share-bash-read-grants-with-in
 - [x] (2026-11-09) Draft ADR 056 (`docs/adr/056-share-bash-read-grants-with-in-process-file-tools.md`) as proposed. Acceptance remains the gate before code changes.
 - [x] (2026-11-09) Accept ADR 056 and add `PathGrants`, `DeniedPath`, the credential deny list, and the Bash/in-process projections. `SandboxConfig::build_with_policy` now projects from `PathGrants`; the in-process validator still uses the legacy path list, so behavior is unchanged.
 - [x] (2026-11-09) Cache `PathGrants` on `ToolContext`, make `sandbox_policy` private with `sandbox_policy()`/`set_sandbox_policy()`, add `refresh_path_grants()`, and make `SandboxConfig::build` project from the cached value. Tests that change policy use the setter; tests that change path inputs refresh. Added direct cache and policy-rebuild tests.
-- [ ] Milestone 2: make the in-process validator consume `PathGrants`, check the credential denylist first, and preserve write behavior.
+- [x] (2026-11-09) Milestone 2: `validate_path` and prospective-write scheduling classify against the cached `PathGrants`; the credential denylist is checked before read-write and read-only grants. Built-in toolchain and system paths are readable to the in-process tools and remain write-rejected. Existing read-only and outside-working-directory diagnostics remain. Added validator-level denial, synthetic toolchain-source, and prospective-denied-write tests.
 - [ ] Milestone 3: add the acceptance and security tests, including synthetic HOME, denied symlinks, Linux-only paths, and the parity test.
 - [ ] Milestone 4: update documentation and model-visible description snapshots.
 - [ ] Milestone 5: run the focused tests, `just check`, documentation checks, and the platform verification available locally and in CI.
@@ -37,7 +37,11 @@ The durable decision is recorded in `docs/adr/056-share-bash-read-grants-with-in
 
 - Observation: `cargo test` can expose a `CARGO_HOME` override that points toolchain discovery at the real cargo home rather than the synthetic test HOME. Tests that need deterministic toolchain grants should use a path with no environment override (for example `~/.bun`) or pin every override explicitly.
 
-- Observation: `validate_path_with_dirs` is a private helper used only by tests today; `validate_path` is the production entry point. It can become a test-only wrapper around a new grant-aware validator without changing the model-visible contract.
+- Observation: the deny-list canonical form must cover a path whose leaf does not exist yet. `DeniedPath` originally stored only `path.canonicalize()`, which fails for a missing `~/.npmrc`; with `HOME` under `/var` -> `/private/var`, the lexical forms differ and a prospective write bypassed the file deny entry. Deny entries and candidates now canonicalize the deepest existing ancestor and append missing components lexically.
+
+- Observation: macOS `/private/var` is part of Bash's built-in read-and-execute set, so the in-process projection also treats arbitrary `/var/folders` temp paths as read-only. Tests that need a path outside every grant while using an explicit context with empty temp directories must place the outsider under `/tmp` or another ungranted root; tests using `ToolContext::from_current_process` still get the process temp directories as read-write grants.
+
+- Observation: `validate_path_with_dirs` and the `get_additional_dirs`/`get_skill_dirs`/`get_settings_dirs`/`get_temp_directories` accessors had no callers once the validator consumed `PathGrants`, so they were removed rather than kept as dead test-only paths.
 
 ## Decision Log
 
@@ -54,6 +58,8 @@ The durable decision is recorded in `docs/adr/056-share-bash-read-grants-with-in
 - Decision: keep the existing read-only error wording for `validate_path_for_write` and prospective writes in this task. Add one new denial message for a credential path that names the path and the policy but never the contents. Task 068 owns centralizing the read-only wording; this task does not create a third read-only variant. Date/Author: 2026-11-08 / cake.
 
 - Decision: keep the directory fields on `ToolContext` as construction inputs for compatibility with the existing test suite, but make `sandbox_policy` private with `sandbox_policy()` and `set_sandbox_policy()` so a policy change rebuilds the cached grants. Add `refresh_path_grants()` for test code that mutates `cwd`, `temp_dirs`, `additional_dirs`, `settings_dirs`, or `skill_dirs` after construction. Rationale: the production run never mutates those fields, and a full private-field refactor would enlarge the diff without improving the production invariant. Date/Author: 2026-11-08 / cake.
+
+- Decision: canonicalize a deny entry or validation candidate by resolving its deepest existing ancestor and appending any missing components lexically. This keeps a not-yet-existing credential leaf such as `~/.npmrc` comparable across `HOME` symlink spellings without inventing the file or reading it. Date/Author: 2026-11-09 / cake.
 
 - Decision: no new dependencies, no settings keys, no CLI flags, no session records, and no changes to `--add-dir`, `directories`, `[sandbox]` merge, tilde expansion, or project-trust semantics. Date/Author: 2026-11-08 / cake.
 

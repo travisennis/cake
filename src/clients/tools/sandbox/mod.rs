@@ -155,14 +155,24 @@ pub(super) enum DenyKind {
     Directory,
 }
 
+/// Canonicalize a path, resolving the deepest existing ancestor and appending
+/// any missing components lexically.
+///
+/// Deny entries must match a target that does not exist yet, such as a new
+/// `~/.npmrc` or a file under a not-yet-created `~/.ssh`. Canonicalizing only
+/// the existing prefix also keeps the comparison correct when `HOME` itself
+/// is reached through a symlink (for example `/var` -> `/private/var`).
+fn canonicalize_allow_missing(path: &Path) -> Option<PathBuf> {
+    if let Ok(canonical) = path.canonicalize() {
+        return Some(canonical);
+    }
+
+    let parent = path.parent()?;
+    let name = path.file_name()?;
+    Some(canonicalize_allow_missing(parent)?.join(name))
+}
+
 /// One credential-bearing path that wins over every ordinary grant.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the in-process validator consumes the deny list in Milestone 2"
-    )
-)]
 #[derive(Clone, Debug)]
 pub(super) struct DeniedPath {
     path: PathBuf,
@@ -172,7 +182,7 @@ pub(super) struct DeniedPath {
 
 impl DeniedPath {
     fn new(path: PathBuf, kind: DenyKind) -> Self {
-        let canonical = path.canonicalize().ok();
+        let canonical = canonicalize_allow_missing(&path);
         Self {
             path,
             canonical,
@@ -307,15 +317,8 @@ impl PathGrants {
     ///
     /// The lexical path and its canonical form are both checked, so a symlink
     /// from a granted directory to a denied file still fails closed.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the in-process validator consumes the deny list in Milestone 2"
-        )
-    )]
     pub(super) fn is_denied(&self, path: &Path) -> bool {
-        let canonical = path.canonicalize().ok();
+        let canonical = canonicalize_allow_missing(path);
         self.denied
             .iter()
             .any(|denied| denied.matches(path, canonical.as_deref()))

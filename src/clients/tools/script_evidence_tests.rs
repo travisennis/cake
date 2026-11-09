@@ -107,7 +107,7 @@ fn script_evidence_reads_current_bytes_relative_to_tool_cwd() {
 #[test]
 fn script_evidence_denies_missing_outside_and_symlink_escape() {
     let inside = tempfile::tempdir().unwrap();
-    let outside = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir_in("/tmp").unwrap();
     let path = outside.path().join("job.sh");
     std::fs::write(&path, "echo secret").unwrap();
     let mut ctx = context(inside.path());

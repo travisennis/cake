@@ -1,5 +1,7 @@
 use super::*;
-use crate::clients::tools::{resolve_path_for_write_scheduling, validate_path_for_write};
+use crate::clients::tools::{
+    resolve_path_for_write_scheduling, validate_path, validate_path_for_write,
+};
 
 fn workspace_grants(
     policy: SandboxPolicy,
@@ -139,6 +141,81 @@ fn policy_change_rebuilds_cached_grants() {
         config.read_execute.contains(&cwd_path),
         "the demoted workspace must remain readable"
     );
+}
+
+#[test]
+fn validator_denies_credentials_before_a_granted_home() {
+    let home = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let secret = home.path().join(".npmrc");
+    std::fs::write(&secret, "synthetic-token").unwrap();
+
+    let context = temp_env::with_var("HOME", Some(home.path()), || {
+        ToolContext::with_temp_dirs(
+            cwd.path().to_path_buf(),
+            vec![],
+            vec![],
+            vec![],
+            vec![home.path().to_path_buf()],
+        )
+    });
+
+    let error = validate_path(&context, secret.to_str().unwrap()).unwrap_err();
+    assert!(error.contains("credential-path policy"), "{error}");
+    assert!(error.contains(secret.to_str().unwrap()), "{error}");
+    assert!(!error.contains("synthetic-token"), "{error}");
+
+    let error = validate_path_for_write(&context, secret.to_str().unwrap()).unwrap_err();
+    assert!(error.contains("credential-path policy"), "{error}");
+    assert!(!error.contains("synthetic-token"), "{error}");
+}
+
+#[test]
+fn validator_reads_toolchain_source_but_rejects_writes() {
+    let home = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let cargo_home = home.path().join(".cargo");
+    let source = cargo_home.join("registry/src/crate/lib.rs");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "pub fn source() {}").unwrap();
+
+    let context = temp_env::with_var("HOME", Some(home.path()), || {
+        temp_env::with_var("CARGO_HOME", Some(&cargo_home), || {
+            ToolContext::with_temp_dirs(cwd.path().to_path_buf(), vec![], vec![], vec![], vec![])
+        })
+    });
+
+    assert!(
+        validate_path(&context, source.to_str().unwrap()).is_ok(),
+        "toolchain source must be readable through the shared grants"
+    );
+    let error = validate_path_for_write(&context, source.to_str().unwrap()).unwrap_err();
+    assert!(error.contains("read-only"), "{error}");
+}
+
+#[test]
+fn prospective_writes_under_denied_paths_are_rejected() {
+    let home = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let denied_dir = home.path().join(".ssh");
+    std::fs::create_dir_all(&denied_dir).unwrap();
+
+    let context = temp_env::with_var("HOME", Some(home.path()), || {
+        ToolContext::with_temp_dirs(
+            cwd.path().to_path_buf(),
+            vec![],
+            vec![],
+            vec![],
+            vec![home.path().to_path_buf()],
+        )
+    });
+
+    for target in [denied_dir.join("new-key"), home.path().join(".npmrc")] {
+        let error =
+            resolve_path_for_write_scheduling(&context, target.to_str().unwrap()).unwrap_err();
+        assert!(error.contains("credential-path policy"), "{error}");
+        assert!(!target.exists(), "a denied write must create nothing");
+    }
 }
 
 #[test]

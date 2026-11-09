@@ -957,7 +957,7 @@ fn error_on_directory() {
 // =========================================================================
 
 #[test]
-fn error_on_path_outside_working_directory() {
+fn error_on_read_only_system_path() {
     let args = serde_json::json!({
         "path": "/etc/passwd",
         "edits": [
@@ -967,6 +967,36 @@ fn error_on_path_outside_working_directory() {
     .to_string();
 
     let result = execute_edit(&ToolContext::from_current_process(), &args);
+    assert!(result.is_err());
+    assert!(
+        result.unwrap_err().contains("read-only"),
+        "built-in system paths must stay read-only to Edit"
+    );
+}
+
+#[test]
+fn error_on_path_outside_working_directory() {
+    let cwd = TempDir::new().unwrap();
+    let outside_root = TempDir::new_in("/tmp").unwrap();
+    let outside_file = outside_root.path().join("outside.txt");
+    fs::write(&outside_file, "test").unwrap();
+
+    let args = serde_json::json!({
+        "path": outside_file.to_str().unwrap(),
+        "edits": [
+            { "old_text": "test", "new_text": "replacement" }
+        ]
+    })
+    .to_string();
+
+    let context = ToolContext::with_temp_dirs(
+        cwd.path().to_path_buf(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    let result = execute_edit(&context, &args);
     assert!(result.is_err());
     assert!(
         result
