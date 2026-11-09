@@ -276,7 +276,7 @@ impl Agent {
     /// OS sandbox that only wraps Bash, so they must not be offered at all
     /// for the policy's no-mutation guarantee to hold.
     pub fn with_tool_context(mut self, context: Arc<ToolContext>) -> Self {
-        if context.sandbox_policy == SandboxPolicy::ReadOnly {
+        if context.sandbox_policy() == SandboxPolicy::ReadOnly {
             self.tools.retain_read_safe_tools();
         }
         self.tool_context = context;
@@ -328,7 +328,7 @@ impl Agent {
     /// entries when it applies a read-only context, keeping the policy's
     /// no-mutation guarantee regardless of builder call order.
     pub fn with_toolbox_tools(mut self, toolbox_tools: Vec<ToolboxTool>) -> Self {
-        if self.tool_context.sandbox_policy == SandboxPolicy::ReadOnly {
+        if self.tool_context.sandbox_policy() == SandboxPolicy::ReadOnly {
             return self;
         }
         let enabled_tool_names = self.enabled_tool_names.clone();
@@ -350,7 +350,7 @@ impl Agent {
     /// captures the server connection, so the process stays alive for the run
     /// and every tool call shares one JSON-RPC transport.
     pub fn with_mcp_servers(mut self, servers: Vec<McpServer>) -> Self {
-        if self.tool_context.sandbox_policy == SandboxPolicy::ReadOnly {
+        if self.tool_context.sandbox_policy() == SandboxPolicy::ReadOnly {
             return self;
         }
         let supports_images = self.config.model_config.supports_images;
@@ -489,7 +489,7 @@ impl Agent {
     /// allowlist; a server that disappeared, changed exposure, or had a tool
     /// removed is ignored rather than failing the resume.
     pub fn with_active_mcp_tools(mut self, names: impl IntoIterator<Item = String>) -> Self {
-        if self.tool_context.sandbox_policy == SandboxPolicy::ReadOnly {
+        if self.tool_context.sandbox_policy() == SandboxPolicy::ReadOnly {
             return self;
         }
         let supports_images = self.config.model_config.supports_images;

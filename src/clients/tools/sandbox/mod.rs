@@ -282,6 +282,27 @@ impl PathGrants {
         }
     }
 
+    /// Build the grant value against the current process home directory.
+    pub(super) fn build_with_home_from_env(
+        policy: SandboxPolicy,
+        cwd: &Path,
+        temp_dirs: &[PathBuf],
+        additional_dirs: &[PathBuf],
+        settings_dirs: &[PathBuf],
+        skill_dirs: &[PathBuf],
+    ) -> Self {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        Self::build(
+            policy,
+            cwd,
+            temp_dirs,
+            additional_dirs,
+            settings_dirs,
+            skill_dirs,
+            home.as_deref(),
+        )
+    }
+
     /// Whether `path` is a denied credential path.
     ///
     /// The lexical path and its canonical form are both checked, so a symlink
@@ -426,17 +447,10 @@ impl PathGrants {
 }
 
 impl SandboxConfig {
-    /// Build a sandbox configuration for the current context, honoring the
-    /// sandbox policy carried by the tool context.
+    /// Build a sandbox configuration for the current context from its cached
+    /// grant table.
     pub fn build(context: &ToolContext) -> Self {
-        Self::build_with_policy(
-            context.sandbox_policy,
-            &context.cwd,
-            &context.temp_dirs,
-            &context.additional_dirs,
-            &context.settings_dirs,
-            &context.skill_dirs,
-        )
+        Self::from_grants(context.path_grants())
     }
 
     /// Build a sandbox configuration with additional directories and an
@@ -445,6 +459,13 @@ impl SandboxConfig {
     /// `additional_dirs` are added as read-only (from `--add-dir`).
     /// `settings_dirs` are added as read-write (from `settings.toml`).
     /// `skill_dirs` are added as read-only (parent dirs of SKILL.md files).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "tests build explicit grant projections; production uses the context cache"
+        )
+    )]
     pub fn build_with_policy(
         policy: SandboxPolicy,
         cwd: &std::path::Path,
@@ -453,15 +474,13 @@ impl SandboxConfig {
         settings_dirs: &[std::path::PathBuf],
         skill_dirs: &[std::path::PathBuf],
     ) -> Self {
-        let home = std::env::var_os("HOME").map(PathBuf::from);
-        let grants = PathGrants::build(
+        let grants = PathGrants::build_with_home_from_env(
             policy,
             cwd,
             temp_dirs,
             additional_dirs,
             settings_dirs,
             skill_dirs,
-            home.as_deref(),
         );
         Self::from_grants(&grants)
     }

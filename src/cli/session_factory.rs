@@ -468,7 +468,7 @@ impl RunInputs<'_> {
             self.settings_system_prompt,
             self.agents_files,
             self.skill_catalog,
-            self.tool_context.sandbox_policy,
+            self.tool_context.sandbox_policy(),
             self.toolbox_tools,
             self.mcp_servers,
             self.tools_enabled,

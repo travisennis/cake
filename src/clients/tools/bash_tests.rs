@@ -414,7 +414,7 @@ fn admission_context_at(cwd: &std::path::Path, policy: SandboxPolicy) -> ToolCon
         Vec::new(),
         Vec::new(),
     );
-    context.sandbox_policy = policy;
+    context.set_sandbox_policy(policy);
     context.gates = Some(bypassed_gate_context());
     context
 }
@@ -448,6 +448,7 @@ fn bash_cwd_admits_settings_add_dir_and_skill_directory_grants() {
     context.additional_dirs = vec![add_dir.path().to_path_buf()];
     context.settings_dirs = vec![settings_dir.path().to_path_buf()];
     context.skill_dirs = vec![skill_dir.path().to_path_buf()];
+    context.refresh_path_grants();
 
     for granted in [
         settings_dir.path(),
@@ -480,6 +481,7 @@ fn bash_cwd_admits_a_settings_directory_grant_under_read_only() {
     let settings_dir = tempfile::tempdir().expect("settings fixture");
     let mut context = admission_context_at(workspace.path(), SandboxPolicy::ReadOnly);
     context.settings_dirs = vec![settings_dir.path().to_path_buf()];
+    context.refresh_path_grants();
 
     assert_eq!(
         resolve_cwd_for_test(&context, settings_dir.path())
@@ -538,6 +540,7 @@ async fn bash_cwd_rejects_a_directory_outside_every_grant_before_spawn() {
     let marker = workspace.path().join("spawned");
     let mut other_context = admission_context_at(workspace.path(), SandboxPolicy::WorkspaceWrite);
     other_context.additional_dirs = vec![granted_elsewhere.path().to_path_buf()];
+    other_context.refresh_path_grants();
     let context = admission_context_at(workspace.path(), SandboxPolicy::WorkspaceWrite);
 
     // Guard the fixture: the same directory is admitted once `--add-dir` grants
@@ -613,6 +616,7 @@ fn bash_cwd_accepts_a_symlink_whose_target_is_granted() {
     std::os::unix::fs::symlink(granted.path(), &link).expect("symlink fixture");
     let mut context = admission_context_at(workspace.path(), SandboxPolicy::WorkspaceWrite);
     context.additional_dirs = vec![granted.path().to_path_buf()];
+    context.refresh_path_grants();
 
     assert_eq!(
         resolve_cwd_for_test(&context, &link).expect("a granted symlink target must be admitted"),
@@ -656,8 +660,8 @@ async fn bash_cwd_runs_in_a_settings_directory_grant() {
 
     let mut context = ToolContext::from_current_process().with_gates(Some(gate.pipeline()));
     context.cwd = workspace.path().to_path_buf();
-    context.sandbox_policy = SandboxPolicy::WorkspaceWrite;
     context.settings_dirs = vec![settings_dir.path().to_path_buf()];
+    context.set_sandbox_policy(SandboxPolicy::WorkspaceWrite);
 
     let result = Box::pin(execute_bash(&context, &arguments))
         .await
@@ -706,8 +710,8 @@ async fn bash_cwd_selects_an_add_dir_grant_under_read_only_without_widening_auth
 
     let mut context = ToolContext::from_current_process().with_gates(Some(bypassed_gate_context()));
     context.cwd = workspace.path().to_path_buf();
-    context.sandbox_policy = SandboxPolicy::ReadOnly;
     context.additional_dirs = vec![granted.path().to_path_buf()];
+    context.set_sandbox_policy(SandboxPolicy::ReadOnly);
 
     let result = Box::pin(execute_bash(&context, &arguments))
         .await
@@ -910,7 +914,7 @@ async fn bash_read_cap_no_longer_kills_or_truncates_session_command() {
     let mut context = crate::clients::tools::ToolContext::from_current_process();
     context.cwd = dir.path().to_path_buf();
     context.gates = Some(bypassed_gate_context());
-    context.sandbox_policy = SandboxPolicy::DangerFullAccess;
+    context.set_sandbox_policy(SandboxPolicy::DangerFullAccess);
     let mut limits = crate::config::settings::ToolLimits::defaults();
     limits.bash_read_cap = Some(100);
     context = context.with_limits(limits);
@@ -931,6 +935,7 @@ async fn bash_output_max_bytes_override_spills_at_custom_cap() {
     let dir = tempfile::tempdir().expect("hermetic temp dir for bash test");
     let mut context = crate::clients::tools::ToolContext::from_current_process();
     context.cwd = dir.path().to_path_buf();
+    context.refresh_path_grants();
     context.gates = Some(bypassed_gate_context());
     let mut limits = crate::config::settings::ToolLimits::defaults();
     limits.bash_output_max_bytes = Some(1000);
@@ -968,6 +973,7 @@ async fn bash_output_max_bytes_unlimited_passes_large_output_through() {
     let dir = tempfile::tempdir().expect("hermetic temp dir for bash test");
     let mut context = crate::clients::tools::ToolContext::from_current_process();
     context.cwd = dir.path().to_path_buf();
+    context.refresh_path_grants();
     context.gates = Some(bypassed_gate_context());
     let mut limits = crate::config::settings::ToolLimits::defaults();
     limits.bash_output_max_bytes = None;
@@ -1010,7 +1016,7 @@ async fn bash_output_max_bytes_unlimited_passes_large_output_through() {
 fn session_test_context() -> ToolContext {
     let mut context = ToolContext::from_current_process();
     context.gates = Some(bypassed_gate_context());
-    context.sandbox_policy = SandboxPolicy::DangerFullAccess;
+    context.set_sandbox_policy(SandboxPolicy::DangerFullAccess);
     context
 }
 
@@ -1190,7 +1196,7 @@ async fn sandboxed_bash_session_yields_and_completes_under_platform_policy() {
     let mut context = ToolContext::from_current_process();
     context.cwd = dir.path().to_path_buf();
     context.gates = Some(bypassed_gate_context());
-    context.sandbox_policy = SandboxPolicy::WorkspaceWrite;
+    context.set_sandbox_policy(SandboxPolicy::WorkspaceWrite);
     let command = format!("sleep 2; touch '{}'", marker.display());
     let result = execute_bash(
         &context,
@@ -1263,7 +1269,7 @@ async fn sandboxed_bash_session_finishes_when_descendant_holds_captured_pipe() {
     let mut context = ToolContext::from_current_process();
     context.cwd = dir.path().to_path_buf();
     context.gates = Some(bypassed_gate_context());
-    context.sandbox_policy = SandboxPolicy::WorkspaceWrite;
+    context.set_sandbox_policy(SandboxPolicy::WorkspaceWrite);
     let command = format!("sleep 30 & echo $! > '{}'; echo done", pid_file.display());
 
     let started = Instant::now();
@@ -1556,7 +1562,7 @@ async fn grep_no_match_output_is_disambiguated() {
 #[tokio::test]
 async fn unsupported_platform_default_sandbox_fails_closed() {
     let mut context = ToolContext::from_current_process().with_gates(Some(bypassed_gate_context()));
-    context.sandbox_policy = SandboxPolicy::WorkspaceWrite;
+    context.set_sandbox_policy(SandboxPolicy::WorkspaceWrite);
 
     let error = execute_bash(&context, r#"{"command": "echo should-not-run"}"#)
         .await
@@ -1571,7 +1577,7 @@ async fn unsupported_platform_default_sandbox_fails_closed() {
 #[tokio::test]
 async fn unsupported_platform_danger_full_access_still_runs_bash() {
     let mut context = ToolContext::from_current_process().with_gates(Some(bypassed_gate_context()));
-    context.sandbox_policy = SandboxPolicy::DangerFullAccess;
+    context.set_sandbox_policy(SandboxPolicy::DangerFullAccess);
 
     let result = execute_bash(&context, r#"{"command": "printf danger-full-access"}"#)
         .await
@@ -1772,6 +1778,7 @@ async fn test_sandbox_read_only_file_grant_runs_file_but_denies_sibling() {
     // mirror that wiring here.
     let mut context = ToolContext::from_current_process().with_gates(Some(bypassed_gate_context()));
     context.additional_dirs = vec![allowed.clone()];
+    context.refresh_path_grants();
     let context = Arc::new(context);
 
     let allowed_args = format!(r#"{{"command": "{}"}}"#, allowed.display());
@@ -1805,13 +1812,13 @@ async fn test_sandbox_read_only_file_grant_runs_file_but_denies_sibling() {
 // ===========================================================================
 
 /// Build a `ToolContext` with a resolved sandbox policy for the supplied
-/// workspace. `execute_bash` reads `context.sandbox_policy` to override the
+/// workspace. `execute_bash` reads `context.sandbox_policy()` to override the
 /// args-level default.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn context_with_policy_at(cwd: std::path::PathBuf, policy: SandboxPolicy) -> Arc<ToolContext> {
     let mut context = ToolContext::from_current_process().with_gates(Some(bypassed_gate_context()));
     context.cwd = cwd;
-    context.sandbox_policy = policy;
+    context.set_sandbox_policy(policy);
     Arc::new(context)
 }
 
@@ -2098,7 +2105,7 @@ fn test_bash_git_ignores_inherited_git_dir_canary() {
 
     let mut context = ToolContext::from_current_process().with_gates(Some(bypassed_gate_context()));
     context.cwd = workspace.path().to_path_buf();
-    context.sandbox_policy = SandboxPolicy::WorkspaceWrite;
+    context.set_sandbox_policy(SandboxPolicy::WorkspaceWrite);
     let context = Arc::new(context);
     let args = serde_json::json!({
         "command": "git rev-parse --absolute-git-dir"
@@ -2226,6 +2233,7 @@ async fn test_sandbox_linked_worktree_git_operations() {
     // Create a ToolContext with cwd set to the linked worktree
     let mut context = ToolContext::from_current_process().with_gates(Some(bypassed_gate_context()));
     context.cwd = wt_path.clone();
+    context.refresh_path_grants();
     for temp_dir in &context.temp_dirs {
         let canonical_temp = temp_dir.canonicalize().unwrap_or_else(|_| temp_dir.clone());
         assert!(

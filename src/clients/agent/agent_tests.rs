@@ -45,7 +45,7 @@ fn test_agent() -> Agent {
 #[test]
 fn read_only_tool_context_removes_edit_and_write() {
     let mut context = ToolContext::from_current_process();
-    context.sandbox_policy = SandboxPolicy::ReadOnly;
+    context.set_sandbox_policy(SandboxPolicy::ReadOnly);
     let agent = Agent::new(
         test_resolved_model_config(ApiType::ChatCompletions, "https://api.example.com"),
         &[(Role::System, "test system prompt".to_string())],
@@ -112,7 +112,7 @@ fn toolbox_and_builtin_selection_can_be_combined() {
 fn read_only_sandbox_intersects_enabled_tool_selection() {
     let enabled = vec!["Edit".to_string(), "Read".to_string()];
     let mut context = ToolContext::from_current_process();
-    context.sandbox_policy = SandboxPolicy::ReadOnly;
+    context.set_sandbox_policy(SandboxPolicy::ReadOnly);
     let agent = Agent::new(
         test_resolved_model_config(ApiType::ChatCompletions, "https://api.example.com"),
         &[(Role::System, "test system prompt".to_string())],
@@ -190,7 +190,7 @@ fn toolbox_tools_register_after_builtins() {
 #[test]
 fn read_only_tool_context_skips_toolbox_tools_regardless_of_order() {
     let mut context = ToolContext::from_current_process();
-    context.sandbox_policy = SandboxPolicy::ReadOnly;
+    context.set_sandbox_policy(SandboxPolicy::ReadOnly);
     let context = Arc::new(context);
 
     // Read-only context applied first: registration is skipped.

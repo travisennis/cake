@@ -120,6 +120,7 @@ fn script_evidence_denies_missing_outside_and_symlink_escape() {
         assert!(collect(&ctx, "bash link.sh").is_err());
     }
     ctx.additional_dirs.push(outside.path().to_path_buf());
+    ctx.refresh_path_grants();
     assert_eq!(
         collect(&ctx, &command).unwrap().unwrap().contents,
         "echo secret"

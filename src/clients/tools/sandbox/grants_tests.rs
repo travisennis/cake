@@ -96,6 +96,52 @@ fn read_only_policy_demotes_workspace_but_keeps_temp_writable() {
 }
 
 #[test]
+fn cached_grants_ignore_later_home_changes() {
+    let home = tempfile::tempdir().unwrap();
+    let other_home = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join(".bun/install/cache")).unwrap();
+
+    let context = temp_env::with_var("HOME", Some(home.path()), || {
+        ToolContext::with_temp_dirs(cwd.path().to_path_buf(), vec![], vec![], vec![], vec![])
+    });
+
+    let config = temp_env::with_var("HOME", Some(other_home.path()), || {
+        SandboxConfig::build(&context)
+    });
+
+    assert!(
+        config.writable.contains(&home.path().join(".bun")),
+        "the config must keep the home captured at context construction"
+    );
+    assert!(
+        !config.writable.contains(&other_home.path().join(".bun")),
+        "a later HOME change must not alter the cached grants"
+    );
+}
+
+#[test]
+fn policy_change_rebuilds_cached_grants() {
+    let cwd = tempfile::tempdir().unwrap();
+    let cwd_path = cwd.path().to_path_buf();
+    let mut context = ToolContext::with_temp_dirs(cwd_path.clone(), vec![], vec![], vec![], vec![]);
+
+    let config = SandboxConfig::build(&context);
+    assert!(config.writable.contains(&cwd_path));
+
+    context.set_sandbox_policy(SandboxPolicy::ReadOnly);
+    let config = SandboxConfig::build(&context);
+    assert!(
+        !config.writable.contains(&cwd_path),
+        "the read-only policy must demote the cached workspace grant"
+    );
+    assert!(
+        config.read_execute.contains(&cwd_path),
+        "the demoted workspace must remain readable"
+    );
+}
+
+#[test]
 fn denied_paths_match_files_exactly_and_directories_by_subtree() {
     let home = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
@@ -230,7 +276,10 @@ async fn provisioned_grant_allows_writes_without_granting_parent_or_sibling() {
         SandboxPolicy::WorkspaceWrite,
     )
     .unwrap();
-    let mut context = ToolContext::with_temp_dirs(workspace, vec![], vec![], vec![], grants);
+    let home = root.path().join("home");
+    let mut context = temp_env::with_var("HOME", Some(&home), || {
+        ToolContext::with_temp_dirs(workspace, vec![], vec![], vec![], grants)
+    });
     let nested = target.join("new/first.txt");
     let parent = target.parent().unwrap().join("parent.txt");
     let sibling = target.with_file_name("sibling");
@@ -238,10 +287,7 @@ async fn provisioned_grant_allows_writes_without_granting_parent_or_sibling() {
     assert!(resolve_path_for_write_scheduling(&context, parent.to_str().unwrap()).is_err());
     assert!(resolve_path_for_write_scheduling(&context, sibling.to_str().unwrap()).is_err());
 
-    // Pin HOME during config construction to avoid ambient toolchain grants.
-    let config = temp_env::with_var("HOME", Some(root.path().join("home")), || {
-        SandboxConfig::build(&context)
-    });
+    let config = SandboxConfig::build(&context);
     let strategy = detect_platform()
         .unwrap()
         .expect("platform sandbox required");
@@ -262,10 +308,10 @@ async fn provisioned_grant_allows_writes_without_granting_parent_or_sibling() {
     assert!(!sibling.exists());
     assert!(validate_path_for_write(&context, nested.to_str().unwrap()).is_ok());
 
-    context.sandbox_policy = SandboxPolicy::ReadOnly;
-    let config = temp_env::with_var("HOME", Some(root.path().join("home")), || {
-        SandboxConfig::build(&context)
+    temp_env::with_var("HOME", Some(&home), || {
+        context.set_sandbox_policy(SandboxPolicy::ReadOnly);
     });
+    let config = SandboxConfig::build(&context);
     let mut command = tokio::process::Command::new("bash");
     command.current_dir(&context.cwd).args([
         "-c",

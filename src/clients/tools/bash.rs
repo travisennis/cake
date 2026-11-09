@@ -161,7 +161,7 @@ fn resolve_bash_cwd(
     }
     // `DangerFullAccess` applies no sandbox, so a grant check would be stricter
     // than the policy in force.
-    let admitted = context.sandbox_policy == super::sandbox::SandboxPolicy::DangerFullAccess
+    let admitted = context.sandbox_policy() == super::sandbox::SandboxPolicy::DangerFullAccess
         || canonical.starts_with(&workspace)
         || config.is_path_selectable(&canonical);
     if !admitted {
@@ -188,7 +188,7 @@ fn parse_bash_call(
     context: &super::ToolContext,
     arguments: &str,
 ) -> Result<(BashExecutionArgs, PathBuf, super::sandbox::SandboxConfig), String> {
-    let args = BashExecutionArgs::from_json(arguments, context.sandbox_policy)?;
+    let args = BashExecutionArgs::from_json(arguments, context.sandbox_policy())?;
     let config = super::sandbox::SandboxConfig::build(context);
     let cwd = resolve_bash_cwd(context, &config, args.cwd.as_deref())?;
     Ok((args, cwd, config))
@@ -1669,8 +1669,8 @@ async fn execute_bash_with_gates_in(
     cwd: &Path,
 ) -> Result<super::ToolResult, super::ToolError> {
     let mut context = super::ToolContext::from_current_process().with_gates(gates);
-    context.sandbox_policy = super::sandbox::SandboxPolicy::DangerFullAccess;
     context.cwd = cwd.to_path_buf();
+    context.set_sandbox_policy(super::sandbox::SandboxPolicy::DangerFullAccess);
     let (args, effective_cwd, sandbox_config) = parse_bash_call(&context, arguments)?;
     Box::pin(execute_bash_with_args(
         &context,
