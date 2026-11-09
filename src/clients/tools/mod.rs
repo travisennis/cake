@@ -1,13 +1,16 @@
 //! Tool definitions and execution for the AI agent.
 //!
 //! This module provides the tool interface that allows the AI agent to interact
-//! with the host system through controlled operations. All tools are sandboxed
-//! to restrict file access to the working directory and allowed paths.
+//! with the host system through controlled operations. File tools validate
+//! target paths against the shared `PathGrants` table built from the working
+//! directory, temporary directories, configured directories, built-in
+//! toolchain and system paths, skill directories, and Cake state.
 //!
 //! # Available Tools
 //!
 //! - `Bash` - Execute shell commands with timeout and output capture
 //! - `Read` - Read file contents with line range support
+//! - `ReadImage` - Read an image file for a vision-capable model
 //! - `Edit` - Make targeted edits to files using literal search-replace
 //! - `Write` - Create or overwrite files with content
 //!
@@ -16,11 +19,13 @@
 //!
 //! # Security
 //!
-//! All tools validate paths against the current working directory and
-//! directories added via `--add-dir` flag. Write operations are only allowed
-//! in the working directory and temp directories. Toolbox tools are
-//! user-provided trusted executables that run outside the OS sandbox and are
-//! never registered under the read-only sandbox policy.
+//! Built-in file tools validate target paths against the shared `PathGrants`
+//! table. `Read` and `ReadImage` accept read-write and read-only grants;
+//! `Edit` and `Write` accept only read-write grants; credential-bearing paths
+//! are denied before either class. Bash uses the OS-sandbox projection and is
+//! additionally constrained by its OS sandbox. Toolbox tools are user-provided
+//! trusted executables that run outside the OS sandbox and are never registered
+//! under the read-only sandbox policy.
 
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
@@ -1183,10 +1188,12 @@ impl ToolRegistry {
 /// Access level for a validated path
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PathAccess {
-    /// Path is in a read-write location (cwd, temp dirs)
+    /// Path is in a read-write grant (working directory, temp directory, or
+    /// configured writable directory).
     ReadWrite,
-    /// Path is in a read-only grant (built-in toolchain/system paths,
-    /// `--add-dir` directories, or skill directories)
+    /// Path is in a read-only grant (built-in toolchain or system path,
+    /// `--add-dir`, skill directory, Cake state, or a path demoted by the
+    /// `read-only` policy).
     ReadOnly,
 }
 
@@ -1210,10 +1217,11 @@ enum PathClassification {
 
 /// Validate that a path exists and is inside the shared grant table.
 ///
-/// The working directory, temp directories, and settings directories grant
-/// read-write access; built-in toolchain and system paths, additional
-/// (`--add-dir`) directories, and skill directories grant read-only access.
-/// Credential-bearing paths are denied before either class is considered.
+/// The working directory, temporary directories, and settings directories
+/// grant read-write access; built-in toolchain and system paths, additional
+/// (`--add-dir`) directories, skill directories, and Cake state grant read-only
+/// access. Credential-bearing paths are denied before either class is
+/// considered.
 ///
 /// Returns the canonical path along with its access level.
 pub(super) fn validate_path(
@@ -1296,10 +1304,10 @@ fn path_within(canonical: &Path, dir: &Path) -> bool {
         .is_ok_and(|canon_dir| canonical.starts_with(&canon_dir))
 }
 
-/// Validate that a path exists and is within the current working directory, allowed temp directories,
-/// or directories added via --add-dir flag (read-only access).
+/// Validate that an existing read target is inside the shared grants.
 ///
-/// This is a convenience function for read operations that don't need to check access level.
+/// Read-write and read-only grants are both accepted. This is a convenience
+/// function for read operations that do not need to inspect the access level.
 pub(super) fn validate_path_in_cwd(
     context: &ToolContext,
     path_str: &str,
@@ -1307,8 +1315,10 @@ pub(super) fn validate_path_in_cwd(
     validate_path(context, path_str).map(|vp| vp.canonical)
 }
 
-/// Validate that a path is writable (not in a read-only additional directory).
-/// Returns the canonical path if valid, or an error if the path is read-only.
+/// Validate that an existing path is writable (inside a read-write grant).
+/// Returns the canonical path if valid, or an error if the path is denied or
+/// read-only. The read-only diagnostic retains its existing `--add-dir`
+/// wording.
 pub(super) fn validate_path_for_write(
     context: &ToolContext,
     path_str: &str,
@@ -1473,8 +1483,8 @@ pub(super) fn resolve_path_for_write_scheduling(
 /// file that does not exist yet share one serialization group instead of
 /// racing on whether the read observes the file at all.
 ///
-/// Read-only grants (`--add-dir`, skill directories) are accepted: reads
-/// observe them, while writes reject them.
+/// Read-write and read-only grants are accepted: reads observe them, while
+/// writes reject read-only grants.
 pub(super) fn resolve_path_for_read_scheduling(
     context: &ToolContext,
     path_str: &str,

@@ -1,7 +1,7 @@
 Read an image file and return it to you as an image you can actually see. Supports PNG, JPEG, GIF, and WebP.
 
 Behavior:
-- Requires an absolute path to a file inside the working directory, a temp directory, or a directory added with --add-dir.
+- Requires an absolute path to an existing file inside Cake's read grants: the working directory, a temp directory, a built-in toolchain or system path, a skill directory, or a configured read-only or writable directory (including one added with --add-dir). Credential-bearing paths remain denied even when a parent directory is granted.
 - Detects the format from the file's leading bytes, not its extension. Files that are not images are rejected with a message pointing at Read for text files.
 - Rejects files larger than the configured read_image_max_bytes cap (default 5 MiB) with a clear error instead of sending them, so an oversized image never reaches the provider.
 - Returns the image inline as a base64 data URL; there is no upload step.

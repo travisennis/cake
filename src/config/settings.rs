@@ -255,8 +255,13 @@ const JUDGE_TIMEOUT_MIN_SECS: u64 = 1;
 /// Sandbox path grants loaded from settings.toml.
 ///
 /// Controls which extra filesystem paths the Bash sandbox and the in-process
-/// Read/Edit/Write/Grep path validation allow, on top of the built-in
-/// toolchain paths, `--add-dir`, and `directories`.
+/// Read/ReadImage/Edit/Write path validation allow, on top of the built-in
+/// toolchain and system paths, `--add-dir`, `directories`, skill directories,
+/// and Cake's own state roots.
+///
+/// `Read` and `ReadImage` accept read-only and read-write grants. `Edit` and
+/// `Write` accept only read-write grants. Credential-bearing paths are denied
+/// before any ordinary grant.
 ///
 /// Entries may be absolute or relative paths and support `~` expansion.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

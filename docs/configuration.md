@@ -317,7 +317,7 @@ cake gates doctor -- 'git push --force'
 
 Top-level and profile `directories` grant persistent read-write access to the listed directories under `workspace-write`. Global and project entries are merged, deduplicated, and sorted, so the resolved list is stable across runs. The `read-only` policy demotes these paths to read-only access.
 
-The `[sandbox]` section grants the Bash sandbox and the Read/Edit/Write/Grep path checks extra filesystem access on top of the built-in toolchain paths, `--add-dir`, and `directories`:
+The `[sandbox]` section grants the Bash sandbox and the in-process `Read`/`ReadImage`/`Edit`/`Write` validator extra filesystem access on top of the built-in toolchain and system paths, `--add-dir`, `directories`, skill directories, and Cake's own state roots:
 
 ```toml
 [sandbox]
@@ -327,13 +327,20 @@ writable = ["~/.claude", "~/.cache/claude"]  # read + write + execute
 
 `read_only` entries may be files or directories and grant read plus execute access (enough to run a single binary such as `~/.local/bin/claude` without opening its whole directory). `writable` entries grant read, write, and execute access to directories. Both keys accept absolute paths, relative paths, and `~` expansion, and merge as a union across global settings, trusted project settings, and the selected profile; the merged list is deduplicated and sorted, so resolved grants are stable across runs. Project `directories`, `[sandbox].read_only`, and `[sandbox].writable` require trust.
 
+Bash and the in-process tools share one resolved grant table but use different projections of it. `directories` and `[sandbox].writable` are read-write to `Read`, `ReadImage`, `Edit`, and `Write` under `workspace-write`; `--add-dir`, `[sandbox].read_only`, skill directories, and Cake state are read-only, so `Read` and `ReadImage` can read them while `Edit` and `Write` reject them. Built-in toolchain and system paths are also read-only to the file tools, so `Read` and `ReadImage` can reach sources under the standard cargo, rustup, Go, and related paths without `--add-dir`, while `Edit` and `Write` reject them unless an explicit read-write grant covers the path. The built-in toolchain set follows `CARGO_HOME`, `RUSTUP_HOME`, `GOPATH`, `GOMODCACHE`, and `GOCACHE`, and otherwise uses the standard home-directory paths. Bash may write built-in toolchain caches under `workspace-write` even though the same paths are read-only to `Edit` and `Write`. Under `read-only`, configured writable paths
+and the working directory are demoted to read-only, temporary paths remain writable, and `Edit` and `Write` are not registered.
+
+A fixed credential denylist wins over every ordinary grant, including an explicit ancestor such as `~`: `~/.ssh`, `~/.aws`, `~/.azure`, `~/.config/gcloud`, `~/.kube`, `~/.docker/config.json`, `~/.config/gh`, `~/.config/glab-cli`, `~/.npmrc`, `~/.yarnrc`, `~/.yarnrc.yml`, `~/.cargo/credentials`, `~/.cargo/credentials.toml`, `~/.netrc`, `~/.git-credentials`, and `~/Library/Keychains`. A directory entry denies its subtree; a file entry denies exactly that file. Canonical-path checks reject a symlink from a granted directory to a denied target, while a sibling such as `~/.npmrc.backup` stays readable. The denial names the path and policy but never file contents. Bash is not subject to this in-process list; [Security](security.md#in-process-file-tool-grants) lists the current entries and the residual risk that the list is not a complete credential inventory.
+
+On Linux, `/proc`, `/dev`, and `/sys` remain available to the Bash sandbox but are excluded from the in-process grants, so `Read` and `ReadImage` reject paths there.
+
 During writable agent-run initialization (including `danger-full-access`), Cake creates missing `directories` and `[sandbox].writable` targets and any missing parents before tools start. Automatic creation produces a warning in the log file; failures stop startup with the setting, target, and filesystem error. Existing nondirectory writable targets are ignored with a log warning. Only the configured target receives a writable grant, not its parents or siblings. Settings inspection and help do not create grant directories. Under `--sandbox read-only`, existing writable targets are demoted to read-only and missing ones are ignored with a log warning, without creating them. Missing `read_only` entries are also ignored with a log warning.
 
 On top of those grants, Cake always grants read-only access to its own state: the data/cache directory (daily logs and session telemetry) and the sessions directory (or their `CAKE_DATA_DIR` equivalents). Session analysis and debugging skills read these inputs, so they work without a manual grant. The config directory is deliberately not granted; it holds credentials and trusted hooks and tools.
 
 `directories = ["~/shared"]` also expands `~` (historically the path was ignored).
 
-`--add-dir <PATH>` grants additional read-only access for one invocation and may be repeated. `--sandbox` selects `read-only`, `workspace-write`, `workspace-write-interactive`, or `danger-full-access`. `workspace-write-interactive` is `workspace-write` plus the macOS `lsopen` and `appleevent-send` capabilities, so model-generated commands can launch and automate other applications; on Linux it behaves as `workspace-write`.
+`--add-dir <PATH>` grants additional read-only access for one invocation and may be repeated. `--sandbox` selects `read-only`, `workspace-write`, `workspace-write-interactive`, or `danger-full-access`. `danger-full-access` removes the Bash OS sandbox but does not widen the in-process grants or disable the credential denylist. `workspace-write-interactive` is `workspace-write` plus the macOS `lsopen` and `appleevent-send` capabilities, so model-generated commands can launch and automate other applications; on Linux it behaves as `workspace-write`.
 
 These are security decisions. See [Security](security.md) before expanding access.
 

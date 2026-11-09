@@ -925,7 +925,7 @@ impl CodingAssistant {
     /// Cake's own state roots (session files, telemetry, and logs) so the
     /// session analysis and debugging skills can read their inputs without a
     /// manual grant. The list feeds both the OS sandbox and the in-process
-    /// Read/Edit/Write/Grep path checks. See [`DataDir::sandbox_read_dirs`].
+    /// Read/ReadImage/Edit/Write path checks. See [`DataDir::sandbox_read_dirs`].
     fn read_only_dirs(
         additional_dirs: Vec<PathBuf>,
         settings_read_only: Vec<PathBuf>,
