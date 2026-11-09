@@ -218,6 +218,37 @@ fn prospective_writes_under_denied_paths_are_rejected() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn prospective_write_through_dangling_symlink_is_rejected() {
+    use std::os::unix::fs::symlink;
+
+    let home = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let denied_dir = home.path().join(".ssh");
+    std::fs::create_dir_all(&denied_dir).unwrap();
+    let target = denied_dir.join("authorized_keys");
+    let link = cwd.path().join("link");
+    symlink(&target, &link).unwrap();
+
+    let context = temp_env::with_var("HOME", Some(home.path()), || {
+        ToolContext::with_temp_dirs(
+            cwd.path().to_path_buf(),
+            vec![],
+            vec![],
+            vec![],
+            vec![home.path().to_path_buf()],
+        )
+    });
+
+    let error = resolve_path_for_write_scheduling(&context, link.to_str().unwrap()).unwrap_err();
+    assert!(error.contains("dangling symlink"), "{error}");
+    assert!(
+        !target.exists(),
+        "a rejected dangling-link write must create nothing"
+    );
+}
+
 #[test]
 fn denied_paths_match_files_exactly_and_directories_by_subtree() {
     let home = tempfile::tempdir().unwrap();

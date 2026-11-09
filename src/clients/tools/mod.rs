@@ -1425,6 +1425,25 @@ fn resolve_parent_write_component(
     }
 }
 
+/// Find a dangling symlink among the unresolved suffix of a write path.
+///
+/// `std::fs::write` follows a symlink and creates its target, so a dangling
+/// link in the working directory could otherwise reach a credential path or
+/// an ungranted location without the canonical target ever being validated.
+fn dangling_symlink_below(base: &Path, pending: &[OsString]) -> Option<PathBuf> {
+    let mut current = base.to_path_buf();
+    for component in pending {
+        current.push(component);
+        let Ok(metadata) = std::fs::symlink_metadata(&current) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() && current.canonicalize().is_err() {
+            return Some(current);
+        }
+    }
+    None
+}
+
 /// Resolve a write-target path for scheduling without requiring the file to
 /// exist.  Returns a stable path key for grouping same-file mutations even
 /// when the file hasn't been created yet.
@@ -1482,6 +1501,14 @@ fn resolve_nonexistent_path(
     // parent-directory components across nonexistent ancestors are handled
     // correctly (<cwd>/missing/../target → <cwd>/target).
     let (resolved_base, pending) = resolve_write_path(path);
+
+    if let Some(link) = dangling_symlink_below(&resolved_base, &pending) {
+        return Err(format!(
+            "Path '{}' traverses a dangling symlink '{}' and cannot be written.",
+            path.display(),
+            link.display()
+        ));
+    }
 
     // Reconstruct the full path before validating so a credential denial also
     // covers a target that does not exist yet (for example a new file under

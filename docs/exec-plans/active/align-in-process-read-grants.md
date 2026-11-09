@@ -19,7 +19,7 @@ The durable decision is recorded in `docs/adr/056-share-bash-read-grants-with-in
 - [x] (2026-11-09) Draft ADR 056 (`docs/adr/056-share-bash-read-grants-with-in-process-file-tools.md`) as proposed. Acceptance remains the gate before code changes.
 - [x] (2026-11-09) Accept ADR 056 and add `PathGrants`, `DeniedPath`, the credential deny list, and the Bash/in-process projections. `SandboxConfig::build_with_policy` now projects from `PathGrants`; the in-process validator still uses the legacy path list, so behavior is unchanged.
 - [x] (2026-11-09) Cache `PathGrants` on `ToolContext`, make `sandbox_policy` private with `sandbox_policy()`/`set_sandbox_policy()`, add `refresh_path_grants()`, and make `SandboxConfig::build` project from the cached value. Tests that change policy use the setter; tests that change path inputs refresh. Added direct cache and policy-rebuild tests.
-- [x] (2026-11-09) Milestone 2: `validate_path` and prospective-write scheduling classify against the cached `PathGrants`; the credential denylist is checked before read-write and read-only grants. Built-in toolchain and system paths are readable to the in-process tools and remain write-rejected. Existing read-only and outside-working-directory diagnostics remain. Added validator-level denial, synthetic toolchain-source, and prospective-denied-write tests.
+- [x] (2026-11-09) Milestone 2: `validate_path` and prospective-write scheduling classify against the cached `PathGrants`; the credential denylist is checked before read-write and read-only grants. Built-in toolchain and system paths are readable to the in-process tools and remain write-rejected. Existing read-only and outside-working-directory diagnostics remain. A prospective write through a dangling symlink is rejected before the write can create its target. Added validator-level denial, synthetic toolchain-source, prospective-denied-write, and dangling-symlink tests.
 - [ ] Milestone 3: add the acceptance and security tests, including synthetic HOME, denied symlinks, Linux-only paths, and the parity test.
 - [ ] Milestone 4: update documentation and model-visible description snapshots.
 - [ ] Milestone 5: run the focused tests, `just check`, documentation checks, and the platform verification available locally and in CI.
@@ -41,6 +41,8 @@ The durable decision is recorded in `docs/adr/056-share-bash-read-grants-with-in
 
 - Observation: macOS `/private/var` is part of Bash's built-in read-and-execute set, so the in-process projection also treats arbitrary `/var/folders` temp paths as read-only. Tests that need a path outside every grant while using an explicit context with empty temp directories must place the outsider under `/tmp` or another ungranted root; tests using `ToolContext::from_current_process` still get the process temp directories as read-write grants.
 
+- Observation: a dangling symlink is not an existing path. `std::fs::write` follows it and creates its target, so validating only the link spelling would let a working-directory link create a file under a denied or ungranted target. Prospective-write resolution now rejects any dangling symlink in the unresolved suffix before classification.
+
 - Observation: `validate_path_with_dirs` and the `get_additional_dirs`/`get_skill_dirs`/`get_settings_dirs`/`get_temp_directories` accessors had no callers once the validator consumed `PathGrants`, so they were removed rather than kept as dead test-only paths.
 
 ## Decision Log
@@ -60,6 +62,8 @@ The durable decision is recorded in `docs/adr/056-share-bash-read-grants-with-in
 - Decision: keep the directory fields on `ToolContext` as construction inputs for compatibility with the existing test suite, but make `sandbox_policy` private with `sandbox_policy()` and `set_sandbox_policy()` so a policy change rebuilds the cached grants. Add `refresh_path_grants()` for test code that mutates `cwd`, `temp_dirs`, `additional_dirs`, `settings_dirs`, or `skill_dirs` after construction. Rationale: the production run never mutates those fields, and a full private-field refactor would enlarge the diff without improving the production invariant. Date/Author: 2026-11-08 / cake.
 
 - Decision: canonicalize a deny entry or validation candidate by resolving its deepest existing ancestor and appending any missing components lexically. This keeps a not-yet-existing credential leaf such as `~/.npmrc` comparable across `HOME` symlink spellings without inventing the file or reading it. Date/Author: 2026-11-09 / cake.
+
+- Decision: reject a prospective write whose unresolved suffix contains a dangling symlink. Rationale: the write would follow the link and create a target that the validator never classified. Fail closed rather than validate the link spelling. Date/Author: 2026-11-09 / cake.
 
 - Decision: no new dependencies, no settings keys, no CLI flags, no session records, and no changes to `--add-dir`, `directories`, `[sandbox]` merge, tilde expansion, or project-trust semantics. Date/Author: 2026-11-08 / cake.
 
