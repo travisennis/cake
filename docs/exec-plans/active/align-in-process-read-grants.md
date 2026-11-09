@@ -10,13 +10,13 @@ After this change, `Read` and `ReadImage` can read an existing regular file unde
 
 A reviewer can see the change working with a synthetic home directory: put a source file under `$HOME/.cargo/registry/src/...`, run `Read` on it without `--add-dir`, and see the file contents; ask `Edit` to change the same file and see the existing read-only rejection; create `$HOME/.ssh/id_ed25519` with synthetic contents and see `Read` reject the path without putting the contents in the error. On Linux, `/proc/self/environ`, `/dev/fd`, and `/sys` remain unreadable through the in-process tools even though Bash's Landlock profile grants them.
 
-The durable decision is recorded in the next ADR, expected to be `docs/adr/056-share-bash-read-grants-with-in-process-file-tools.md`. This plan implements that decision; it does not replace the judgment in the task or ADR.
+The durable decision is recorded in `docs/adr/056-share-bash-read-grants-with-in-process-file-tools.md` (proposed). This plan implements that decision once it is accepted; it does not replace the judgment in the task or ADR.
 
 ## Progress
 
 - [x] (2026-11-08) Read task 171, `AGENTS.md`, `docs/workflow/exec-plans.md`, `docs/security.md`, the sandbox module, the path validator, and the tool tests.
 - [x] (2026-11-08) Started task 171 and wrote this ExecPlan. No implementation code has changed.
-- [ ] Create the ADR for the shared grant model and record its acceptance before code changes.
+- [x] (2026-11-09) Draft ADR 056 (`docs/adr/056-share-bash-read-grants-with-in-process-file-tools.md`) as proposed. Acceptance remains the gate before code changes.
 - [ ] Milestone 1: add `PathGrants`, move grant construction into it, cache it on `ToolContext`, and make `SandboxConfig` a projection of it.
 - [ ] Milestone 2: make the in-process validator consume `PathGrants`, check the credential denylist first, and preserve write behavior.
 - [ ] Milestone 3: add the acceptance and security tests, including synthetic HOME, denied symlinks, Linux-only paths, and the parity test.
@@ -38,7 +38,7 @@ The durable decision is recorded in the next ADR, expected to be `docs/adr/056-s
 
 ## Decision Log
 
-- Decision: create the next ADR (expected 056) before implementation. The ADR records the shared grant model, the file-tool versus Bash projections, the credential-denylist precedence, the Linux OS-only exclusions, and the residual risk. Rationale: `docs/adr/README.md` requires an ADR for sandbox behavior, filesystem access, secrets, and security-sensitive changes, and this change alters the in-process read authority. Date/Author: 2026-11-08 / cake.
+- Decision: create ADR 056 before implementation, with status `proposed` until it is accepted before code changes. The ADR records the shared grant model, the file-tool versus Bash projections, the credential-denylist precedence, the Linux OS-only exclusions, and the residual risk. Rationale: `docs/adr/README.md` requires an ADR for sandbox behavior, filesystem access, secrets, and security-sensitive changes, and this change alters the in-process read authority. Date/Author: 2026-11-09 / cake.
 
 - Decision: one `PathGrants` value owns grant construction. It carries `read_write` (cwd, temp, settings writable paths, and linked-worktree git directories), `read_only` (built-in system paths, built-in toolchain paths, `--add-dir`, `[sandbox].read_only`, skill directories, and Cake state directories), `sandbox_writable` (the toolchain paths Bash may write under `WorkspaceWrite`), `sandbox_only_read` (OS-only paths excluded from file tools), `denied`, `user_grants`, and the policy it was built for. Rationale: one owner prevents the two enforcement layers from drifting again, while the extra projections preserve the intentional Bash-versus-file-tool asymmetry. Date/Author: 2026-11-08 / cake.
 
@@ -86,7 +86,7 @@ The bypass classes this security-sensitive change must defend against are:
 
 ## Plan of Work
 
-Before code changes, create the ADR. Describe the current Bash-versus-file-tool gap, the single `PathGrants` owner, the file-tool and OS-sandbox projections, the credential denylist precedence, the Linux OS-only exclusions, and the residual risks. Record the accepted decision in the ADR and reference it from task 171. The ADR is expected to be number 056; use the next available number if another ADR lands first.
+Before code changes, accept ADR 056. It describes the current Bash-versus-file-tool gap, the single `PathGrants` owner, the file-tool and OS-sandbox projections, the credential denylist precedence, the Linux OS-only exclusions, and the residual risks. If acceptance changes the decision, update the ADR and this plan before editing Rust files; do not create a second ADR for the same boundary.
 
 Milestone 1 adds `PathGrants` and moves grant construction. In `src/clients/tools/sandbox/mod.rs`, define `PathGrants` and `DeniedPath` with the fields named in the Decision Log. Move the path computation currently in `SandboxConfig::build_with_policy` into `PathGrants::build`. The builder takes the policy, working directory, temp directories, `--add-dir` directories, settings directories, skill directories, and an optional home directory. It preserves the existing environment overrides for `CARGO_HOME`, `RUSTUP_HOME`, `GOPATH`, `GOMODCACHE`, and `GOCACHE`. It preserves existing behavior for symlinked and canonical path forms and for missing paths. `PathGrants::build` computes the file-tool `read_write` and `read_only` sets, the `sandbox_writable` toolchain subset, `sandbox_only_read` (Linux `/proc`, `/dev`, `/sys`), `denied`, `user_grants`, and the policy.
 
@@ -112,7 +112,7 @@ Milestone 5 runs the focused and full gates. Run the focused sandbox, tool, read
 
 All commands run from `/Users/travisennis/Projects/cake/cake` unless stated otherwise.
 
-First create the ADR with `ahm adr create` and the next available number. Review the generated file, fill the decision sections, and reference the ADR from task 171 before editing Rust files.
+ADR 056 is drafted as proposed. Review it, accept it with `ahm adr accept 056`, and reference it from task 171 before editing Rust files.
 
 After Milestone 1, run the focused sandbox tests and the complexity gate:
 
@@ -186,7 +186,7 @@ Every source and documentation edit is safe to repeat after rereading the file. 
 
 If a test fails because a `ToolContext` was mutated after construction, call `refresh_path_grants()` or move construction inside the `temp_env::with_var` scope. Do not weaken the cached-grant invariant to make a test pass. If a toolchain path becomes writable to `Edit` or `Write`, check the projection split before changing the test: `read_only` and `sandbox_writable` must both contain the toolchain path, and `validate_path_for_write` must see the read-only classification.
 
-If `just cc-check` reports an exceedance, move branches into small helpers or split the classifier; do not regenerate `ci/cargo-crap-baseline.json` for this change. If an unrelated snapshot changes, restore it and inspect the tool description path. If the ADR number is taken by another change, use the next available number and update this plan and task 171 rather than renumbering an existing ADR.
+If `just cc-check` reports an exceedance, move branches into small helpers or split the classifier; do not regenerate `ci/cargo-crap-baseline.json` for this change. If an unrelated snapshot changes, restore it and inspect the tool description path. If implementation changes the decision, update ADR 056 and this plan before continuing rather than silently diverging from the accepted boundary.
 
 The deny list is a security boundary in the in-process projection only. Do not test it against real credential files, do not print real values in failures, and do not add a fallback that treats a deny-list read failure as an empty file. Bash remains subject to the OS sandbox and the external gate; this task must not claim the denylist is a filesystem boundary.
 
@@ -245,6 +245,6 @@ New and changed internal interfaces, all private to the crate:
 - `SandboxConfig::from_grants(&PathGrants) -> SandboxConfig` and the existing `SandboxConfig::build`/`build_with_policy` signatures. `SandboxConfig` continues to expose `writable`, `read_execute`, `policy`, `user_grants`, and the existing predicates.
 - `ToolContext::path_grants`, `ToolContext::refresh_path_grants(&mut self)`, `ToolContext::sandbox_policy(&self)`, and `ToolContext::set_sandbox_policy(&mut self, SandboxPolicy)`. The policy field becomes private; path fields remain construction inputs with a documented refresh requirement.
 - `validate_path_with_grants(path_str, &PathGrants) -> Result<ValidatedPath, String>` and the rewritten `classify_resolved_path(&Path, &PathGrants)`. The existing `validate_path`, `validate_path_in_cwd`, `validate_path_for_write`, `resolve_path_for_write_scheduling`, and `resolve_path_for_read_scheduling` keep their public shapes.
-- The next ADR, expected 056, records the decision. No new Cargo dependency, settings key, CLI flag, session record, provider schema, or platform sandbox API is introduced.
+- ADR 056, `docs/adr/056-share-bash-read-grants-with-in-process-file-tools.md`, records the decision. No new Cargo dependency, settings key, CLI flag, session record, provider schema, or platform sandbox API is introduced.
 
 The plan assumes the current tree's `Read`, `ReadImage`, `Edit`, `Write`, and Bash script-evidence surfaces. There is no Grep tool to update. A future Grep implementation that calls the shared validator must use the same `PathGrants` and denylist rather than creating a second grant table.
