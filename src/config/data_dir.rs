@@ -156,8 +156,8 @@ impl DataDir {
     /// files, telemetry sidecars, and daily logs --- so those roots are granted
     /// read-only for every run. Returns the cache/data directory and the
     /// sessions directory, deduplicated when `CAKE_DATA_DIR` collapses them
-    /// under one root. The config directory is deliberately excluded: it holds
-    /// credentials and trusted executables. See `docs/security.md`.
+    /// under one root. The global config directory is granted read-only by the
+    /// run resource builder alongside these roots. See `docs/security.md`.
     #[must_use]
     pub fn sandbox_read_dirs(&self) -> Vec<PathBuf> {
         let mut dirs = vec![self.data_dir.clone()];

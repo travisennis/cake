@@ -82,6 +82,77 @@ fn in_process_projection_keeps_toolchain_caches_read_only() {
 }
 
 #[test]
+fn config_read_and_user_skill_grants_project_to_both_layers() {
+    let home = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let config = home.path().join(".config/cake");
+    let skills = home.path().join(".agents/skills");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::create_dir_all(&skills).unwrap();
+
+    let mut context = temp_env::with_var("HOME", Some(home.path()), || {
+        ToolContext::with_temp_dirs(
+            cwd.path().to_path_buf(),
+            Vec::new(),
+            vec![config.clone()],
+            Vec::new(),
+            vec![skills.clone()],
+        )
+    });
+    let grants = context.path_grants();
+    assert!(
+        grants.read_only.contains(&config),
+        "the global config directory must be read-only in-process"
+    );
+    assert!(
+        !grants.read_write.contains(&config),
+        "the global config directory must not be writable in-process"
+    );
+    assert!(
+        grants.read_write.contains(&skills),
+        "the user skill root must be writable in-process"
+    );
+
+    let os = SandboxConfig::from_grants(grants);
+    assert!(
+        os.read_execute.contains(&config),
+        "Bash must read the global config directory"
+    );
+    assert!(
+        !os.writable.contains(&config),
+        "Bash must not write the global config directory"
+    );
+    assert!(
+        os.writable.contains(&skills),
+        "Bash must write the user skill root"
+    );
+
+    let config_file = config.join("settings.toml");
+    std::fs::write(&config_file, "default_model = \"test\"\n").unwrap();
+    validate_path(&context, config_file.to_str().unwrap()).unwrap();
+    let error = validate_path_for_write(&context, config_file.to_str().unwrap()).unwrap_err();
+    assert!(error.contains("read-only"), "{error}");
+
+    let skill_file = skills.join("example/SKILL.md");
+    std::fs::create_dir_all(skill_file.parent().unwrap()).unwrap();
+    std::fs::write(&skill_file, "---\nname: example\n---\n").unwrap();
+    validate_path_for_write(&context, skill_file.to_str().unwrap()).unwrap();
+
+    context.set_sandbox_policy(SandboxPolicy::ReadOnly);
+    let grants = context.path_grants();
+    assert!(
+        grants.read_only.contains(&skills),
+        "read-only must demote the user skill root"
+    );
+    assert!(
+        !grants.read_write.contains(&skills),
+        "read-only must not keep the user skill root writable"
+    );
+    let error = validate_path_for_write(&context, skill_file.to_str().unwrap()).unwrap_err();
+    assert!(error.contains("read-only"), "{error}");
+}
+
+#[test]
 fn read_only_policy_demotes_workspace_but_keeps_temp_writable() {
     let home = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();

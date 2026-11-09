@@ -1,6 +1,10 @@
 //! Prepare configured writable grants for an agent run, after policy resolution.
 
-use std::{fs, io::ErrorKind, path::PathBuf};
+use std::{
+    fs,
+    io::ErrorKind,
+    path::{Path, PathBuf},
+};
 
 use crate::clients::SandboxPolicy;
 
@@ -19,6 +23,51 @@ pub enum SandboxGrantError {
         path: PathBuf,
         source: std::io::Error,
     },
+}
+
+/// Provision the built-in user skill root as a read-write default.
+///
+/// The root is `~/.agents/skills`, resolved by [`crate::config::user_skills_dir`].
+/// Writable policies create a missing root and its parents before tools start;
+/// a failure logs a warning and omits the grant instead of aborting the run,
+/// because this is a built-in default rather than user-configured authority.
+/// The `read-only` policy returns an existing root so it can be demoted to
+/// read-only, and never creates a missing one.
+pub fn prepare_user_skills_dir(path: &Path, policy: SandboxPolicy) -> Option<PathBuf> {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_dir() => Some(path.to_path_buf()),
+        Ok(_) => {
+            tracing::warn!(
+                "user skill root '{}' is not a directory, ignoring",
+                path.display()
+            );
+            None
+        },
+        Err(_) if policy == SandboxPolicy::ReadOnly => None,
+        Err(error) if error.kind() == ErrorKind::NotFound => match fs::create_dir_all(path) {
+            Ok(()) => {
+                tracing::warn!(
+                    "user skill root '{}' did not exist; created it and any missing parents",
+                    path.display()
+                );
+                Some(path.to_path_buf())
+            },
+            Err(error) => {
+                tracing::warn!(
+                    "failed to create user skill root '{}': {error}; continuing without the writable grant",
+                    path.display()
+                );
+                None
+            },
+        },
+        Err(error) => {
+            tracing::warn!(
+                "failed to inspect user skill root '{}': {error}; continuing without the writable grant",
+                path.display()
+            );
+            None
+        },
+    }
 }
 
 /// Provision directory grants without granting their intermediate parents.
@@ -143,6 +192,60 @@ mod tests {
         assert!(message.contains("[sandbox].writable"), "{message}");
         assert!(message.contains(blocked.to_str().unwrap()), "{message}");
         assert_eq!(fs::read_to_string(file).unwrap(), "keep");
+    }
+
+    #[test]
+    fn user_skills_dir_is_created_for_writable_policies_and_reused() {
+        for policy in [
+            SandboxPolicy::WorkspaceWrite,
+            SandboxPolicy::WorkspaceWriteInteractive,
+            SandboxPolicy::DangerFullAccess,
+        ] {
+            let home = tempfile::tempdir().unwrap();
+            let root = home.path().join(".agents/skills");
+            assert_eq!(prepare_user_skills_dir(&root, policy), Some(root.clone()));
+            assert!(root.is_dir());
+            fs::write(root.join("SKILL.md"), "keep").unwrap();
+            assert_eq!(prepare_user_skills_dir(&root, policy), Some(root.clone()));
+            assert_eq!(fs::read_to_string(root.join("SKILL.md")).unwrap(), "keep");
+        }
+    }
+
+    #[test]
+    fn read_only_recognizes_existing_user_skills_dir_without_creating_missing_one() {
+        let home = tempfile::tempdir().unwrap();
+        let existing = home.path().join(".agents/skills");
+        fs::create_dir_all(&existing).unwrap();
+        assert_eq!(
+            prepare_user_skills_dir(&existing, SandboxPolicy::ReadOnly),
+            Some(existing.clone())
+        );
+
+        let missing = home.path().join("missing/.agents/skills");
+        assert_eq!(
+            prepare_user_skills_dir(&missing, SandboxPolicy::ReadOnly),
+            None
+        );
+        assert!(!home.path().join("missing").exists());
+    }
+
+    #[test]
+    fn user_skills_dir_rejects_files_and_uninspectable_paths() {
+        let home = tempfile::tempdir().unwrap();
+        let file = home.path().join(".agents/skills");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, "not a directory").unwrap();
+        assert_eq!(
+            prepare_user_skills_dir(&file, SandboxPolicy::WorkspaceWrite),
+            None
+        );
+
+        let blocker = home.path().join("blocker");
+        fs::write(&blocker, "not a directory").unwrap();
+        assert_eq!(
+            prepare_user_skills_dir(&blocker.join("skills"), SandboxPolicy::WorkspaceWrite),
+            None
+        );
     }
 
     #[cfg(unix)]

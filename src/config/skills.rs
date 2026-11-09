@@ -454,6 +454,16 @@ pub fn discover_skills(working_dir: &Path) -> SkillCatalog {
     discover_skills_with_paths(working_dir, &[])
 }
 
+/// The user-level skill root, `~/.agents/skills`.
+///
+/// Returns `None` when no home directory can be resolved. Both skill discovery
+/// and the default writable sandbox grant use this function so they cannot
+/// disagree about the path.
+#[must_use]
+pub fn user_skills_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(".agents").join("skills"))
+}
+
 /// Discover skills from default locations plus configured skill roots.
 ///
 /// Precedence is project skills, configured skills in path order, then user
@@ -462,7 +472,7 @@ pub fn discover_skills_with_paths(
     working_dir: &Path,
     configured_skill_dirs: &[PathBuf],
 ) -> SkillCatalog {
-    let user_skills_dir = dirs::home_dir().map(|h| h.join(".agents").join("skills"));
+    let user_skills_dir = user_skills_dir();
     discover_skills_inner(
         working_dir,
         configured_skill_dirs,

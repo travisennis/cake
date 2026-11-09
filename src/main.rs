@@ -29,7 +29,7 @@ use std::time::Instant;
 
 use crate::cli::{
     CliOutputSink, CmdRunner, CommandRunOptions, Commands, RunMode, SessionPersistencePlan,
-    TurnResult, execute_persistence_plan,
+    TurnResult, execute_persistence_plan, prepare_user_skills_dir,
 };
 use crate::clients::resolve_linked_worktree_dirs;
 use crate::clients::{Agent, SandboxPolicy, ToolContext, resolve_sandbox_policy};
@@ -40,7 +40,8 @@ use crate::config::trust::{
 use crate::config::{
     AgentsFile, DataDir, DiagnosticLevel, HookSource, HooksLoader, ModelConfig, ModelDefinition,
     ReasoningEffort, ResolvedModelConfig, Session, SettingsLoader, SkillCatalog, discover_skills,
-    discover_skills_with_paths, parse_skill_path_list, read_agents_files, worktree,
+    discover_skills_with_paths, parse_skill_path_list, read_agents_files, user_skills_dir,
+    worktree,
 };
 use crate::hooks::{HookContext, HookRunner, SessionEndReason, StopHookOutcome};
 use crate::program_status::{BlockedKind, State};
@@ -772,15 +773,12 @@ impl CodingAssistant {
             .collect();
 
         let sandbox_policy = resolve_sandbox_policy(self.sandbox);
-        let settings_dirs = crate::cli::prepare_writable_dirs(
-            &loaded.directories,
-            &loaded.sandbox.writable,
-            sandbox_policy,
-        )?;
+        let settings_dirs = Self::writable_dirs(&loaded, sandbox_policy)?;
         let additional_dirs = Self::read_only_dirs(
             additional_dirs,
             Self::valid_sandbox_read_only_dirs(&loaded),
             data_dir,
+            &crate::config::config_dir().join("cake"),
         );
         let tool_context = ToolContext::new(
             current_dir.to_path_buf(),
@@ -919,21 +917,47 @@ impl CodingAssistant {
             .collect()
     }
 
+    /// Build the writable path grant list for a run.
+    ///
+    /// Configured `directories` and `[sandbox].writable` targets are provisioned
+    /// first. The user skill root is a built-in writable default for writable
+    /// policies and a read-only grant under `read-only`; it is granted even
+    /// when `--no-skills` disables discovery.
+    fn writable_dirs(
+        loaded: &LoadedSettings,
+        sandbox_policy: SandboxPolicy,
+    ) -> anyhow::Result<Vec<PathBuf>> {
+        let mut dirs = crate::cli::prepare_writable_dirs(
+            &loaded.directories,
+            &loaded.sandbox.writable,
+            sandbox_policy,
+        )?;
+        if let Some(user_skills) = user_skills_dir()
+            && let Some(dir) = prepare_user_skills_dir(&user_skills, sandbox_policy)
+        {
+            dirs.push(dir);
+        }
+        Ok(dirs)
+    }
+
     /// Build the read-only path grant list for a run.
     ///
     /// `--add-dir` entries and `[sandbox].read_only` settings grants join
-    /// Cake's own state roots (session files, telemetry, and logs) so the
-    /// session analysis and debugging skills can read their inputs without a
-    /// manual grant. The list feeds both the OS sandbox and the in-process
-    /// Read/ReadImage/Edit/Write path checks. See [`DataDir::sandbox_read_dirs`].
+    /// Cake's own config directory and state roots (session files, telemetry,
+    /// and logs) so the configuration and debugging skills can read their
+    /// inputs without a manual grant. The list feeds both the OS sandbox and
+    /// the in-process Read/ReadImage/Edit/Write path checks. See
+    /// [`DataDir::sandbox_read_dirs`] and ADR 057.
     fn read_only_dirs(
         additional_dirs: Vec<PathBuf>,
         settings_read_only: Vec<PathBuf>,
         data_dir: &DataDir,
+        config_dir: &Path,
     ) -> Vec<PathBuf> {
         let mut dirs = additional_dirs;
         dirs.extend(settings_read_only);
         dirs.extend(data_dir.sandbox_read_dirs());
+        dirs.push(config_dir.to_path_buf());
         dirs
     }
 

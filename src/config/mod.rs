@@ -49,7 +49,7 @@ pub use settings::{ModelDefinition, SettingsLoader};
 #[doc(inline)]
 pub use skills::{
     DiagnosticLevel, SkillCatalog, discover_skills, discover_skills_with_paths,
-    parse_skill_path_list,
+    parse_skill_path_list, user_skills_dir,
 };
 
 /// Expand a leading `~` (or a bare `~`) to the user's home directory.

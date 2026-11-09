@@ -46,7 +46,7 @@ pub use sessions::SessionsCommand;
 pub use trust::TrustCommand;
 
 pub use run_mode::{RunMode, SessionPersistencePlan};
-pub use sandbox_grants::{SandboxGrantError, prepare_writable_dirs};
+pub use sandbox_grants::{SandboxGrantError, prepare_user_skills_dir, prepare_writable_dirs};
 
 /// A root agent-run option was supplied alongside a subcommand.
 #[derive(Debug, thiserror::Error)]

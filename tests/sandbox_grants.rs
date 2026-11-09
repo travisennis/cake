@@ -61,6 +61,7 @@ api_type = "responses"
         assert!(!env.workspace_dir.join("../legacy").exists());
         assert!(!env.workspace_dir.join("../home/.cache/cake").exists());
         assert!(!env.workspace_dir.join("../home/.local/share/cake").exists());
+        assert!(!env.home_dir.join(".agents/skills").exists());
     }
     let output = env
         .command()
@@ -72,6 +73,7 @@ api_type = "responses"
     assert!(env.workspace_dir.join("../legacy/parent/state").is_dir());
     assert!(env.workspace_dir.join("../home/.cache/cake").is_dir());
     assert!(env.workspace_dir.join("../home/.local/share/cake").is_dir());
+    assert!(env.home_dir.join(".agents/skills").is_dir());
     assert!(!env.workspace_dir.join("../absent-read-only").exists());
     let logs: String = fs::read_dir(&env.data_dir)
         .unwrap()

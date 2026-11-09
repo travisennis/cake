@@ -257,7 +257,8 @@ const JUDGE_TIMEOUT_MIN_SECS: u64 = 1;
 /// Controls which extra filesystem paths the Bash sandbox and the in-process
 /// Read/ReadImage/Edit/Write path validation allow, on top of the built-in
 /// toolchain and system paths, `--add-dir`, `directories`, skill directories,
-/// and Cake's own state roots.
+/// the user skill root, the global config directory, and Cake's own state
+/// roots.
 ///
 /// `Read` and `ReadImage` accept read-only and read-write grants. `Edit` and
 /// `Write` accept only read-write grants. Credential-bearing paths are denied
