@@ -20,7 +20,7 @@ The durable decision is recorded in `docs/adr/056-share-bash-read-grants-with-in
 - [x] (2026-11-09) Accept ADR 056 and add `PathGrants`, `DeniedPath`, the credential deny list, and the Bash/in-process projections. `SandboxConfig::build_with_policy` now projects from `PathGrants`; the in-process validator still uses the legacy path list, so behavior is unchanged.
 - [x] (2026-11-09) Cache `PathGrants` on `ToolContext`, make `sandbox_policy` private with `sandbox_policy()`/`set_sandbox_policy()`, add `refresh_path_grants()`, and make `SandboxConfig::build` project from the cached value. Tests that change policy use the setter; tests that change path inputs refresh. Added direct cache and policy-rebuild tests.
 - [x] (2026-11-09) Milestone 2: `validate_path` and prospective-write scheduling classify against the cached `PathGrants`; the credential denylist is checked before read-write and read-only grants. Built-in toolchain and system paths are readable to the in-process tools and remain write-rejected. Existing read-only and outside-working-directory diagnostics remain. A prospective write through a dangling symlink is rejected before the write can create its target. Added validator-level denial, synthetic toolchain-source, prospective-denied-write, and dangling-symlink tests.
-- [ ] Milestone 3: add the acceptance and security tests, including synthetic HOME, denied symlinks, Linux-only paths, and the parity test.
+- [x] (2026-11-09) Milestone 3: added synthetic-HOME acceptance and security tests for toolchain reads and write rejection, the credential denylist over a granted HOME (Read, ReadImage, Edit, Write), file-versus-directory deny matching, cwd and granted-tree symlinks to denied paths, outside-grant symlinks, prospective denied writes, exact in-process/OS projection parity, the read-only settings demotion with mutating tools removed, Linux-only OS path rejection, and the macOS `/dev/null` non-regular-file rejection.
 - [ ] Milestone 4: update documentation and model-visible description snapshots.
 - [ ] Milestone 5: run the focused tests, `just check`, documentation checks, and the platform verification available locally and in CI.
 - [ ] Fill Acceptance Notes, Outcomes & Retrospective, move this plan to `docs/exec-plans/completed/`, and complete task 171 before the final commit.
@@ -44,6 +44,10 @@ The durable decision is recorded in `docs/adr/056-share-bash-read-grants-with-in
 - Observation: a dangling symlink is not an existing path. `std::fs::write` follows it and creates its target, so validating only the link spelling would let a working-directory link create a file under a denied or ungranted target. Prospective-write resolution now rejects any dangling symlink in the unresolved suffix before classification.
 
 - Observation: `validate_path_with_dirs` and the `get_additional_dirs`/`get_skill_dirs`/`get_settings_dirs`/`get_temp_directories` accessors had no callers once the validator consumed `PathGrants`, so they were removed rather than kept as dead test-only paths.
+
+- Observation: the Milestone 3 deny tests exercise `Read`, `ReadImage`, `Edit`, and `Write`, not just the validator. `ReadImage` reaches the shared validator before decoding, so a credential path is rejected without reading image bytes. The toolchain test pins `CARGO_HOME` and `RUSTUP_HOME` as well as `HOME`, because `cargo test` can expose toolchain overrides even when the shell leaves them unset.
+
+- Observation: the exact projection test compares sets rather than vectors. `SandboxConfig::from_grants` deduplicates the merged writable and read-execute views, and the grant builder can contain lexical and canonical spellings of the same path, so vector equality would assert an ordering and duplication policy that the projection does not promise.
 
 ## Decision Log
 
