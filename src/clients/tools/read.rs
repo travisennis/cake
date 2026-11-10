@@ -5,7 +5,7 @@ use std::path::Path;
 
 use crate::clients::tools::{
     ToolContext, contains_null_byte, decode_utf8, file_access::validate_regular_file,
-    resolve_path_for_read_scheduling, validate_path_in_cwd,
+    read_tracker::ReadObservation, resolve_path_for_read_scheduling, validate_path_in_cwd,
 };
 use crate::config::settings::ToolLimits;
 use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
@@ -97,8 +97,25 @@ pub(super) fn execute_read(
     validate_regular_file(&path)?;
 
     // Handle file
-    read_file(&path, args.start_line, args.end_line, &context.limits)
-        .map_err(|error| append_image_hint(error, &path))
+    let outcome = read_file(&path, args.start_line, args.end_line, &context.limits)
+        .map_err(|error| append_image_hint(error, &path))?;
+    context.record_read(&path, outcome.observation);
+    Ok(outcome.result)
+}
+
+/// A successful Read result plus the observation Edit uses for diagnostics.
+struct ReadOutcome {
+    result: super::ToolResult,
+    observation: ReadObservation,
+}
+
+impl ReadOutcome {
+    const fn new(result: super::ToolResult, observation: ReadObservation) -> Self {
+        Self {
+            result,
+            observation,
+        }
+    }
 }
 
 /// Resolve the 0-indexed end line from the model's `start_line`/`end_line`
@@ -157,7 +174,7 @@ fn read_file(
     start_line: Option<usize>,
     end_line: Option<usize>,
     limits: &ToolLimits,
-) -> Result<super::ToolResult, String> {
+) -> Result<ReadOutcome, String> {
     let start_value = start_line.unwrap_or(1);
     let line_cap = limits.read_max_line_bytes.unwrap_or(usize::MAX);
 
@@ -213,7 +230,7 @@ fn read_from_reader<R: BufRead>(
     end_requested: usize,
     path: &Path,
     limits: &ToolLimits,
-) -> Result<super::ToolResult, String> {
+) -> Result<ReadOutcome, String> {
     let line_cap = limits.read_max_line_bytes.unwrap_or(usize::MAX);
     if start > end_requested {
         let total_lines = count_lines_to_eof(reader, path, line_cap)?;
@@ -275,6 +292,8 @@ fn read_from_reader<R: BufRead>(
             line_bytes,
             max_bytes.unwrap_or(usize::MAX),
             None,
+            total_lines,
+            false,
         ));
     }
 
@@ -290,6 +309,7 @@ fn read_from_reader<R: BufRead>(
         exact,
         body: builder.body,
         line_ends: builder.line_ends,
+        truncated_lines: builder.truncated_lines,
         max_bytes,
         cap_stopped: builder.cap_stopped,
     }))
@@ -297,11 +317,7 @@ fn read_from_reader<R: BufRead>(
 
 /// No line at `start` exists. An empty file is a normal result; a non-empty
 /// file means the requested start line is past EOF.
-fn no_line_result(
-    path: &Path,
-    start: usize,
-    total_lines: usize,
-) -> Result<super::ToolResult, String> {
+fn no_line_result(path: &Path, start: usize, total_lines: usize) -> Result<ReadOutcome, String> {
     if total_lines == 0 {
         Ok(empty_file_result(path))
     } else {
@@ -314,6 +330,8 @@ fn no_line_result(
 struct BodyBuilder {
     body: String,
     line_ends: Vec<usize>,
+    /// 0-indexed delivered lines cut at the per-line byte cap.
+    truncated_lines: Vec<usize>,
     last_emitted: Option<usize>,
     body_budget: usize,
     line_cap: usize,
@@ -326,6 +344,7 @@ impl BodyBuilder {
         Self {
             body: String::new(),
             line_ends: Vec::new(),
+            truncated_lines: Vec::new(),
             last_emitted: None,
             body_budget: max_bytes.unwrap_or(usize::MAX),
             line_cap,
@@ -348,6 +367,9 @@ impl BodyBuilder {
         let checkpoint = self.body.len();
         append_line(&mut self.body, line, self.line_cap);
         if self.body.len() <= self.body_budget {
+            if line.truncated {
+                self.truncated_lines.push(i);
+            }
             self.line_ends.push(self.body.len());
             self.last_emitted = Some(i);
             return None;
@@ -537,13 +559,15 @@ struct ReadResultInput<'a> {
     exact: bool,
     body: String,
     line_ends: Vec<usize>,
+    /// 0-indexed delivered lines cut at the per-line byte cap.
+    truncated_lines: Vec<usize>,
     max_bytes: Option<usize>,
     cap_stopped: bool,
 }
 
 /// Build the final result from the delivered body, dropping whole lines until
 /// the header, body, and footer fit the configured output budget.
-fn build_read_result(input: ReadResultInput<'_>) -> super::ToolResult {
+fn build_read_result(input: ReadResultInput<'_>) -> ReadOutcome {
     let ReadResultInput {
         path,
         start,
@@ -552,6 +576,7 @@ fn build_read_result(input: ReadResultInput<'_>) -> super::ToolResult {
         exact,
         mut body,
         line_ends,
+        mut truncated_lines,
         max_bytes,
         mut cap_stopped,
     } = input;
@@ -582,12 +607,23 @@ fn build_read_result(input: ReadResultInput<'_>) -> super::ToolResult {
             } else {
                 Vec::new()
             };
-            return super::ToolResult {
-                output,
-                images: Vec::new(),
-                compensation_events,
-                permission_denials: Vec::new(),
-            };
+            truncated_lines.retain(|line| *line <= end);
+            return ReadOutcome::new(
+                super::ToolResult {
+                    output,
+                    images: Vec::new(),
+                    compensation_events,
+                    permission_denials: Vec::new(),
+                },
+                ReadObservation {
+                    start_line: start + 1,
+                    end_line: Some(end + 1),
+                    total_lines,
+                    total_exact: exact,
+                    output_truncated: cap_stopped,
+                    truncated_lines: truncated_lines.into_iter().map(|line| line + 1).collect(),
+                },
+            );
         }
 
         cap_stopped = true;
@@ -605,6 +641,8 @@ fn build_read_result(input: ReadResultInput<'_>) -> super::ToolResult {
                 first_line_bytes,
                 max_bytes.unwrap_or(needed),
                 Some(needed),
+                total_lines,
+                exact,
             );
         }
         end = start + delivered - 1;
@@ -656,32 +694,54 @@ fn read_cap_too_small_result(
     line_bytes: usize,
     cap: usize,
     needed: Option<usize>,
-) -> super::ToolResult {
+    total_lines: usize,
+    total_exact: bool,
+) -> ReadOutcome {
     let needed = needed.map_or(String::new(), |needed| {
         format!("; the first line plus the Read header and footer needs {needed} bytes")
     });
-    super::ToolResult {
-        output: format!(
-            "File: {}\n[... output truncated at {cap} bytes; line {line} needs {line_bytes} bytes{needed} ...]",
-            path.display()
-        ),
-        images: Vec::new(),
-        compensation_events: vec![CompensationEventTelemetry::new(
-            CompensationKind::OutputTruncation,
-            Some("Read".to_string()),
-        )],
-        permission_denials: Vec::new(),
-    }
+    ReadOutcome::new(
+        super::ToolResult {
+            output: format!(
+                "File: {}\n[... output truncated at {cap} bytes; line {line} needs {line_bytes} bytes{needed} ...]",
+                path.display()
+            ),
+            images: Vec::new(),
+            compensation_events: vec![CompensationEventTelemetry::new(
+                CompensationKind::OutputTruncation,
+                Some("Read".to_string()),
+            )],
+            permission_denials: Vec::new(),
+        },
+        ReadObservation {
+            start_line: line,
+            end_line: None,
+            total_lines,
+            total_exact,
+            output_truncated: true,
+            truncated_lines: Vec::new(),
+        },
+    )
 }
 
 /// An empty file has no range to report and no truncation.
-fn empty_file_result(path: &Path) -> super::ToolResult {
-    super::ToolResult {
-        output: format!("File: {}\n0 lines total\n(file is empty)", path.display()),
-        images: Vec::new(),
-        compensation_events: Vec::new(),
-        permission_denials: Vec::new(),
-    }
+fn empty_file_result(path: &Path) -> ReadOutcome {
+    ReadOutcome::new(
+        super::ToolResult {
+            output: format!("File: {}\n0 lines total\n(file is empty)", path.display()),
+            images: Vec::new(),
+            compensation_events: Vec::new(),
+            permission_denials: Vec::new(),
+        },
+        ReadObservation {
+            start_line: 1,
+            end_line: None,
+            total_lines: 0,
+            total_exact: true,
+            output_truncated: false,
+            truncated_lines: Vec::new(),
+        },
+    )
 }
 
 /// The model-visible error for a range that is invalid before any line is read.
@@ -1162,7 +1222,8 @@ mod tests {
         let mut reader = BufReader::new(counter);
 
         let limits = crate::config::settings::ToolLimits::defaults();
-        let result = read_from_reader(&mut reader, 0, 199_999_999, &file_path, &limits).unwrap();
+        let outcome = read_from_reader(&mut reader, 0, 199_999_999, &file_path, &limits).unwrap();
+        let result = outcome.result;
 
         let consumed = reader.get_ref().bytes;
         assert!(

@@ -4,8 +4,9 @@ use std::io::{BufReader, Read as _};
 use std::path::Path;
 
 use crate::clients::tools::{
-    ToolContext, contains_null_byte, decode_utf8, repair_json_args,
-    resolve_path_for_write_scheduling, validate_path_for_write,
+    ToolContext, contains_null_byte, decode_utf8,
+    read_tracker::{ReadObservation, ReadStatus},
+    repair_json_args, resolve_path_for_write_scheduling, validate_path_for_write,
 };
 
 // =============================================================================
@@ -176,6 +177,7 @@ pub(super) fn execute_edit(
 
     // Validate and canonicalize the path (ensures it's not read-only)
     let path = validate_path_for_write(tool_context, &args.path)?;
+    let read_status = tool_context.read_status(&path);
     let content = read_edit_file(&path, &tool_context.limits)?;
 
     // Detect and strip BOM
@@ -188,7 +190,13 @@ pub(super) fn execute_edit(
     let normalized_content = normalize_crlf_line_endings(content);
 
     // Preflight validation: find all match positions
-    let preflighted_edits = preflight_edits(&args.edits, &normalized_content, line_ending, &path)?;
+    let preflighted_edits = preflight_edits(
+        &args.edits,
+        &normalized_content,
+        line_ending,
+        &path,
+        read_status.as_ref(),
+    )?;
     let matched_edits = preflighted_edits.matched_edits;
     let skipped_noop_indexes = preflighted_edits.skipped_noop_indexes;
 
@@ -215,6 +223,7 @@ pub(super) fn execute_edit(
     // Write the modified content back
     std::fs::write(&path, &new_content)
         .map_err(|e| format!("Failed to write file '{}': {e}", path.display()))?;
+    tool_context.record_edit(&path);
 
     // Generate diff output
     let diff = generate_unified_diff(&restore_bom(content.to_string(), bom), &new_content, &path);
@@ -397,63 +406,76 @@ fn find_match_result(content: &str, needle: &str) -> MatchResult {
     }
 }
 
-fn unique_match_index(
-    content: &str,
-    old_text: &str,
+struct PreflightContext<'a> {
+    content: &'a str,
     total: usize,
-    matched_edits: &[MatchedEdit],
-    skipped_noop_indexes: &[usize],
-    edit_index: usize,
-    path: &Path,
-) -> Result<usize, String> {
-    match find_match_result(content, old_text) {
-        MatchResult::None => {
-            let preflight_summary = preflight_failure_summary(
-                total,
-                matched_edits,
-                skipped_noop_indexes,
-                edit_index,
-                "failed: could not find the exact text to replace",
-            );
-            let mut message = format!(
-                "Edit {} of {} failed in {}: could not find the exact text to replace. The old_text must match exactly, including all whitespace and newlines.",
-                edit_index,
-                total,
-                path.display(),
-            );
-            if let Some(hint) = nearest_match_hint(content, old_text) {
-                _ = write!(message, "\nNearest matching context in file:\n{hint}");
-            }
-            _ = write!(
-                message,
-                "{}\n{}\nRetry by re-reading the target range and providing a narrower old_text, or split the request into smaller edits.",
-                preflight_summary,
-                atomic_rollback_notice(total),
-            );
-            Err(message)
-        },
-        MatchResult::Unique(index) => Ok(index),
-        MatchResult::Ambiguous { count, first_five } => {
-            let contexts = ambiguous_match_contexts(content, &first_five, count);
-            let failure_status = format!("failed: old_text matched {count} locations");
-            let preflight_summary = preflight_failure_summary(
-                total,
-                matched_edits,
-                skipped_noop_indexes,
-                edit_index,
-                &failure_status,
-            );
-            Err(format!(
-                "Edit {} of {} failed in {}: old_text matches {} locations but must match exactly 1.\nCandidate match contexts:\n{}{}\n{}\nProvide a more specific old_text that includes more surrounding context.",
-                edit_index,
-                total,
-                path.display(),
-                count,
-                contexts,
-                preflight_summary,
-                atomic_rollback_notice(total),
-            ))
-        },
+    matched_edits: &'a [MatchedEdit],
+    skipped_noop_indexes: &'a [usize],
+    path: &'a Path,
+    read_status: Option<&'a ReadStatus>,
+}
+
+impl PreflightContext<'_> {
+    fn unique_match_index(&self, old_text: &str, edit_index: usize) -> Result<usize, String> {
+        match find_match_result(self.content, old_text) {
+            MatchResult::None => {
+                let preflight_summary = preflight_failure_summary(
+                    self.total,
+                    self.matched_edits,
+                    self.skipped_noop_indexes,
+                    edit_index,
+                    "failed: could not find the exact text to replace",
+                );
+                let mut message = format!(
+                    "Edit {} of {} failed in {}: could not find the exact text to replace. The old_text must match exactly, including all whitespace and newlines.",
+                    edit_index,
+                    self.total,
+                    self.path.display(),
+                );
+                let nearest = nearest_match(self.content, old_text);
+                if let Some(nearest) = &nearest {
+                    _ = write!(
+                        message,
+                        "\nNearest matching context in file:\n{}",
+                        nearest.hint
+                    );
+                }
+                if let Some(diagnostic) =
+                    read_diagnostic(self.content, old_text, nearest.as_ref(), self.read_status)
+                {
+                    _ = write!(message, "\n{diagnostic}");
+                }
+                _ = write!(
+                    message,
+                    "{}\n{}\nRetry by re-reading the target range and providing a narrower old_text, or split the request into smaller edits.",
+                    preflight_summary,
+                    atomic_rollback_notice(self.total),
+                );
+                Err(message)
+            },
+            MatchResult::Unique(index) => Ok(index),
+            MatchResult::Ambiguous { count, first_five } => {
+                let contexts = ambiguous_match_contexts(self.content, &first_five, count);
+                let failure_status = format!("failed: old_text matched {count} locations");
+                let preflight_summary = preflight_failure_summary(
+                    self.total,
+                    self.matched_edits,
+                    self.skipped_noop_indexes,
+                    edit_index,
+                    &failure_status,
+                );
+                Err(format!(
+                    "Edit {} of {} failed in {}: old_text matches {} locations but must match exactly 1.\nCandidate match contexts:\n{}{}\n{}\nProvide a more specific old_text that includes more surrounding context.",
+                    edit_index,
+                    self.total,
+                    self.path.display(),
+                    count,
+                    contexts,
+                    preflight_summary,
+                    atomic_rollback_notice(self.total),
+                ))
+            },
+        }
     }
 }
 
@@ -463,6 +485,7 @@ fn preflight_edits(
     normalized_content: &NormalizedContent,
     line_ending: LineEnding,
     path: &Path,
+    read_status: Option<&ReadStatus>,
 ) -> Result<PreflightedEdits, String> {
     let total = edits.len();
     let mut matched_edits = Vec::with_capacity(total);
@@ -477,15 +500,15 @@ fn preflight_edits(
         }
 
         // Count occurrences while retaining only the first five positions for an error.
-        let index = unique_match_index(
-            &normalized_content.content,
-            &edit.old_text,
+        let index = PreflightContext {
+            content: &normalized_content.content,
             total,
-            &matched_edits,
-            &skipped_noop_indexes,
-            edit_index,
+            matched_edits: &matched_edits,
+            skipped_noop_indexes: &skipped_noop_indexes,
             path,
-        )?;
+            read_status,
+        }
+        .unique_match_index(&edit.old_text, edit_index)?;
 
         let (index, match_length) =
             normalized_content.original_range(index, edit.old_text.len())?;
@@ -723,10 +746,17 @@ fn line_index_for_offset(content: &str, offset: usize) -> usize {
         .count()
 }
 
-/// Best-effort: pick the line in `content` whose token overlap with the first
-/// non-empty line of `needle` is highest. Returns the surrounding lines as a
-/// compact hint. Returns `None` if no useful match is found.
-fn nearest_match_hint(content: &str, needle: &str) -> Option<String> {
+/// The closest line to the first non-empty line of the needle, plus a compact
+/// model-facing snippet around it.
+struct NearestMatch {
+    line_index: usize,
+    hint: String,
+}
+
+/// Best-effort: pick the line in `content` whose common prefix with the first
+/// non-empty line of `needle` is longest. Returns `None` if no useful match is
+/// found.
+fn nearest_match(content: &str, needle: &str) -> Option<NearestMatch> {
     const HINT_RADIUS: usize = 1;
     const MAX_LINE_LEN: usize = 200;
 
@@ -768,7 +798,157 @@ fn nearest_match_hint(content: &str, needle: &str) -> Option<String> {
         let truncated = truncate_to_chars(line, MAX_LINE_LEN);
         _ = writeln!(out, "{marker} {line_no:>5} | {truncated}");
     }
-    Some(out.trim_end_matches('\n').to_string())
+    Some(NearestMatch {
+        line_index: center,
+        hint: out.trim_end_matches('\n').to_string(),
+    })
+}
+
+/// Explain a `no_match` failure when the last Read is stale, incomplete, or
+/// truncated. Returns `None` when the Read history does not support a cause.
+fn read_diagnostic(
+    content: &str,
+    old_text: &str,
+    nearest: Option<&NearestMatch>,
+    read_status: Option<&ReadStatus>,
+) -> Option<String> {
+    let status = read_status?;
+    let observation = &status.observation;
+    let mut parts = Vec::new();
+
+    if status.stale_after_edit {
+        parts.push(format!(
+            "The last Read of this file ({}) predates an earlier successful Edit in this run, so the content may have changed. Re-read the affected range before retrying.",
+            read_range_label(observation)
+        ));
+    }
+
+    if let Some(marker) = read_marker_diagnostic(old_text, observation) {
+        parts.push(marker.to_string());
+    }
+    if let Some(coverage) = read_coverage_diagnostic(content, old_text, nearest, observation) {
+        parts.push(coverage);
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" "))
+    }
+}
+
+fn read_marker_diagnostic(old_text: &str, observation: &ReadObservation) -> Option<&'static str> {
+    if !observation.truncated_lines.is_empty() && old_text.contains("... (line truncated to") {
+        Some(
+            "old_text includes Read's per-line truncation marker, which is not part of the file. Inspect the full line with Bash (for example, sed -n '<line>p' <path>) before retrying.",
+        )
+    } else if observation.is_partial()
+        && old_text.contains("[... ")
+        && old_text.contains("continue with start_line=")
+    {
+        Some(
+            "old_text includes Read's range footer, which is not part of the file. Use only the lines between the Read header and the footer.",
+        )
+    } else {
+        None
+    }
+}
+
+fn read_coverage_diagnostic(
+    content: &str,
+    old_text: &str,
+    nearest: Option<&NearestMatch>,
+    observation: &ReadObservation,
+) -> Option<String> {
+    let first_line = nearest.map(|nearest| nearest.line_index);
+    let last_line = old_text
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .and_then(|line| unique_line_index(content, line));
+    let candidates = [first_line, last_line];
+
+    let outside_line = candidates
+        .into_iter()
+        .flatten()
+        .find(|line_index| line_is_outside_read(*line_index, observation));
+
+    if let Some(line_index) = outside_line {
+        if !observation.is_partial() {
+            return None;
+        }
+        let line_number = line_index + 1;
+        let (start, end) = suggested_read_range(line_number);
+        let coverage = if observation.output_truncated {
+            "The last Read stopped at the output byte limit and covered"
+        } else {
+            "The last Read covered"
+        };
+        return Some(format!(
+            "{coverage} {} and the Edit's old_text appears to involve line {line_number}, which is outside that range. Re-read around line {line_number} (start_line={start}, end_line={end}) before retrying.",
+            read_range_label(observation)
+        ));
+    }
+
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|line_index| observation.truncated_lines.contains(&(line_index + 1)))
+        .map(|line_index| {
+            let line_number = line_index + 1;
+            format!(
+                "The last Read truncated line {line_number} at the per-line byte limit, so old_text cannot match text beyond that limit. Inspect the full line with Bash (for example, sed -n '{line_number}p' <path>) before retrying."
+            )
+        })
+}
+
+fn read_range_label(observation: &ReadObservation) -> String {
+    let total = if observation.total_exact {
+        observation.total_lines.to_string()
+    } else {
+        format!("at least {}", observation.total_lines)
+    };
+    match observation.end_line {
+        Some(end) => format!("lines {}-{} of {total}", observation.start_line, end),
+        None if observation.total_lines == 0 => "no lines in an empty file".to_string(),
+        None => "no lines".to_string(),
+    }
+}
+
+const fn line_is_outside_read(line_index: usize, observation: &ReadObservation) -> bool {
+    let line_number = line_index + 1;
+    !matches!(
+        observation.end_line,
+        Some(end) if line_number >= observation.start_line && line_number <= end
+    )
+}
+
+/// Find the only line in `content` that equals `needle_line` after trimming.
+/// Ambiguous lines are ignored so the diagnostic never guesses.
+fn unique_line_index(content: &str, needle_line: &str) -> Option<usize> {
+    let needle = needle_line.trim();
+    if needle.len() < 4 {
+        return None;
+    }
+
+    let mut found = None;
+    for (index, line) in content.lines().enumerate() {
+        if line.trim() == needle {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(index);
+        }
+    }
+    found
+}
+
+fn suggested_read_range(line_number: usize) -> (usize, usize) {
+    const CONTEXT_LINES: usize = 10;
+    (
+        line_number.saturating_sub(CONTEXT_LINES).max(1),
+        line_number.saturating_add(CONTEXT_LINES),
+    )
 }
 
 /// Return `line` truncated to at most `max_chars` characters, appending an

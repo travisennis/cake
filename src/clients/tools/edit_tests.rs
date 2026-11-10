@@ -1410,3 +1410,214 @@ fn quote_desync_payload_still_rejected() {
         "Unrepairable payload should produce Invalid edit arguments: {err}"
     );
 }
+
+// =========================================================================
+// Read-staleness and Read-coverage diagnostics
+// =========================================================================
+
+fn read_payload(path: &std::path::Path, start: Option<usize>, end: Option<usize>) -> String {
+    serde_json::json!({
+        "path": path.to_str().unwrap(),
+        "start_line": start,
+        "end_line": end,
+    })
+    .to_string()
+}
+
+fn edit_payload(path: &std::path::Path, old_text: &str, new_text: &str) -> String {
+    serde_json::json!({
+        "path": path.to_str().unwrap(),
+        "edits": [{ "old_text": old_text, "new_text": new_text }],
+    })
+    .to_string()
+}
+
+fn read_file(context: &ToolContext, path: &std::path::Path) {
+    crate::clients::tools::read::execute_read(context, &read_payload(path, None, None)).unwrap();
+}
+
+#[test]
+fn edit_after_edit_without_reread_reports_a_stale_read() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("stale.txt");
+    fs::write(&file_path, "alpha\nbeta\ngamma").unwrap();
+    let context = ToolContext::from_current_process();
+
+    read_file(&context, &file_path);
+    execute_edit(&context, &edit_payload(&file_path, "alpha", "ALPHA")).unwrap();
+
+    let err = execute_edit(
+        &context,
+        &edit_payload(&file_path, "alpha\nbeta\ngamma", "changed"),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("predates an earlier successful Edit"),
+        "stale read should be named: {err}"
+    );
+    assert!(err.contains("Re-read"), "{err}");
+}
+
+#[test]
+fn reread_after_edit_clears_the_stale_read_diagnostic() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("stale.txt");
+    fs::write(&file_path, "alpha\nbeta\ngamma").unwrap();
+    let context = ToolContext::from_current_process();
+
+    read_file(&context, &file_path);
+    execute_edit(&context, &edit_payload(&file_path, "alpha", "ALPHA")).unwrap();
+    read_file(&context, &file_path);
+
+    let err = execute_edit(
+        &context,
+        &edit_payload(&file_path, "not in the file", "changed"),
+    )
+    .unwrap_err();
+    assert!(
+        !err.contains("predates an earlier successful Edit"),
+        "a fresh read must suppress the stale diagnostic: {err}"
+    );
+}
+
+#[test]
+fn ranged_read_reports_old_text_outside_the_delivered_range() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("ranged.txt");
+    let lines: Vec<String> = (1..=10).map(|i| format!("line {i:02}")).collect();
+    fs::write(&file_path, lines.join("\n")).unwrap();
+    let context = ToolContext::from_current_process();
+
+    crate::clients::tools::read::execute_read(
+        &context,
+        &read_payload(&file_path, Some(1), Some(2)),
+    )
+    .unwrap();
+
+    let err = execute_edit(
+        &context,
+        &edit_payload(&file_path, "line 09\nline 10 TYPO", "changed"),
+    )
+    .unwrap_err();
+    assert!(err.contains("outside that range"), "{err}");
+    assert!(err.contains("line 9"), "{err}");
+    assert!(err.contains("start_line="), "{err}");
+}
+
+#[test]
+fn ranged_read_reports_old_text_that_extends_past_the_range() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("ranged.txt");
+    let lines: Vec<String> = (1..=20).map(|i| format!("line {i:02}")).collect();
+    fs::write(&file_path, lines.join("\n")).unwrap();
+    let context = ToolContext::from_current_process();
+
+    crate::clients::tools::read::execute_read(
+        &context,
+        &read_payload(&file_path, Some(1), Some(5)),
+    )
+    .unwrap();
+
+    let err = execute_edit(
+        &context,
+        &edit_payload(
+            &file_path,
+            "line 05\nline 06\nline O7\nline 08\nline 09",
+            "changed",
+        ),
+    )
+    .unwrap_err();
+    assert!(err.contains("outside that range"), "{err}");
+    assert!(err.contains("line 9"), "{err}");
+}
+
+#[test]
+fn byte_capped_read_reports_the_output_limit() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("capped.txt");
+    let lines: Vec<String> = (1..=60)
+        .map(|i| format!("line {i:03} {}", "y".repeat(40)))
+        .collect();
+    fs::write(&file_path, lines.join("\n")).unwrap();
+
+    let mut context = ToolContext::from_current_process();
+    let mut limits = crate::config::settings::ToolLimits::defaults();
+    limits.read_max_output_bytes = Some(400);
+    context = context.with_limits(limits);
+
+    let read =
+        crate::clients::tools::read::execute_read(&context, &read_payload(&file_path, None, None))
+            .unwrap();
+    assert!(read.output.contains("output truncated at 400 bytes"));
+
+    let target = format!("line 055 {}\nTYPO", "y".repeat(40));
+    let err = execute_edit(&context, &edit_payload(&file_path, &target, "changed")).unwrap_err();
+    assert!(err.contains("output byte limit"), "{err}");
+    assert!(err.contains("outside that range"), "{err}");
+}
+
+#[test]
+fn per_line_truncation_marker_in_old_text_is_named() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("long-line.txt");
+    fs::write(&file_path, "x".repeat(50)).unwrap();
+
+    let mut context = ToolContext::from_current_process();
+    let mut limits = crate::config::settings::ToolLimits::defaults();
+    limits.read_max_line_bytes = Some(20);
+    context = context.with_limits(limits);
+
+    let read =
+        crate::clients::tools::read::execute_read(&context, &read_payload(&file_path, None, None))
+            .unwrap();
+    assert!(read.output.contains("line truncated to 20 bytes"));
+
+    let old_text = "xxxxxxxxxxxxxxxxxxxx ... (line truncated to 20 bytes)";
+    let err = execute_edit(&context, &edit_payload(&file_path, old_text, "changed")).unwrap_err();
+    assert!(err.contains("truncation marker"), "{err}");
+}
+
+#[test]
+fn per_line_truncation_reports_the_capped_line() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("long-line.txt");
+    fs::write(&file_path, "x".repeat(50)).unwrap();
+
+    let mut context = ToolContext::from_current_process();
+    let mut limits = crate::config::settings::ToolLimits::defaults();
+    limits.read_max_line_bytes = Some(20);
+    context = context.with_limits(limits);
+
+    crate::clients::tools::read::execute_read(&context, &read_payload(&file_path, None, None))
+        .unwrap();
+
+    let err = execute_edit(
+        &context,
+        &edit_payload(&file_path, "xxxxxxxxxxxxxxxxxxxxMORE", "changed"),
+    )
+    .unwrap_err();
+    assert!(err.contains("truncated line 1"), "{err}");
+    assert!(err.contains("per-line byte limit"), "{err}");
+}
+
+#[test]
+fn full_read_does_not_report_coverage_or_truncation() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("full.txt");
+    fs::write(&file_path, "alpha\nbeta\ngamma").unwrap();
+    let context = ToolContext::from_current_process();
+
+    read_file(&context, &file_path);
+
+    let err = execute_edit(
+        &context,
+        &edit_payload(&file_path, "not in the file", "changed"),
+    )
+    .unwrap_err();
+    assert!(!err.contains("outside that range"), "{err}");
+    assert!(!err.contains("truncated line"), "{err}");
+    assert!(
+        !err.contains("predates an earlier successful Edit"),
+        "{err}"
+    );
+}

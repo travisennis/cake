@@ -107,6 +107,10 @@ pub struct ToolContext {
     /// Resolved tool limits from `[limits]` settings. Defaults to the
     /// compiled constants; `with_limits` applies configured overrides.
     pub limits: ToolLimits,
+    /// Per-run Read history used by Edit's stale-read and coverage
+    /// diagnostics. Shared across clones so rebuilding the context for gates
+    /// preserves observations from the current run.
+    read_tracker: Arc<read_tracker::ReadTracker>,
     bash_sessions: bash_session_core::SessionRegistry,
 }
 
@@ -184,6 +188,23 @@ impl ToolContext {
         self
     }
 
+    /// Record the latest successful Read for `path` in this run.
+    pub(crate) fn record_read(&self, path: &Path, observation: read_tracker::ReadObservation) {
+        self.read_tracker.record_read(path, observation);
+    }
+
+    /// Record a successful Edit so a later Edit can warn when the file has
+    /// not been re-read since.
+    pub(crate) fn record_edit(&self, path: &Path) {
+        self.read_tracker.record_edit(path);
+    }
+
+    /// Return this run's latest Read for `path` and whether an Edit has
+    /// invalidated it.
+    pub(crate) fn read_status(&self, path: &Path) -> Option<read_tracker::ReadStatus> {
+        self.read_tracker.status(path)
+    }
+
     /// Attach resolved tool limits from the `[limits]` settings section.
     /// Absent keys already resolved to the compiled defaults inside
     /// `ToolLimits`, so this is a plain override.
@@ -246,6 +267,7 @@ impl ToolContext {
             path_grants,
             gates: None,
             limits: ToolLimits::defaults(),
+            read_tracker: Arc::new(read_tracker::ReadTracker::default()),
             bash_sessions: bash_session_core::SessionRegistry::new(
                 ToolLimits::defaults().bash_session_max,
                 ToolLimits::defaults().bash_session_output_max_bytes,
@@ -302,6 +324,7 @@ mod json_repair;
 pub(in crate::clients) mod mcp;
 mod read;
 mod read_image;
+mod read_tracker;
 mod scheduling;
 mod script_evidence;
 mod secure_temp_dir;
