@@ -204,6 +204,10 @@ jobs:
           tool: panache@3.0.0
       - run: panache format --check . --quiet
       - run: panache lint . --quiet
+      - name: Check rustdoc
+        run: cargo doc --no-deps --document-private-items
+        env:
+          RUSTDOCFLAGS: -D warnings
 
   coverage:
     name: Coverage

@@ -85,7 +85,7 @@ Examples:
 /// `cake mcp add` arguments.
 #[derive(Clone, Debug, Parser)]
 struct AddArgs {
-    /// Local name for the server; becomes part of mcp__<name>__<tool>
+    /// Local name for the server; becomes part of `mcp__<name>__<tool>`
     #[arg(value_name = "NAME")]
     name: String,
     /// Remote streamable HTTP URL (not supported by Cake)
