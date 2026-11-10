@@ -40,7 +40,7 @@ One-run modes never write a record:
 - `--trust-project` or `CAKE_TRUST_PROJECT=1` accepts the current snapshot for one invocation. Use it in CI after reviewing the checkout.
 - `--no-project-config` or `CAKE_PROJECT_CONFIG=off` ignores project `.cake/` settings, hooks, toolbox tools, MCP servers, and the automatic project prompt for one invocation. Repository content such as `AGENTS.md` and default-root skills remains untrusted model input.
 
-The two modes conflict and fail closed. When authority-bearing configuration is present and untrusted, Cake exits `3` before resolving a provider credential, running a hook, describing a toolbox tool, starting an MCP server or gate, creating a writable grant, registering a tool, or opening a session. Read-only inspection commands (`cake trust --status`, `cake debug models`, `cake debug skills`, `cake debug mcp`, `cake mcp list`, `cake mcp get`, `cake gates list`) report the state without applying authority; `cake gates doctor` and `cake bash check` enforce the trust check.
+The two modes conflict and fail closed. When authority-bearing configuration is present and untrusted, Cake exits `3` before resolving a provider credential, running a hook, describing a toolbox tool, starting an MCP server or gate, creating a writable grant, registering a tool, or opening a session. Read-only inspection commands (`cake trust --status`, `cake debug models`, `cake debug skills`, `cake debug grants`, `cake debug mcp`, `cake mcp list`, `cake mcp get`, `cake gates list`) report the state without applying authority; `cake gates doctor` and `cake bash check` enforce the trust check.
 
 ## Project scaffolding with `cake init`
 
@@ -343,6 +343,17 @@ The user skill root `~/.agents/skills` is read-write under `workspace-write`, `w
 `directories = ["~/shared"]` also expands `~` (historically the path was ignored).
 
 `--add-dir <PATH>` grants additional read-only access for one invocation and may be repeated. `--sandbox` selects `read-only`, `workspace-write`, `workspace-write-interactive`, or `danger-full-access`. `danger-full-access` removes the Bash OS sandbox but does not widen the in-process grants or disable the credential denylist. `workspace-write-interactive` is `workspace-write` plus the macOS `lsopen` and `appleevent-send` capabilities, so model-generated commands can launch and automate other applications; on Linux it behaves as `workspace-write`.
+
+Inspect the resolved grants without starting a run or creating a missing configured directory:
+
+```bash
+cake debug grants
+cake debug grants --json | jq '.data.read_write[]'
+cake debug grants --sandbox read-only --add-dir ../shared
+cake --profile review debug grants --skills debugging-cake
+```
+
+The report prints the policy and its source, every source path with its status, the effective `read_write`, `read_only`, `sandbox_writable`, `sandbox_only_read`, `denied`, and `user_grants` sets, and the file-tool and Bash projections. It uses the same grant builder as a run. A missing configured writable path appears as `would-create` and is excluded from the effective sets; the command never creates it. A missing user skill root or global config directory is reported as missing for the same reason. `--skills` and `--no-skills` select the skill grant set exactly as `debug skills` does. `--json` emits one diagnostic document; settings findings and grant path problems appear in `checks`, and `data.project_trust` reports the trust decision without applying untrusted authority.
 
 These are security decisions. See [Security](security.md) before expanding access.
 

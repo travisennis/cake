@@ -13,8 +13,10 @@ use std::path::{Path, PathBuf};
 
 use crate::clients::tools::ToolContext;
 
+mod grants_report;
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 mod grants_tests;
+pub use grants_report::{GrantReport, GrantReportInputs};
 
 // =============================================================================
 // Platform-specific implementations
@@ -59,6 +61,21 @@ pub enum SandboxPolicy {
 }
 
 impl SandboxPolicy {
+    /// The stable CLI spelling of this policy.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read-only",
+            Self::WorkspaceWrite => "workspace-write",
+            Self::WorkspaceWriteInteractive => "workspace-write-interactive",
+            Self::DangerFullAccess => "danger-full-access",
+        }
+    }
+
+    /// Whether Cake applies an OS filesystem sandbox under this policy.
+    pub const fn applies_os_sandbox(self) -> bool {
+        !matches!(self, Self::DangerFullAccess)
+    }
+
     /// Whether model-generated commands may launch and automate other
     /// applications.
     ///
@@ -72,6 +89,45 @@ impl SandboxPolicy {
     }
 }
 
+/// Where the effective sandbox policy came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SandboxPolicySource {
+    /// The explicit `--sandbox` flag.
+    Cli,
+    /// The backward-compatible `CAKE_SANDBOX=off` environment variable.
+    Environment,
+    /// The compiled default.
+    Default,
+}
+
+impl SandboxPolicySource {
+    /// The stable label used in diagnostic output.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Cli => "--sandbox",
+            Self::Environment => "CAKE_SANDBOX",
+            Self::Default => "default",
+        }
+    }
+}
+
+/// Resolve the effective sandbox policy and where it came from.
+pub fn resolve_sandbox_policy_with_source(
+    cli: Option<SandboxPolicy>,
+) -> (SandboxPolicy, SandboxPolicySource) {
+    if let Some(policy) = cli {
+        return (policy, SandboxPolicySource::Cli);
+    }
+    if is_sandbox_disabled() {
+        (
+            SandboxPolicy::DangerFullAccess,
+            SandboxPolicySource::Environment,
+        )
+    } else {
+        (SandboxPolicy::WorkspaceWrite, SandboxPolicySource::Default)
+    }
+}
+
 /// Resolve the effective sandbox policy from an optional CLI `--sandbox`
 /// value and the `CAKE_SANDBOX` environment variable.
 ///
@@ -79,14 +135,7 @@ impl SandboxPolicy {
 /// (and its aliases) maps to `DangerFullAccess` for backward compatibility;
 /// otherwise the policy defaults to `WorkspaceWrite`.
 pub fn resolve_sandbox_policy(cli: Option<SandboxPolicy>) -> SandboxPolicy {
-    if let Some(policy) = cli {
-        return policy;
-    }
-    if is_sandbox_disabled() {
-        SandboxPolicy::DangerFullAccess
-    } else {
-        SandboxPolicy::WorkspaceWrite
-    }
+    resolve_sandbox_policy_with_source(cli).0
 }
 
 // =============================================================================
@@ -249,9 +298,42 @@ impl PathGrants {
         skill_dirs: &[PathBuf],
         home: Option<&Path>,
     ) -> Self {
+        let linked_worktree_dirs = resolve_linked_worktree_dirs(cwd);
+        Self::build_with_linked_dirs(
+            policy,
+            cwd,
+            temp_dirs,
+            &linked_worktree_dirs,
+            additional_dirs,
+            settings_dirs,
+            skill_dirs,
+            home,
+        )
+    }
+
+    /// Build the grant value from resolved inputs, including linked-worktree
+    /// Git directories resolved once by the caller.
+    ///
+    /// [`Self::build`] resolves the linked-worktree directories itself. The
+    /// diagnostic report resolves them once so its source list and the
+    /// effective sets describe the same paths.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the grant inputs are the security-relevant path sources"
+    )]
+    pub(super) fn build_with_linked_dirs(
+        policy: SandboxPolicy,
+        cwd: &Path,
+        temp_dirs: &[PathBuf],
+        linked_worktree_dirs: &[PathBuf],
+        additional_dirs: &[PathBuf],
+        settings_dirs: &[PathBuf],
+        skill_dirs: &[PathBuf],
+        home: Option<&Path>,
+    ) -> Self {
         let mut read_write = vec![cwd.to_path_buf()];
         read_write.extend(temp_dirs.iter().cloned());
-        read_write.extend(resolve_linked_worktree_dirs(cwd));
+        read_write.extend(linked_worktree_dirs.iter().cloned());
         push_dirs_with_canonical(&mut read_write, settings_dirs);
         let read_write = deduplicated_with_canonical(&read_write);
 
@@ -533,6 +615,17 @@ impl SandboxConfig {
 }
 
 impl PathGrants {
+    /// Return the built-in toolchain paths before deduplication.
+    ///
+    /// The diagnostic report lists these as their own source. Keeping the
+    /// expansion in one function prevents the report from drifting from the
+    /// paths a run grants Bash.
+    fn toolchain_paths(home: &Path) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        Self::extend_with_toolchain_paths(&mut paths, home);
+        paths
+    }
+
     /// Extend the writable paths with directories needed by common toolchains
     /// and CLIs.
     ///
@@ -1244,6 +1337,39 @@ mod tests {
     use std::path::{Path, PathBuf};
     #[cfg(target_os = "macos")]
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn resolve_policy_reports_its_source_and_labels() {
+        temp_env::with_var("CAKE_SANDBOX", Some("off"), || {
+            assert_eq!(
+                super::resolve_sandbox_policy_with_source(Some(SandboxPolicy::ReadOnly)),
+                (SandboxPolicy::ReadOnly, super::SandboxPolicySource::Cli)
+            );
+            assert_eq!(
+                super::resolve_sandbox_policy_with_source(None),
+                (
+                    SandboxPolicy::DangerFullAccess,
+                    super::SandboxPolicySource::Environment
+                )
+            );
+        });
+        temp_env::with_var("CAKE_SANDBOX", None::<&str>, || {
+            assert_eq!(
+                super::resolve_sandbox_policy_with_source(None),
+                (
+                    SandboxPolicy::WorkspaceWrite,
+                    super::SandboxPolicySource::Default
+                )
+            );
+        });
+        assert_eq!(SandboxPolicy::ReadOnly.label(), "read-only");
+        assert_eq!(
+            SandboxPolicy::WorkspaceWriteInteractive.label(),
+            "workspace-write-interactive"
+        );
+        assert!(!SandboxPolicy::DangerFullAccess.applies_os_sandbox());
+        assert!(SandboxPolicy::WorkspaceWrite.applies_os_sandbox());
+    }
 
     #[test]
     fn resolve_policy_explicit_cli_wins_over_env() {

@@ -3,6 +3,7 @@ use crate::cli::{
     CHECK_MCP_CONFIG, CHECK_MCP_SERVER, CmdRunner, CommandRunOptions, DiagnosticCheck,
     DiagnosticDocument, report_failure, settings_warnings,
 };
+use crate::clients::SandboxPolicy;
 use crate::clients::mcp::connect_server;
 use crate::config::mcp::discover_mcp_servers;
 use crate::config::model::ApiType;
@@ -16,6 +17,7 @@ use serde_json::json;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+mod grants;
 mod skills_report;
 
 /// Debug and introspection commands.
@@ -24,6 +26,7 @@ mod skills_report;
 Examples:
   cake debug skills --catalog-budget 4000
   cake debug skills --json | jq '.data.skills[].name'
+  cake debug grants --json | jq '.data.read_write[]'
   cake debug models --json | jq '.data.models[].name'")]
 pub struct DebugCommand {
     #[command(subcommand)]
@@ -54,6 +57,29 @@ Examples:
         #[arg(long, default_value_t = false)]
         json: bool,
     },
+    /// Report the effective filesystem grants and their sources
+    #[command(after_help = "\
+Examples:
+  cake debug grants
+  cake debug grants --json | jq '.data.read_write[]'
+  cake debug grants --sandbox read-only --add-dir ../shared")]
+    Grants {
+        /// Select the sandbox policy to report
+        #[arg(long, value_enum)]
+        sandbox: Option<SandboxPolicy>,
+        /// Include an existing directory as a read-only grant. Can be repeated.
+        #[arg(long = "add-dir", value_name = "DIR")]
+        add_dir: Vec<String>,
+        /// Report an empty skill grant set, as for a run with --no-skills
+        #[arg(long)]
+        no_skills: bool,
+        /// Only include grants from these comma-separated skill names
+        #[arg(long, value_name = "NAMES")]
+        skills: Option<String>,
+        /// Output the grant report as one diagnostic JSON document
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
     /// Show configured models from settings.toml
     #[command(after_help = "\
 Examples:
@@ -80,11 +106,7 @@ Examples:
 }
 
 impl CmdRunner for DebugCommand {
-    async fn run(
-        &self,
-        _data_dir: &DataDir,
-        options: &CommandRunOptions<'_>,
-    ) -> anyhow::Result<()> {
+    async fn run(&self, data_dir: &DataDir, options: &CommandRunOptions<'_>) -> anyhow::Result<()> {
         // CmdRunner is asynchronous, although some commands have no async work.
         std::future::ready(()).await;
         match &self.command {
@@ -103,6 +125,21 @@ impl CmdRunner for DebugCommand {
                 options,
             ),
             DebugSubcommand::Models { json } => run_models(*json, options),
+            DebugSubcommand::Grants {
+                sandbox,
+                add_dir,
+                no_skills,
+                skills,
+                json,
+            } => grants::run_grants(
+                *sandbox,
+                add_dir,
+                *no_skills,
+                skills.as_deref(),
+                *json,
+                data_dir,
+                options,
+            ),
             DebugSubcommand::Mcp { json, mcp_config } => run_mcp(*json, mcp_config, options).await,
         }
     }

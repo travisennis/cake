@@ -81,6 +81,7 @@ Examples:
   cake sessions list --json | jq -r '.data.sessions[0].session_id'
   cake debug models --json | jq -r '.data.models[].name'
   cake debug skills --json | jq -r '.data.skills[].name'
+  cake debug grants --json | jq '.data.read_write[]'
 
 `cake <COMMAND> --help` documents the diagnostic commands and their machine-readable output.")]
 #[command(group(

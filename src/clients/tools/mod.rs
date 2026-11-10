@@ -45,9 +45,10 @@ mod bash_session;
 mod bash_session_core;
 mod sandbox;
 
+pub use sandbox::{GrantReport, GrantReportInputs, resolve_sandbox_policy_with_source};
 pub use sandbox::{SandboxPolicy, resolve_linked_worktree_dirs, resolve_sandbox_policy};
 
-fn compute_temp_directories() -> Vec<PathBuf> {
+pub fn compute_temp_directories() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
     // Include symlink path first, then canonical path.

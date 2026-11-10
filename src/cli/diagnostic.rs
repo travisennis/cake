@@ -41,6 +41,10 @@ pub const CHECK_SETTINGS_LOAD_FAILED: &str = "settings.load_failed";
 /// Check id for a skill discovery, parse, or selection diagnostic.
 pub const CHECK_SKILLS_DISCOVERY: &str = "skills.discovery_failed";
 
+/// Check id for a configured grant source path that is missing, invalid, or
+/// could not be inspected.
+pub const CHECK_GRANTS_PATH: &str = "grants.path_problem";
+
 /// Check id for authority-bearing project configuration that was not trusted.
 pub const CHECK_SKILLS_PROJECT_TRUST: &str = "skills.project_trust";
 

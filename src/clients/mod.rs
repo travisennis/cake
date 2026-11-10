@@ -31,6 +31,9 @@ pub use tools::ToolContext;
 pub use tools::format_tool_list_section_with_mcp;
 pub use tools::tool_search_enabled;
 pub use tools::{ExternalServerInfo, ExternalToolInfo};
+pub use tools::{
+    GrantReport, GrantReportInputs, compute_temp_directories, resolve_sandbox_policy_with_source,
+};
 pub use tools::{SandboxPolicy, resolve_linked_worktree_dirs, resolve_sandbox_policy};
 
 /// Re-exported so hook payloads parse tool arguments through the same repair
