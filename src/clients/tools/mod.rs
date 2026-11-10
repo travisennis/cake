@@ -1949,6 +1949,128 @@ pub fn effective_builtin_tool_names(
     registry.names()
 }
 
+/// Why a built-in tool is absent from the effective registry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BuiltinToolFilterReason {
+    /// The read-only sandbox policy removes every tool that can mutate.
+    ReadOnlyPolicy,
+    /// The resolved model cannot accept image input.
+    ModelLacksImageSupport,
+    /// The exact-name selection does not include the tool.
+    NotSelected,
+    /// `--no-tools` selected no tools.
+    NoTools,
+}
+
+impl BuiltinToolFilterReason {
+    /// Human- and machine-readable label for the filter.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ReadOnlyPolicy => "read-only policy",
+            Self::ModelLacksImageSupport => "model has no image support",
+            Self::NotSelected => "not in --tools",
+            Self::NoTools => "--no-tools",
+        }
+    }
+}
+
+/// One built-in tool's effective status for a read-only inventory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BuiltinToolInventoryEntry {
+    /// Built-in tool name.
+    pub name: &'static str,
+    /// Whether a run would expose the tool.
+    pub enabled: bool,
+    /// The first filter that removed the tool, when it is disabled.
+    pub reason: Option<BuiltinToolFilterReason>,
+}
+
+/// Report every built-in tool after the same filters a run applies.
+///
+/// Unlike [`effective_builtin_tool_names`], this keeps the filtered tools so a
+/// read-only diagnostic can explain why each one is unavailable. The filters
+/// run in the same order as an agent: model capability, read-only sandbox
+/// policy, then exact-name selection.
+pub fn builtin_tool_inventory(
+    sandbox_policy: SandboxPolicy,
+    supports_images: bool,
+    enabled_tools: Option<&[String]>,
+) -> Vec<BuiltinToolInventoryEntry> {
+    let mut registry = default_tool_registry();
+    let mut filtered = Vec::new();
+
+    let before = registry.names();
+    registry.retain_model_supported_tools(supports_images);
+    record_removed_builtins(
+        &mut filtered,
+        &before,
+        &registry.names(),
+        BuiltinToolFilterReason::ModelLacksImageSupport,
+    );
+
+    if sandbox_policy == SandboxPolicy::ReadOnly {
+        let before = registry.names();
+        registry.retain_read_safe_tools();
+        record_removed_builtins(
+            &mut filtered,
+            &before,
+            &registry.names(),
+            BuiltinToolFilterReason::ReadOnlyPolicy,
+        );
+    }
+
+    if let Some(enabled_tools) = enabled_tools {
+        let before = registry.names();
+        apply_enabled_tool_selection(&mut registry, Some(enabled_tools));
+        let reason = if enabled_tools.is_empty() {
+            BuiltinToolFilterReason::NoTools
+        } else {
+            BuiltinToolFilterReason::NotSelected
+        };
+        record_removed_builtins(&mut filtered, &before, &registry.names(), reason);
+    }
+
+    let enabled_names = registry.names();
+    BUILTIN_TOOL_NAMES
+        .iter()
+        .map(|name| {
+            let enabled = enabled_names
+                .iter()
+                .any(|enabled_name| enabled_name.as_str() == *name);
+            let reason = if enabled {
+                None
+            } else {
+                filtered.iter().find_map(|(filtered_name, reason)| {
+                    (*filtered_name == *name).then_some(*reason)
+                })
+            };
+            BuiltinToolInventoryEntry {
+                name,
+                enabled,
+                reason,
+            }
+        })
+        .collect()
+}
+
+/// Record the built-ins one registry filter removed, preserving the first
+/// reason when a later filter would have removed the same tool again.
+fn record_removed_builtins(
+    filtered: &mut Vec<(&'static str, BuiltinToolFilterReason)>,
+    before: &[String],
+    after: &[String],
+    reason: BuiltinToolFilterReason,
+) {
+    for name in BUILTIN_TOOL_NAMES {
+        let was_present = before.iter().any(|present| present.as_str() == *name);
+        let is_present = after.iter().any(|present| present.as_str() == *name);
+        if was_present && !is_present {
+            filtered.push((name, reason));
+        }
+    }
+}
+
 /// Returns the default tool registry.
 ///
 /// Each entry declares its capabilities here; scheduling, sandbox filtering,
@@ -3182,5 +3304,90 @@ mod tests {
         let no_tools =
             format_tool_list_section(SandboxPolicy::WorkspaceWrite, &[], Some(&[]), true);
         assert!(!no_tools.contains("optional `intent` string"));
+    }
+
+    fn inventory_entry<'a>(
+        inventory: &'a [BuiltinToolInventoryEntry],
+        name: &str,
+    ) -> &'a BuiltinToolInventoryEntry {
+        inventory
+            .iter()
+            .find(|entry| entry.name == name)
+            .expect("built-in inventory must list every built-in")
+    }
+
+    #[test]
+    fn builtin_inventory_lists_all_tools_in_stable_order() {
+        let inventory = builtin_tool_inventory(SandboxPolicy::WorkspaceWrite, true, None);
+        let names: Vec<&str> = inventory.iter().map(|entry| entry.name).collect();
+
+        assert_eq!(
+            names,
+            vec!["Bash", "BashSession", "Read", "ReadImage", "Edit", "Write"]
+        );
+        assert!(inventory.iter().all(|entry| entry.enabled));
+        assert!(inventory.iter().all(|entry| entry.reason.is_none()));
+    }
+
+    #[test]
+    fn builtin_inventory_reports_read_only_filters() {
+        let inventory = builtin_tool_inventory(SandboxPolicy::ReadOnly, true, None);
+
+        for name in ["Bash", "BashSession", "Edit", "Write"] {
+            let entry = inventory_entry(&inventory, name);
+            assert!(!entry.enabled, "{name} must be filtered under read-only");
+            assert_eq!(entry.reason, Some(BuiltinToolFilterReason::ReadOnlyPolicy));
+        }
+        assert!(inventory_entry(&inventory, "Read").enabled);
+        assert!(inventory_entry(&inventory, "ReadImage").enabled);
+    }
+
+    #[test]
+    fn builtin_inventory_reports_model_image_support() {
+        let inventory = builtin_tool_inventory(SandboxPolicy::WorkspaceWrite, false, None);
+        let read_image = inventory_entry(&inventory, "ReadImage");
+
+        assert!(!read_image.enabled);
+        assert_eq!(
+            read_image.reason,
+            Some(BuiltinToolFilterReason::ModelLacksImageSupport)
+        );
+        assert!(inventory_entry(&inventory, "Read").enabled);
+    }
+
+    #[test]
+    fn builtin_inventory_reports_exact_name_selection() {
+        let selected = vec!["Read".to_string()];
+        let inventory =
+            builtin_tool_inventory(SandboxPolicy::WorkspaceWrite, true, Some(&selected));
+
+        assert!(inventory_entry(&inventory, "Read").enabled);
+        for name in ["Bash", "BashSession", "ReadImage", "Edit", "Write"] {
+            let entry = inventory_entry(&inventory, name);
+            assert!(!entry.enabled, "{name} must not survive --tools Read");
+            assert_eq!(entry.reason, Some(BuiltinToolFilterReason::NotSelected));
+        }
+    }
+
+    #[test]
+    fn builtin_inventory_keeps_bash_session_with_bash_selection() {
+        let selected = vec!["Bash".to_string()];
+        let inventory =
+            builtin_tool_inventory(SandboxPolicy::WorkspaceWrite, true, Some(&selected));
+
+        assert!(inventory_entry(&inventory, "Bash").enabled);
+        assert!(inventory_entry(&inventory, "BashSession").enabled);
+    }
+
+    #[test]
+    fn builtin_inventory_reports_no_tools() {
+        let inventory = builtin_tool_inventory(SandboxPolicy::WorkspaceWrite, true, Some(&[]));
+
+        assert!(inventory.iter().all(|entry| !entry.enabled));
+        assert!(
+            inventory
+                .iter()
+                .all(|entry| entry.reason == Some(BuiltinToolFilterReason::NoTools))
+        );
     }
 }

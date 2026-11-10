@@ -109,6 +109,10 @@ pub const CHECK_SESSION_LOGS_UNREADABLE: &str = "session.logs_unreadable";
 /// transcript task.
 pub const CHECK_SESSION_INVOCATION_UNMATCHED: &str = "session.invocation_unmatched";
 
+/// Check id for an exact-name tool selection entry that resolves to no known
+/// built-in, toolbox, or MCP source.
+pub const CHECK_TOOLS_SELECTION: &str = "tools.unknown_selection";
+
 /// Check id for an MCP configuration problem or a skipped server definition.
 pub const CHECK_MCP_CONFIG: &str = "mcp.config_invalid";
 

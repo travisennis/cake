@@ -40,7 +40,7 @@ One-run modes never write a record:
 - `--trust-project` or `CAKE_TRUST_PROJECT=1` accepts the current snapshot for one invocation. Use it in CI after reviewing the checkout.
 - `--no-project-config` or `CAKE_PROJECT_CONFIG=off` ignores project `.cake/` settings, hooks, toolbox tools, MCP servers, and the automatic project prompt for one invocation. Repository content such as `AGENTS.md` and default-root skills remains untrusted model input.
 
-The two modes conflict and fail closed. When authority-bearing configuration is present and untrusted, Cake exits `3` before resolving a provider credential, running a hook, describing a toolbox tool, starting an MCP server or gate, creating a writable grant, registering a tool, or opening a session. Read-only inspection commands (`cake trust --status`, `cake doctor`, `cake debug config`, `cake debug session`, `cake debug models`, `cake debug skills`, `cake debug grants`, `cake debug mcp`, `cake mcp list`, `cake mcp get`, `cake gates list`) report the state without applying authority; `cake gates doctor` and `cake bash check` enforce the trust check.
+The two modes conflict and fail closed. When authority-bearing configuration is present and untrusted, Cake exits `3` before resolving a provider credential, running a hook, describing a toolbox tool, starting an MCP server or gate, creating a writable grant, registering a tool, or opening a session. Read-only inspection commands (`cake trust --status`, `cake doctor`, `cake debug config`, `cake debug session`, `cake debug models`, `cake debug skills`, `cake debug grants`, `cake debug tools`, `cake debug mcp`, `cake mcp list`, `cake mcp get`, `cake gates list`) report the state without applying authority; `cake gates doctor` and `cake bash check` enforce the trust check.
 
 ## Settings health with `cake doctor`
 
@@ -72,6 +72,24 @@ The report covers the settings sources and whether project authority was applied
 Inspection never resolves a provider credential, calls a provider, runs a hook, gate, MCP server, or toolbox executable, creates a configured writable directory or the user skill root, or opens a session. Untrusted project authority is reported but not applied; `--trust-project` accepts it for one report, and `--no-project-config` omits it. Local `--sandbox`, `--add-dir`, `--skills`, `--no-skills`, `--tools`, `--no-tools`, and `--toolbox` flags describe a one-run choice without changing defaults.
 
 `--json` emits one versioned diagnostic document. Settings findings, project-trust findings, skill diagnostics, grant path problems, hook parse failures, and an unavailable `--model` choice appear in `checks`; `data.project_trust` carries `state`, `mode`, `one_run`, `authority`, and `changes`; and `data.grants` is the same effective grant payload `debug grants` reports. Warnings exit `0`. A settings file that cannot be loaded is an error document and exits `3`, like the other settings-reading inspection commands.
+
+## Tool inventory
+
+Inspect the effective tool surface without starting an agent, provider, hook, gate, toolbox process, or MCP server:
+
+```bash
+cake debug tools
+cake debug tools --json | jq '.data.builtins[] | select(.status == "filtered")'
+cake debug tools --tools Read
+cake debug tools --no-tools
+cake debug tools --sandbox read-only
+```
+
+The report resolves the same inputs as a run: the selected model and its image capability, the sandbox policy and its source, the exact-name selection from `--tools`/`--no-tools` or `[tools].enabled`, toolbox directories, and MCP configuration. It lists `Bash`, `BashSession`, `Read`, `ReadImage`, `Edit`, and `Write` as `enabled` or `filtered` with the first filter that removed each one (`model has no image support`, `read-only policy`, `not in --tools`, or `--no-tools`). It reports `ToolSearch` as `conditional` when a configured deferred MCP server could install it, or `absent` with the reason. When a non-empty exact-name selection excludes `ToolSearch`, `data.tool_search.fallback` is `direct`, because permitted deferred tools are registered directly. `--no-tools` reports `ToolSearch` as absent with no fallback.
+
+Toolbox directories and executable candidates come from the same discovery helpers a run uses, with the source directory, executable path, and `unprobed` status; MCP servers are listed with source, command, exposure, and `unprobed` status. The command never runs toolbox `describe`, connects to an MCP server, or prints MCP environment values. Under `read-only`, both external source kinds are reported as unavailable without being started. Selected names that match no known built-in, toolbox, or MCP source appear as `tools.unknown_selection` warnings and never as enabled tools.
+
+`--json` emits one diagnostic document with `command: "debug tools"`; settings, project-trust, and MCP discovery findings appear in `checks`. Gate readiness is not probed: a run-time gate startup failure can additionally remove `Bash` and `BashSession`. Run `cake debug mcp` for the connected MCP tool inventory.
 
 ## Project scaffolding with `cake init`
 
@@ -490,7 +508,7 @@ Toolbox directories are scanned in this order: entries from `CAKE_TOOLBOX`, the 
 
 Each executable implements a describe and execute protocol. Valid tools are registered for the model with a `tb__` prefix. Project-local `.cake/tools` executables are trusted project configuration, are discovered automatically only after the project trust record matches, and are filtered out by `--no-project-config`; inspect or remove them before running a trusted checkout with a writable sandbox. Broken tools are skipped with a warning rather than blocking startup.
 
-Toolbox executables are trusted and unsandboxed. Under `read-only`, Cake skips toolbox discovery entirely so even the describe action cannot mutate the workspace. See [Integrations](integrations.md) for the protocol and [Security](security.md) for the trust boundary.
+Toolbox executables are trusted and unsandboxed. Under `read-only`, Cake skips toolbox discovery entirely so even the describe action cannot mutate the workspace. `cake debug tools` lists discovered directories and candidates, and their status, without running `describe`. See [Integrations](integrations.md) for the protocol and [Security](security.md) for the trust boundary.
 
 ## MCP servers
 
@@ -552,7 +570,7 @@ cake debug mcp --json           # diagnostic document
 cake debug mcp --mcp-config ./mcp.json
 ```
 
-`cake debug mcp` reports a `hidden` server without connecting, and reports `description` and `exposure` for every entry.
+`cake debug mcp` reports a `hidden` server without connecting, and reports `description` and `exposure` for every entry. `cake debug tools` lists the configured MCP sources and their exposure without connecting either; see [Tool inventory](#tool-inventory).
 
 Safari 27 exposes its developer automation this way. Enable Develop settings and "Allow remote automation and external agents", add the `safari-mcp` entry above, and run `cake debug mcp` to confirm the connection.
 

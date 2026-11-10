@@ -21,6 +21,7 @@ mod config_report;
 pub mod grants;
 mod session_report;
 mod skills_report;
+mod tools_report;
 
 pub use session_report::SessionDiagnosticError;
 
@@ -34,7 +35,8 @@ Examples:
   cake debug skills --catalog-budget 4000
   cake debug skills --json | jq '.data.skills[].name'
   cake debug grants --json | jq '.data.read_write[]'
-  cake debug models --json | jq '.data.models[].name'")]
+  cake debug models --json | jq '.data.models[].name'
+  cake debug tools --json | jq '.data.builtins[] | select(.status == \"filtered\")'")]
 pub struct DebugCommand {
     #[command(subcommand)]
     command: DebugSubcommand,
@@ -139,6 +141,28 @@ Examples:
         #[arg(long, default_value_t = false)]
         json: bool,
     },
+    /// Report the effective tool surface without starting external processes
+    #[command(after_help = "\
+Examples:
+  cake debug tools
+  cake debug tools --json | jq '.data.builtins[] | select(.status == \"filtered\")'
+  cake debug tools --tools Read
+  cake debug tools --no-tools
+  cake debug tools --sandbox read-only")]
+    Tools {
+        /// Select the sandbox policy to report
+        #[arg(long, value_enum)]
+        sandbox: Option<SandboxPolicy>,
+        /// Report no model-visible tools, as for a run with --no-tools
+        #[arg(long)]
+        no_tools: bool,
+        /// Only report these comma-separated tool names
+        #[arg(long, value_name = "NAMES")]
+        tools: Option<String>,
+        /// Output the tool inventory as one diagnostic JSON document
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
     /// Show configured models from settings.toml
     #[command(after_help = "\
 Examples:
@@ -222,6 +246,12 @@ impl CmdRunner for DebugCommand {
                 options,
             ),
             DebugSubcommand::Models { json } => run_models(*json, options),
+            DebugSubcommand::Tools {
+                sandbox,
+                no_tools,
+                tools,
+                json,
+            } => tools_report::run_tools(*sandbox, *no_tools, tools.as_deref(), *json, options),
             DebugSubcommand::Grants {
                 sandbox,
                 add_dir,

@@ -40,8 +40,8 @@ pub use diagnostic::{
     CHECK_SESSION_TELEMETRY_UNREADABLE, CHECK_SESSION_TRANSCRIPT_CORRUPT,
     CHECK_SESSION_TRANSCRIPT_UNREADABLE, CHECK_SESSIONS_CHECKPOINT, CHECK_SESSIONS_DIRECTORY,
     CHECK_SESSIONS_DISCOVERY, CHECK_SETTINGS_LOAD_FAILED, CHECK_SKILLS_DISCOVERY,
-    CHECK_SKILLS_PROJECT_TRUST, DiagnosticCheck, DiagnosticDocument, report_failure,
-    settings_warnings,
+    CHECK_SKILLS_PROJECT_TRUST, CHECK_TOOLS_SELECTION, DiagnosticCheck, DiagnosticDocument,
+    report_failure, settings_warnings,
 };
 pub use doctor::DoctorCommand;
 pub use gates::GatesCommand;
