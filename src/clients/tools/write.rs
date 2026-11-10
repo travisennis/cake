@@ -1,4 +1,5 @@
 use crate::clients::tools::ToolContext;
+use crate::clients::tools::file_replace::replace_file;
 use serde::Deserialize;
 
 // =============================================================================
@@ -83,8 +84,9 @@ pub(super) fn execute_write(
             .map_err(|e| format!("Failed to create directories '{}': {e}", parent.display()))?;
     }
 
-    // Write content to file
-    std::fs::write(&path, &args.content)
+    // Publish the complete replacement through a staged sibling so a failed
+    // preparation leaves an existing file untouched.
+    replace_file(&path, args.content.as_bytes())
         .map_err(|e| format!("Failed to write file '{}': {e}", path.display()))?;
 
     let bytes_written = args.content.len();
@@ -119,10 +121,25 @@ pub(super) fn execute_write(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clients::tools::file_replace::{ReplacePhase, stage_residue, with_test_hook};
     use std::ffi::{OsStr, OsString};
     use std::fs;
     use std::path::{Path, PathBuf};
     use tempfile::TempDir;
+
+    fn assert_no_replacement_stage(dir: &Path) {
+        let residue = stage_residue(dir);
+        assert!(
+            residue.is_empty(),
+            "staged replacement residue: {residue:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    fn mode_bits(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
 
     /// Lexically normalise a path by resolving `.` and `..` components without
     /// touching the filesystem.
@@ -210,6 +227,145 @@ mod tests {
 
         let content = fs::read_to_string(&file_path).unwrap();
         assert_eq!(content, "new content");
+    }
+
+    #[test]
+    fn failed_replacement_preserves_existing_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("existing.txt");
+        fs::write(&file_path, "old content").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&file_path, fs::Permissions::from_mode(0o640)).unwrap();
+        }
+
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "content": "new content"
+        })
+        .to_string();
+
+        let result = with_test_hook(
+            |phase, _stage| {
+                if phase == ReplacePhase::BeforePublish {
+                    Err(std::io::Error::other("injected replacement failure"))
+                } else {
+                    Ok(())
+                }
+            },
+            || execute_write(&ToolContext::from_current_process(), &args),
+        );
+
+        let error = result.unwrap_err();
+        assert!(error.contains("Failed to write file"), "{error}");
+        assert!(error.contains("injected replacement failure"), "{error}");
+        assert_eq!(fs::read_to_string(&file_path).unwrap(), "old content");
+        #[cfg(unix)]
+        assert_eq!(mode_bits(&file_path), 0o640);
+        assert_no_replacement_stage(temp_dir.path());
+    }
+
+    #[test]
+    fn failed_replacement_does_not_create_new_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("new.txt");
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "content": "new content"
+        })
+        .to_string();
+
+        let result = with_test_hook(
+            |phase, _stage| {
+                if phase == ReplacePhase::BeforePublish {
+                    Err(std::io::Error::other("injected replacement failure"))
+                } else {
+                    Ok(())
+                }
+            },
+            || execute_write(&ToolContext::from_current_process(), &args),
+        );
+
+        let error = result.unwrap_err();
+        assert!(error.contains("injected replacement failure"), "{error}");
+        assert!(!file_path.exists());
+        assert_no_replacement_stage(temp_dir.path());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn successful_replacement_preserves_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("existing.txt");
+        fs::write(&file_path, "old content").unwrap();
+        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o640)).unwrap();
+
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "content": "new content"
+        })
+        .to_string();
+
+        execute_write(&ToolContext::from_current_process(), &args).unwrap();
+
+        assert_eq!(fs::read_to_string(&file_path).unwrap(), "new content");
+        assert_eq!(mode_bits(&file_path), 0o640);
+        assert_no_replacement_stage(temp_dir.path());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_hard_linked_target() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("existing.txt");
+        let link_path = temp_dir.path().join("link.txt");
+        fs::write(&file_path, "old content").unwrap();
+        fs::hard_link(&file_path, &link_path).unwrap();
+
+        let args = serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "content": "new content"
+        })
+        .to_string();
+
+        let error = execute_write(&ToolContext::from_current_process(), &args).unwrap_err();
+
+        assert!(error.contains("hard links"), "{error}");
+        assert_eq!(fs::read_to_string(&file_path).unwrap(), "old content");
+        assert_eq!(fs::read_to_string(&link_path).unwrap(), "old content");
+        assert_no_replacement_stage(temp_dir.path());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn overwrites_symlink_target_without_replacing_the_link() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("existing.txt");
+        let link_path = temp_dir.path().join("link.txt");
+        fs::write(&file_path, "old content").unwrap();
+        symlink(&file_path, &link_path).unwrap();
+
+        let args = serde_json::json!({
+            "path": link_path.to_str().unwrap(),
+            "content": "new content"
+        })
+        .to_string();
+
+        execute_write(&ToolContext::from_current_process(), &args).unwrap();
+
+        assert_eq!(fs::read_to_string(&file_path).unwrap(), "new content");
+        assert!(
+            fs::symlink_metadata(&link_path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_no_replacement_stage(temp_dir.path());
     }
 
     #[test]

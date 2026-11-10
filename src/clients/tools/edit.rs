@@ -5,6 +5,7 @@ use std::path::Path;
 
 use crate::clients::tools::{
     ToolContext, contains_null_byte, decode_utf8,
+    file_replace::replace_file,
     read_tracker::{ReadObservation, ReadStatus},
     repair_json_args, resolve_path_for_write_scheduling, validate_path_for_write,
 };
@@ -220,8 +221,9 @@ pub(super) fn execute_edit(
     // Restore BOM if it was present
     let new_content = restore_bom(new_content, bom);
 
-    // Write the modified content back
-    std::fs::write(&path, &new_content)
+    // Publish the complete replacement through a staged sibling so a failed
+    // preparation leaves the original file untouched.
+    replace_file(&path, new_content.as_bytes())
         .map_err(|e| format!("Failed to write file '{}': {e}", path.display()))?;
     tool_context.record_edit(&path);
 

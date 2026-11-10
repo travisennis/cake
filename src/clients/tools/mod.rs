@@ -320,6 +320,7 @@ mod bash;
 pub mod bash_gate_fixture;
 mod edit;
 mod file_access;
+mod file_replace;
 mod json_repair;
 pub(in crate::clients) mod mcp;
 mod read;

@@ -1,6 +1,22 @@
 use super::*;
+use crate::clients::tools::file_replace::{ReplacePhase, stage_residue, with_test_hook};
 use std::fs;
+use std::path::Path;
 use tempfile::TempDir;
+
+fn assert_no_replacement_stage(dir: &Path) {
+    let residue = stage_residue(dir);
+    assert!(
+        residue.is_empty(),
+        "staged replacement residue: {residue:?}"
+    );
+}
+
+#[cfg(unix)]
+fn mode_bits(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path).unwrap().permissions().mode() & 0o777
+}
 
 // =========================================================================
 // Multiple Edits Tests
@@ -1620,4 +1636,120 @@ fn full_read_does_not_report_coverage_or_truncation() {
         !err.contains("predates an earlier successful Edit"),
         "{err}"
     );
+}
+
+#[test]
+fn failed_replacement_preserves_original_file() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("original.txt");
+    fs::write(&file_path, "alpha\nbeta\ngamma\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o640)).unwrap();
+    }
+
+    let context = ToolContext::from_current_process();
+    let result = with_test_hook(
+        |phase, _stage| {
+            if phase == ReplacePhase::AfterPartialWrite {
+                Err(std::io::Error::other("injected replacement failure"))
+            } else {
+                Ok(())
+            }
+        },
+        || execute_edit(&context, &edit_payload(&file_path, "beta", "BETA")),
+    );
+
+    let error = result.unwrap_err();
+    assert!(error.contains("Failed to write file"), "{error}");
+    assert!(error.contains("injected replacement failure"), "{error}");
+    assert_eq!(
+        fs::read_to_string(&file_path).unwrap(),
+        "alpha\nbeta\ngamma\n"
+    );
+    #[cfg(unix)]
+    assert_eq!(mode_bits(&file_path), 0o640);
+    assert_no_replacement_stage(temp_dir.path());
+}
+
+#[cfg(unix)]
+#[test]
+fn successful_edit_preserves_mode() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("original.txt");
+    fs::write(&file_path, "alpha\nbeta\ngamma\n").unwrap();
+    fs::set_permissions(&file_path, fs::Permissions::from_mode(0o640)).unwrap();
+
+    execute_edit(
+        &ToolContext::from_current_process(),
+        &edit_payload(&file_path, "beta", "BETA"),
+    )
+    .unwrap();
+
+    assert_eq!(
+        fs::read_to_string(&file_path).unwrap(),
+        "alpha\nBETA\ngamma\n"
+    );
+    assert_eq!(mode_bits(&file_path), 0o640);
+    assert_no_replacement_stage(temp_dir.path());
+}
+
+#[cfg(unix)]
+#[test]
+fn edit_rejects_hard_linked_target() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("original.txt");
+    let link_path = temp_dir.path().join("link.txt");
+    fs::write(&file_path, "alpha\nbeta\ngamma\n").unwrap();
+    fs::hard_link(&file_path, &link_path).unwrap();
+
+    let error = execute_edit(
+        &ToolContext::from_current_process(),
+        &edit_payload(&file_path, "beta", "BETA"),
+    )
+    .unwrap_err();
+
+    assert!(error.contains("hard links"), "{error}");
+    assert_eq!(
+        fs::read_to_string(&file_path).unwrap(),
+        "alpha\nbeta\ngamma\n"
+    );
+    assert_eq!(
+        fs::read_to_string(&link_path).unwrap(),
+        "alpha\nbeta\ngamma\n"
+    );
+    assert_no_replacement_stage(temp_dir.path());
+}
+
+#[cfg(unix)]
+#[test]
+fn edit_follows_symlink_without_replacing_the_link() {
+    use std::os::unix::fs::symlink;
+
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("original.txt");
+    let link_path = temp_dir.path().join("link.txt");
+    fs::write(&file_path, "alpha\nbeta\ngamma\n").unwrap();
+    symlink(&file_path, &link_path).unwrap();
+
+    execute_edit(
+        &ToolContext::from_current_process(),
+        &edit_payload(&link_path, "beta", "BETA"),
+    )
+    .unwrap();
+
+    assert_eq!(
+        fs::read_to_string(&file_path).unwrap(),
+        "alpha\nBETA\ngamma\n"
+    );
+    assert!(
+        fs::symlink_metadata(&link_path)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_no_replacement_stage(temp_dir.path());
 }
