@@ -79,6 +79,7 @@ Examples:
   cake --output-format json \"list the failing tests\" | jq -r '.result'
   cake --model zen --sandbox read-only \"explain src/main.rs\"
   cake sessions list --json | jq -r '.data.sessions[0].session_id'
+  cake debug config --json | jq '.data.model'
   cake debug models --json | jq -r '.data.models[].name'
   cake debug skills --json | jq -r '.data.skills[].name'
   cake debug grants --json | jq '.data.read_write[]'

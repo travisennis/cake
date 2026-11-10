@@ -28,6 +28,7 @@ mod tools;
 pub use agent::Agent;
 #[doc(inline)]
 pub use tools::ToolContext;
+pub use tools::effective_builtin_tool_names;
 pub use tools::format_tool_list_section_with_mcp;
 pub use tools::tool_search_enabled;
 pub use tools::{ExternalServerInfo, ExternalToolInfo};

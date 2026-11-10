@@ -45,6 +45,16 @@ pub const CHECK_SKILLS_DISCOVERY: &str = "skills.discovery_failed";
 /// could not be inspected.
 pub const CHECK_GRANTS_PATH: &str = "grants.path_problem";
 
+/// Check id for a selected model name that the loaded settings do not define.
+pub const CHECK_CONFIG_MODEL: &str = "config.model_unavailable";
+
+/// Check id for a hook file that could not be read or parsed.
+pub const CHECK_CONFIG_HOOKS: &str = "config.hooks_invalid";
+
+/// Check id for authority-bearing project configuration that was not trusted
+/// during a configuration report.
+pub const CHECK_CONFIG_PROJECT_TRUST: &str = "config.project_trust";
+
 /// Check id for authority-bearing project configuration that was not trusted.
 pub const CHECK_SKILLS_PROJECT_TRUST: &str = "skills.project_trust";
 
@@ -81,6 +91,18 @@ pub enum DiagnosticStatus {
     Warning,
     /// The invocation reported a problem and exits nonzero.
     Error,
+}
+
+impl DiagnosticStatus {
+    /// A stable label for human-readable diagnostics.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Warning => "warning",
+            Self::Error => "error",
+        }
+    }
 }
 
 /// One structured finding in a diagnostic document.

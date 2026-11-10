@@ -1928,6 +1928,27 @@ fn is_enabled_tool(name: &str, enabled_tools: Option<&[String]>) -> bool {
     enabled_tools.is_none_or(|names| names.iter().any(|enabled| enabled == name))
 }
 
+/// Return the built-in tool names a run would expose before external tools are
+/// registered.
+///
+/// Applies the same model-capability, sandbox-policy, and exact-name filters as
+/// [`Agent::new`] and [`Agent::with_tool_context`]. Toolbox and MCP tools are
+/// not included: their names require a `describe` or server handshake, which a
+/// read-only configuration report must not execute.
+pub fn effective_builtin_tool_names(
+    sandbox_policy: SandboxPolicy,
+    supports_images: bool,
+    enabled_tools: Option<&[String]>,
+) -> Vec<String> {
+    let mut registry = default_tool_registry();
+    registry.retain_model_supported_tools(supports_images);
+    if sandbox_policy == SandboxPolicy::ReadOnly {
+        registry.retain_read_safe_tools();
+    }
+    apply_enabled_tool_selection(&mut registry, enabled_tools);
+    registry.names()
+}
+
 /// Returns the default tool registry.
 ///
 /// Each entry declares its capabilities here; scheduling, sandbox filtering,

@@ -40,7 +40,24 @@ One-run modes never write a record:
 - `--trust-project` or `CAKE_TRUST_PROJECT=1` accepts the current snapshot for one invocation. Use it in CI after reviewing the checkout.
 - `--no-project-config` or `CAKE_PROJECT_CONFIG=off` ignores project `.cake/` settings, hooks, toolbox tools, MCP servers, and the automatic project prompt for one invocation. Repository content such as `AGENTS.md` and default-root skills remains untrusted model input.
 
-The two modes conflict and fail closed. When authority-bearing configuration is present and untrusted, Cake exits `3` before resolving a provider credential, running a hook, describing a toolbox tool, starting an MCP server or gate, creating a writable grant, registering a tool, or opening a session. Read-only inspection commands (`cake trust --status`, `cake debug models`, `cake debug skills`, `cake debug grants`, `cake debug mcp`, `cake mcp list`, `cake mcp get`, `cake gates list`) report the state without applying authority; `cake gates doctor` and `cake bash check` enforce the trust check.
+The two modes conflict and fail closed. When authority-bearing configuration is present and untrusted, Cake exits `3` before resolving a provider credential, running a hook, describing a toolbox tool, starting an MCP server or gate, creating a writable grant, registering a tool, or opening a session. Read-only inspection commands (`cake trust --status`, `cake debug config`, `cake debug models`, `cake debug skills`, `cake debug grants`, `cake debug mcp`, `cake mcp list`, `cake mcp get`, `cake gates list`) report the state without applying authority; `cake gates doctor` and `cake bash check` enforce the trust check.
+
+## Effective configuration
+
+Inspect what a run in the current directory would resolve without starting one:
+
+```bash
+cake debug config
+cake debug config --json | jq '.data.model'
+cake --profile review debug config --sandbox read-only --add-dir ../shared
+cake debug config --skills debugging-cake --tools Read
+```
+
+The report covers the settings sources and whether project authority was applied, the effective directories, sandbox lists, skill selection, tool selection, limits, and judge settings; the selected profile and model, including the credential environment variable name and whether it is present, never its value; the selected system prompt source and path, never its body; the project trust state, mode, authority-bearing files and keys, and manifest changes; the sandbox policy and effective grant counts; the built-in tool set after model, sandbox, and selection filters; selected and filtered skills with diagnostics; hook sources and group metadata with command text omitted; and toolbox directories with executable candidates and no `describe` call. Run `cake debug grants` when you need every grant source and the complete read-only set.
+
+Inspection never resolves a provider credential, calls a provider, runs a hook, gate, MCP server, or toolbox executable, creates a configured writable directory or the user skill root, or opens a session. Untrusted project authority is reported but not applied; `--trust-project` accepts it for one report, and `--no-project-config` omits it. Local `--sandbox`, `--add-dir`, `--skills`, `--no-skills`, `--tools`, `--no-tools`, and `--toolbox` flags describe a one-run choice without changing defaults.
+
+`--json` emits one versioned diagnostic document. Settings findings, project-trust findings, skill diagnostics, grant path problems, hook parse failures, and an unavailable `--model` choice appear in `checks`; `data.project_trust` carries `state`, `mode`, `one_run`, `authority`, and `changes`; and `data.grants` is the same effective grant payload `debug grants` reports. Warnings exit `0`. A settings file that cannot be loaded is an error document and exits `3`, like the other settings-reading inspection commands.
 
 ## Project scaffolding with `cake init`
 

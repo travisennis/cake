@@ -17,6 +17,7 @@ use serde_json::json;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+mod config_report;
 mod grants;
 mod skills_report;
 
@@ -24,6 +25,8 @@ mod skills_report;
 #[derive(Clone, Debug, Parser)]
 #[command(after_help = "\
 Examples:
+  cake debug config
+  cake debug config --json | jq '.data.model'
   cake debug skills --catalog-budget 4000
   cake debug skills --json | jq '.data.skills[].name'
   cake debug grants --json | jq '.data.read_write[]'
@@ -35,6 +38,38 @@ pub struct DebugCommand {
 
 #[derive(Clone, Debug, Subcommand)]
 enum DebugSubcommand {
+    /// Report the effective runtime configuration and project trust
+    #[command(after_help = "\
+Examples:
+  cake debug config
+  cake debug config --json | jq '.data.model'
+  cake debug config --sandbox read-only --add-dir ../shared")]
+    Config {
+        /// Select the sandbox policy to report
+        #[arg(long, value_enum)]
+        sandbox: Option<SandboxPolicy>,
+        /// Include an existing directory as a read-only grant. Can be repeated.
+        #[arg(long = "add-dir", value_name = "DIR")]
+        add_dir: Vec<String>,
+        /// Report an empty skill set, as for a run with --no-skills
+        #[arg(long)]
+        no_skills: bool,
+        /// Only include these comma-separated skill names
+        #[arg(long, value_name = "NAMES")]
+        skills: Option<String>,
+        /// Report no model-visible tools, as for a run with --no-tools
+        #[arg(long)]
+        no_tools: bool,
+        /// Only report these comma-separated registered tool names
+        #[arg(long, value_name = "NAMES")]
+        tools: Option<String>,
+        /// Add a toolbox directory to report without describing its tools. Can be repeated.
+        #[arg(long, value_name = "DIR")]
+        toolbox: Vec<PathBuf>,
+        /// Output the configuration report as one diagnostic JSON document
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
     /// Inspect selected skills and report catalog size without calling a model
     #[command(after_help = "\
 Examples:
@@ -110,6 +145,29 @@ impl CmdRunner for DebugCommand {
         // CmdRunner is asynchronous, although some commands have no async work.
         std::future::ready(()).await;
         match &self.command {
+            DebugSubcommand::Config {
+                sandbox,
+                add_dir,
+                no_skills,
+                skills,
+                no_tools,
+                tools,
+                toolbox,
+                json,
+            } => config_report::run_config(
+                &config_report::ConfigInputs {
+                    sandbox: *sandbox,
+                    add_dir,
+                    no_skills: *no_skills,
+                    skills: skills.as_deref(),
+                    no_tools: *no_tools,
+                    tools: tools.as_deref(),
+                    toolbox,
+                },
+                *json,
+                data_dir,
+                options,
+            ),
             DebugSubcommand::Skills {
                 catalog_budget,
                 description_budget,

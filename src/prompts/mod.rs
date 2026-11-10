@@ -19,7 +19,7 @@
 //! prompt entirely. Empty files are valid (intentional blank prompt).
 //! Unreadable files are skipped with a warning.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::Local;
 use tracing::{debug, warn};
@@ -151,6 +151,92 @@ fn read_prompt_override(path: &Path, source: PromptSource) -> Option<String> {
             source.log_failure(path, &error);
             None
         },
+    }
+}
+
+/// The source that supplied the system prompt for a run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SystemPromptSource {
+    Cli,
+    Project,
+    Settings,
+    User,
+    Builtin,
+}
+
+impl SystemPromptSource {
+    /// Stable label for diagnostic output.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Cli => "cli",
+            Self::Project => "project",
+            Self::Settings => "settings",
+            Self::User => "user",
+            Self::Builtin => "builtin",
+        }
+    }
+}
+
+/// The selected system prompt source and the file that supplied it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedSystemPromptSource {
+    pub source: SystemPromptSource,
+    pub path: Option<PathBuf>,
+}
+
+/// Resolve which source supplies the system prompt without returning its text.
+///
+/// Precedence and readability checks match [`resolve_system_prompt_with_mcp`].
+/// The prompt body is read only to make the same readability decision and is
+/// dropped; no caller can print it from this value.
+#[must_use]
+pub fn resolve_system_prompt_source(
+    working_dir: &Path,
+    config_dir: &Path,
+    cli_system_prompt: Option<&Path>,
+    settings_system_prompt: Option<&Path>,
+    include_project_prompt: bool,
+) -> ResolvedSystemPromptSource {
+    if let Some(path) = cli_system_prompt
+        && read_prompt_override(path, PromptSource::Cli).is_some()
+    {
+        return ResolvedSystemPromptSource {
+            source: SystemPromptSource::Cli,
+            path: Some(path.to_path_buf()),
+        };
+    }
+
+    if include_project_prompt
+        && let Some(path) = project_prompt_path(working_dir)
+        && read_prompt_override(&path, PromptSource::Project).is_some()
+    {
+        return ResolvedSystemPromptSource {
+            source: SystemPromptSource::Project,
+            path: Some(path),
+        };
+    }
+
+    if let Some(path) = settings_system_prompt
+        && read_prompt_override(path, PromptSource::Settings).is_some()
+    {
+        return ResolvedSystemPromptSource {
+            source: SystemPromptSource::Settings,
+            path: Some(path.to_path_buf()),
+        };
+    }
+
+    let user_path = config_dir.join("system.md");
+    if user_path.exists() && read_prompt_override(&user_path, PromptSource::User).is_some() {
+        return ResolvedSystemPromptSource {
+            source: SystemPromptSource::User,
+            path: Some(user_path),
+        };
+    }
+
+    ResolvedSystemPromptSource {
+        source: SystemPromptSource::Builtin,
+        path: None,
     }
 }
 
@@ -289,6 +375,12 @@ pub fn resolve_system_prompt_with_mcp(
 /// Read the automatic project prompt, skipping a symlink rather than following
 /// it into an arbitrary host path.
 fn read_project_prompt(working_dir: &Path) -> Option<String> {
+    let path = project_prompt_path(working_dir)?;
+    read_prompt_override(&path, PromptSource::Project)
+}
+
+/// Resolve the project prompt candidate, rejecting symlinks and non-files.
+fn project_prompt_path(working_dir: &Path) -> Option<PathBuf> {
     let project_path = working_dir.join(".cake").join("system.md");
     match std::fs::symlink_metadata(&project_path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
@@ -298,9 +390,7 @@ fn read_project_prompt(working_dir: &Path) -> Option<String> {
             );
             None
         },
-        Ok(metadata) if metadata.is_file() => {
-            read_prompt_override(&project_path, PromptSource::Project)
-        },
+        Ok(metadata) if metadata.is_file() => Some(project_path),
         Ok(_) => None,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => {
@@ -740,6 +830,77 @@ mod tests {
         );
 
         assert!(prompt.starts_with("You are cake."));
+    }
+
+    #[test]
+    fn resolve_system_prompt_source_matches_override_precedence() {
+        let working_dir = TempDir::new().unwrap();
+        let config_dir = TempDir::new().unwrap();
+        let settings_file = working_dir.path().join("settings-system.md");
+        let cli_file = working_dir.path().join("cli-system.md");
+
+        let selected =
+            resolve_system_prompt_source(working_dir.path(), config_dir.path(), None, None, true);
+        assert_eq!(selected.source, SystemPromptSource::Builtin);
+        assert!(selected.path.is_none());
+
+        std::fs::write(config_dir.path().join("system.md"), "User prompt").unwrap();
+        let selected =
+            resolve_system_prompt_source(working_dir.path(), config_dir.path(), None, None, true);
+        assert_eq!(selected.source, SystemPromptSource::User);
+
+        std::fs::write(&settings_file, "Settings prompt").unwrap();
+        let selected = resolve_system_prompt_source(
+            working_dir.path(),
+            config_dir.path(),
+            None,
+            Some(&settings_file),
+            true,
+        );
+        assert_eq!(selected.source, SystemPromptSource::Settings);
+        assert_eq!(selected.path.as_deref(), Some(settings_file.as_path()));
+
+        let cake_dir = working_dir.path().join(".cake");
+        std::fs::create_dir_all(&cake_dir).unwrap();
+        std::fs::write(cake_dir.join("system.md"), "Project prompt").unwrap();
+        let selected = resolve_system_prompt_source(
+            working_dir.path(),
+            config_dir.path(),
+            None,
+            Some(&settings_file),
+            true,
+        );
+        assert_eq!(selected.source, SystemPromptSource::Project);
+
+        std::fs::write(&cli_file, "CLI prompt").unwrap();
+        let selected = resolve_system_prompt_source(
+            working_dir.path(),
+            config_dir.path(),
+            Some(&cli_file),
+            Some(&settings_file),
+            true,
+        );
+        assert_eq!(selected.source, SystemPromptSource::Cli);
+        assert_eq!(selected.path.as_deref(), Some(cli_file.as_path()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_system_prompt_source_skips_a_symlinked_project_prompt() {
+        let working_dir = TempDir::new().unwrap();
+        let config_dir = TempDir::new().unwrap();
+        let external = TempDir::new().unwrap();
+        let target = external.path().join("host-prompt.md");
+        std::fs::write(&target, "Host prompt").unwrap();
+        let cake_dir = working_dir.path().join(".cake");
+        std::fs::create_dir_all(&cake_dir).unwrap();
+        std::os::unix::fs::symlink(&target, cake_dir.join("system.md")).unwrap();
+        std::fs::write(config_dir.path().join("system.md"), "User prompt").unwrap();
+
+        let selected =
+            resolve_system_prompt_source(working_dir.path(), config_dir.path(), None, None, true);
+
+        assert_eq!(selected.source, SystemPromptSource::User);
     }
 
     #[test]

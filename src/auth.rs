@@ -84,7 +84,7 @@ pub fn is_chatgpt_codex_backend(base_url: &str) -> bool {
         && url.path().trim_end_matches('/') == "/backend-api/codex"
 }
 
-fn codex_auth_path() -> anyhow::Result<PathBuf> {
+pub fn codex_auth_path() -> anyhow::Result<PathBuf> {
     if let Ok(codex_home) = std::env::var("CODEX_HOME")
         && !codex_home.trim().is_empty()
     {

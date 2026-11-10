@@ -17,7 +17,7 @@ fn cake_env() -> TestEnv {
 #[cfg(unix)]
 #[test]
 fn debug_inspection_deleted_current_directory_is_an_input_error() {
-    for subcommand in ["skills", "models", "grants"] {
+    for subcommand in ["skills", "models", "grants", "config"] {
         let env = cake_env();
         let output = std::process::Command::new("/bin/sh")
             .args([

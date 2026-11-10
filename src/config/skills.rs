@@ -57,7 +57,8 @@ impl SkillScope {
 }
 
 /// Diagnostic level for skill parsing/loading issues.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum DiagnosticLevel {
     /// Non-fatal issue (e.g., name mismatch)
     Warning,
@@ -77,7 +78,7 @@ impl DiagnosticLevel {
 }
 
 /// A diagnostic message about a skill.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SkillDiagnostic {
     /// Severity level
     pub level: DiagnosticLevel,

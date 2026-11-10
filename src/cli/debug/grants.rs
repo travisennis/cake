@@ -12,10 +12,11 @@ use crate::clients::{
     GrantReport, GrantReportInputs, SandboxPolicy, compute_temp_directories,
     resolve_sandbox_policy_with_source,
 };
+use crate::config::settings::LoadedSettings;
 use crate::config::skills::{discover_skills_with_paths, parse_skill_path_list};
 use crate::config::trust::ProjectTrustReport;
 use crate::config::{DataDir, SettingsLoader};
-use serde_json::json;
+use serde_json::{Map, Value, json};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
@@ -48,11 +49,42 @@ pub(super) fn run_grants(
         .iter()
         .map(|skill| skill.base_directory.clone())
         .collect();
+    let report = build_report(
+        sandbox,
+        add_dir,
+        &loaded,
+        skill_dirs,
+        &current_dir,
+        data_dir,
+    );
+
+    if json {
+        print!("{}", render_json(&report, &loaded.warnings, &load.trust)?);
+    } else {
+        loaded.print_warnings();
+        print_project_trust_warning(&load.trust);
+        print!("{}", format_text(&report));
+    }
+    Ok(())
+}
+
+/// Resolve the same grant inputs a run uses, without provisioning anything.
+///
+/// Both `debug grants` and `debug config` call this function so their grants
+/// section reports one resolved value rather than two near-copies.
+pub(super) fn build_report(
+    sandbox: Option<SandboxPolicy>,
+    add_dir: &[String],
+    loaded: &LoadedSettings,
+    skill_dirs: Vec<PathBuf>,
+    current_dir: &std::path::Path,
+    data_dir: &DataDir,
+) -> GrantReport {
     let (policy, policy_source) = resolve_sandbox_policy_with_source(sandbox);
-    let report = GrantReport::build(&GrantReportInputs {
+    GrantReport::build(&GrantReportInputs {
         policy,
         policy_source,
-        cwd: current_dir,
+        cwd: current_dir.to_path_buf(),
         temp_dirs: compute_temp_directories(),
         directories: loaded.directories.clone(),
         writable: loaded.sandbox.writable.clone(),
@@ -63,16 +95,7 @@ pub(super) fn run_grants(
         data_read_dirs: data_dir.sandbox_read_dirs(),
         global_config_dir: crate::config::config_dir().join("cake"),
         home: std::env::var_os("HOME").map(PathBuf::from),
-    });
-
-    if json {
-        print!("{}", render_json(&report, &loaded.warnings, &load.trust)?);
-    } else {
-        loaded.print_warnings();
-        print_project_trust_warning(&load.trust);
-        print!("{}", format_text(&report));
-    }
-    Ok(())
+    })
 }
 
 /// Render the human-readable report.
@@ -131,11 +154,70 @@ pub(super) fn render_json(
             .map(|warning| DiagnosticCheck::warning(CHECK_GRANTS_PATH, warning)),
     );
 
-    let sources: Vec<serde_json::Value> = report
+    let mut summary = summary(report);
+    summary.insert("warning_count".to_string(), json!(checks.len()));
+    DiagnosticDocument::new(
+        "debug grants",
+        Value::Object(summary),
+        checks,
+        data_with_trust(report, trust),
+    )
+    .render()
+}
+
+/// The scalar grant fields, without the command envelope.
+pub(super) fn summary(report: &GrantReport) -> Map<String, Value> {
+    let mut summary = Map::new();
+    summary.insert("policy".to_string(), json!(report.policy.label()));
+    summary.insert(
+        "policy_source".to_string(),
+        json!(report.policy_source.label()),
+    );
+    summary.insert(
+        "sandbox_enforced".to_string(),
+        json!(report.policy.applies_os_sandbox()),
+    );
+    summary.insert("source_count".to_string(), json!(report.sources.len()));
+    summary.insert(
+        "source_path_count".to_string(),
+        json!(source_path_count(report)),
+    );
+    summary.insert(
+        "read_write_count".to_string(),
+        json!(report.read_write.len()),
+    );
+    summary.insert("read_only_count".to_string(), json!(report.read_only.len()));
+    summary.insert(
+        "sandbox_writable_count".to_string(),
+        json!(report.sandbox_writable.len()),
+    );
+    summary.insert(
+        "sandbox_only_read_count".to_string(),
+        json!(report.sandbox_only_read.len()),
+    );
+    summary.insert("denied_count".to_string(), json!(report.denied.len()));
+    summary.insert(
+        "user_grants_count".to_string(),
+        json!(report.user_grants.len()),
+    );
+    summary.insert(
+        "bash_writable_count".to_string(),
+        json!(report.bash_writable.len()),
+    );
+    summary.insert(
+        "bash_read_execute_count".to_string(),
+        json!(report.bash_read_execute.len()),
+    );
+    summary
+}
+
+/// The grant payload and source lists, without the command envelope.
+pub(super) fn data(report: &GrantReport) -> Value {
+    let sources: Vec<Value> = report
         .sources
         .iter()
         .map(|source| {
-            let entries: Vec<serde_json::Value> = source
+            let entries: Vec<Value> = source
                 .entries
                 .iter()
                 .map(|entry| {
@@ -156,49 +238,47 @@ pub(super) fn render_json(
         })
         .collect();
 
-    DiagnosticDocument::new(
-        "debug grants",
-        json!({
-            "policy": report.policy.label(),
-            "policy_source": report.policy_source.label(),
-            "sandbox_enforced": report.policy.applies_os_sandbox(),
-            "source_count": report.sources.len(),
-            "source_path_count": source_path_count(report),
-            "read_write_count": report.read_write.len(),
-            "read_only_count": report.read_only.len(),
-            "sandbox_writable_count": report.sandbox_writable.len(),
-            "sandbox_only_read_count": report.sandbox_only_read.len(),
-            "denied_count": report.denied.len(),
-            "user_grants_count": report.user_grants.len(),
-            "bash_writable_count": report.bash_writable.len(),
-            "bash_read_execute_count": report.bash_read_execute.len(),
-            "warning_count": checks.len(),
-        }),
-        checks,
-        json!({
-            "sources": sources,
-            "read_write": path_strings(&report.read_write),
-            "read_only": path_strings(&report.read_only),
-            "sandbox_writable": path_strings(&report.sandbox_writable),
-            "sandbox_only_read": path_strings(&report.sandbox_only_read),
-            "denied": report.denied.iter().map(|entry| json!({
-                "path": entry.path.display().to_string(),
-                "kind": entry.kind.label(),
-            })).collect::<Vec<_>>(),
-            "user_grants": path_strings(&report.user_grants),
-            "projections": {
-                "file_tools": "Read and ReadImage use read_write and read_only; Edit and Write use read_write only; denied wins first.",
-                "bash_writable": path_strings(&report.bash_writable),
-                "bash_read_execute": path_strings(&report.bash_read_execute),
-            },
-            "project_trust": {
+    json!({
+        "sources": sources,
+        "read_write": path_strings(&report.read_write),
+        "read_only": path_strings(&report.read_only),
+        "sandbox_writable": path_strings(&report.sandbox_writable),
+        "sandbox_only_read": path_strings(&report.sandbox_only_read),
+        "denied": report.denied.iter().map(|entry| json!({
+            "path": entry.path.display().to_string(),
+            "kind": entry.kind.label(),
+        })).collect::<Vec<_>>(),
+        "user_grants": path_strings(&report.user_grants),
+        "projections": {
+            "file_tools": "Read and ReadImage use read_write and read_only; Edit and Write use read_write only; denied wins first.",
+            "bash_writable": path_strings(&report.bash_writable),
+            "bash_read_execute": path_strings(&report.bash_read_execute),
+        },
+    })
+}
+
+/// The summary and data fields as one flat object for embedding.
+pub(super) fn flat_payload(report: &GrantReport) -> Value {
+    let mut payload = summary(report);
+    if let Some(object) = data(report).as_object() {
+        payload.extend(object.clone());
+    }
+    Value::Object(payload)
+}
+
+fn data_with_trust(report: &GrantReport, trust: &ProjectTrustReport) -> Value {
+    let mut data = data(report);
+    if let Some(object) = data.as_object_mut() {
+        object.insert(
+            "project_trust".to_string(),
+            json!({
                 "state": trust.state.label(),
                 "authority": trust.authority,
                 "changes": trust.changes,
-            },
-        }),
-    )
-    .render()
+            }),
+        );
+    }
+    data
 }
 
 fn source_path_count(report: &GrantReport) -> usize {

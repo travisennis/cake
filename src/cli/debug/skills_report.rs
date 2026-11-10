@@ -61,7 +61,7 @@ fn sorted_skill_diagnostics(catalog: &SkillCatalog) -> Vec<&SkillDiagnostic> {
 }
 
 /// One text line for a skill diagnostic, with the file omitted when absent.
-fn format_skill_diagnostic(diagnostic: &SkillDiagnostic) -> String {
+pub(super) fn format_skill_diagnostic(diagnostic: &SkillDiagnostic) -> String {
     if diagnostic.file.as_os_str().is_empty() {
         format!("{}: {}", diagnostic.level.label(), diagnostic.message)
     } else {

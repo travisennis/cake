@@ -177,6 +177,18 @@ impl ProjectConfigMode {
         }
     }
 
+    /// A stable label for the effective project-configuration mode.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Enforce => "enforce",
+            Self::EnforceOneRun => "enforce-one-run",
+            Self::Inspect => "inspect",
+            Self::InspectOneRun => "inspect-one-run",
+            Self::Ignore => "ignore",
+        }
+    }
+
     /// A stable telemetry label for the effective mode.
     #[must_use]
     pub const fn telemetry_mode(self) -> &'static str {
@@ -256,6 +268,19 @@ pub enum AuthorityKind {
     /// A regular file under `.cake/tools/`.
     #[serde(rename = "toolbox")]
     ToolboxFile,
+}
+
+impl AuthorityKind {
+    /// A stable label for diagnostics.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Settings => "settings",
+            Self::Hooks => "hooks",
+            Self::McpConfig => "mcp_config",
+            Self::ToolboxFile => "toolbox",
+        }
+    }
 }
 
 /// One project-relative file and the authority-bearing keys it supplies.
