@@ -52,7 +52,7 @@ An untrusted authority-bearing project exits `3` before provider credential reso
 
 `state` is one of `not_required`, `trusted`, `untrusted`, `changed`, or `invalid`. `authority` and `changes` are empty when absent; `invalid_reason` is present only for an unusable record. An entry omits `keys` when it has none and omits `executable` when false.
 
-`cake debug models --json` and `cake gates list --json` add an additive `data.project_trust` object with `state`, `authority`, and `changes`. The same state is reported on stderr in text mode. Session telemetry's `telemetry_init` record adds an optional path-free `project_trust` object with `mode`, an optional one-way `project_key`, and `authority_files`; it is omitted when no project report exists. No hook, toolbox, gate, or provider wire shape changes, and the session JSONL format version remains `4`.
+`cake debug models --json`, `cake debug skills --json`, and `cake gates list --json` add an additive `data.project_trust` object with `state`, `authority`, and `changes`. The same state is reported on stderr in text mode. Session telemetry's `telemetry_init` record adds an optional path-free `project_trust` object with `mode`, an optional one-way `project_key`, and `authority_files`; it is omitted when no project report exists. No hook, toolbox, gate, or provider wire shape changes, and the session JSONL format version remains `4`.
 
 `cake init` creates `.cake/settings.toml` (and, with `--hooks`, an inert `.cake/hooks.json.example`) and prints created files to stdout. An existing target is reported on stderr and exits `3` without writing anything.
 
@@ -122,7 +122,7 @@ An automatic semantic continuation is visible as the provider's partial conversa
 
 ## Diagnostic JSON
 
-`debug models --json`, `sessions list --json`, `cake mcp list --json`, `cake mcp get --json`, and `bash check --json` emit one document with the same top-level fields, so a consumer parses one shape instead of one dialect per command. Arrays the document carries are ordered by the command that builds them, never by directory iteration or hash order, so two runs over the same state emit the same bytes.
+`debug models --json`, `debug skills --json`, `sessions list --json`, `cake mcp list --json`, `cake mcp get --json`, and `bash check --json` emit one document with the same top-level fields, so a consumer parses one shape instead of one dialect per command. Arrays the document carries are ordered by the command that builds them, never by directory iteration or hash order, so two runs over the same state emit the same bytes.
 
 ```json
 {
@@ -150,6 +150,8 @@ Each finding carries a stable machine-readable `id`, a `status` of `warning` or 
 
 - `settings.unknown_key` --- one finding per unrecognized settings key, in loader order, with the source file and key in the message.
 - `settings.load_failed` --- settings could not be loaded or parsed. The message matches the stderr diagnostic.
+- `skills.discovery_failed` --- one warning per skill discovery, parse, or selection diagnostic. The message preserves the diagnostic's `warning` or `error` level and names the file when one exists. The catalog still renders and the command exits successfully.
+- `skills.project_trust` --- authority-bearing project configuration was not trusted. The message names the state, and `data.project_trust` carries the full report.
 - `sessions.directory_unreadable` --- the sessions directory could not be read.
 - `sessions.discovery_failed` --- one warning per session file or directory entry that `sessions list` could not inspect. The message names the path and reason. At most eight are reported, with the last naming any omitted failures; working-directory filtering is not a failure.
 - `sessions.checkpoint_failed` --- a `cake sessions checkpoint` append failed. The message matches the stderr diagnostic, and the exit code follows that failure's class (see [Checkpoint append](#checkpoint-append)).
@@ -166,6 +168,8 @@ Exit behavior follows the codes above: `ok` and `warning` exit `0`; `error` repo
 ### Diagnostic payloads
 
 `debug models --json` reports the configured models: `summary.count` is the number of models, `data.models` holds the full model definitions in name order, and `data.default_model` is the `[[models]]` entry name a run selects when `--model` is omitted, after the selected profile's overlay, or `null` when none is configured. A consumer joins `data.default_model` to its `data.models` entry to inspect capability fields such as `supports_images`. Unrecognized settings keys appear in `checks` rather than on stderr.
+
+`debug skills --json` reports the selected catalog: `summary.count` is the number of selected skills; `summary.catalog_budget` and `summary.description_budget` are the advisory thresholds; `summary.rendered_bytes`, `summary.rendered_characters`, and `summary.estimated_tokens` measure the rendered XML; `summary.catalog_over_budget` and `summary.catalog_over_budget_characters` report catalog overrun; and `summary.descriptions_over_budget` counts descriptions above their threshold. `data.skills` carries each selected skill's `name`, `description`, `scope` (`project`, `configured`, or `user`), `location`, `base_directory`, `description_characters`, and `description_over_budget`, in name order with location breaking duplicate names. `data.project_trust` carries `state`, `authority`, and `changes`. Settings findings, project-trust findings, and skill diagnostics appear in `checks` rather than on stderr; `--no-skills` emits `summary.count` `0` and an empty `data.skills` array.
 
 `sessions list --json` reports the sessions for the current working directory: `summary.count` is the number of listed sessions and `data.sessions` holds each `session_id`, `timestamp`, and `first_prompt`, newest first, with the session id breaking ties between equal timestamps. Unreadable, malformed, and unsupported session files appear as `sessions.discovery_failed` warnings without hiding valid sessions; a file excluded only because its working directory differs is not a warning.
 

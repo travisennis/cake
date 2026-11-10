@@ -80,6 +80,7 @@ Examples:
   cake --model zen --sandbox read-only \"explain src/main.rs\"
   cake sessions list --json | jq -r '.data.sessions[0].session_id'
   cake debug models --json | jq -r '.data.models[].name'
+  cake debug skills --json | jq -r '.data.skills[].name'
 
 `cake <COMMAND> --help` documents the diagnostic commands and their machine-readable output.")]
 #[command(group(

@@ -13,7 +13,7 @@
 mod support;
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use support::TestEnv;
@@ -22,6 +22,19 @@ const SESSION_ID: &str = "9f2b1c3d-4e5f-4a6b-8c7d-0e1f2a3b4c5d";
 
 fn cake_env() -> TestEnv {
     TestEnv::new("cake-diagnostic-json-test")
+}
+
+/// Write a minimal valid skill under a discovery root.
+fn write_skill(root: &Path, name: &str, description: &str) -> PathBuf {
+    let directory = root.join(name);
+    fs::create_dir_all(&directory).expect("failed to create skill directory");
+    let path = directory.join("SKILL.md");
+    fs::write(
+        &path,
+        format!("---\nname: {name}\ndescription: {description}\n---\nBody\n"),
+    )
+    .expect("failed to write SKILL.md");
+    path
 }
 
 fn run(env: &TestEnv, args: &[&str]) -> std::process::Output {
@@ -307,6 +320,228 @@ fn debug_models_json_reports_a_settings_failure_as_a_document() {
             .contains("Failed to parse settings file"),
         "message must match the stderr diagnostic: {}",
         document["checks"][0]
+    );
+}
+
+// =============================================================================
+// `cake debug skills --json`
+// =============================================================================
+
+#[test]
+fn debug_skills_json_is_one_versioned_document() {
+    let env = cake_env();
+    let root = canonical_workspace(&env).join(".agents/skills");
+    let path = write_skill(&root, "alpha", "A project skill");
+
+    let output = run(&env, &["debug", "skills", "--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert_eq!(stderr(&output), "");
+    let document: serde_json::Value =
+        serde_json::from_str(&stdout(&output)).expect("stdout must be one JSON document");
+    assert_alpha_skill_summary(&document);
+    assert_alpha_skill_rows(&document, &path);
+    assert_eq!(document["data"]["project_trust"]["state"], "not_required");
+}
+
+fn assert_alpha_skill_summary(document: &serde_json::Value) {
+    assert_eq!(document["schema_version"], 1);
+    assert_eq!(document["command"], "debug skills");
+    assert_eq!(document["status"], "ok");
+    assert_eq!(document["summary"]["count"], 1);
+    assert_eq!(document["summary"]["catalog_budget"], 8000);
+    assert_eq!(document["summary"]["description_budget"], 400);
+    assert_eq!(document["summary"]["catalog_over_budget"], false);
+    assert_eq!(document["summary"]["catalog_over_budget_characters"], 0);
+    assert_eq!(document["summary"]["descriptions_over_budget"], 0);
+    assert_eq!(
+        document["summary"]["estimated_tokens"],
+        document["summary"]["rendered_characters"]
+            .as_u64()
+            .expect("rendered characters")
+            .div_ceil(4)
+    );
+}
+
+fn assert_alpha_skill_rows(document: &serde_json::Value, path: &Path) {
+    let skills = document["data"]["skills"]
+        .as_array()
+        .expect("skills must be an array");
+    assert_eq!(skills.len(), 1);
+    assert_eq!(skills[0]["name"], "alpha");
+    assert_eq!(skills[0]["description"], "A project skill");
+    assert_eq!(skills[0]["scope"], "project");
+    assert_eq!(skills[0]["description_characters"], 15);
+    assert_eq!(skills[0]["description_over_budget"], false);
+    assert_eq!(
+        skills[0]["location"].as_str().expect("skill location"),
+        path.display().to_string()
+    );
+    assert_eq!(
+        skills[0]["base_directory"]
+            .as_str()
+            .expect("skill base directory"),
+        path.parent().expect("skill parent").display().to_string()
+    );
+}
+
+#[test]
+fn debug_skills_json_reports_a_settings_failure_as_a_document() {
+    let env = cake_env();
+    env.write_project_settings("not valid toml = [");
+
+    let output = run(&env, &["debug", "skills", "--json"]);
+
+    assert_eq!(output.status.code(), Some(3), "stderr: {}", stderr(&output));
+    let document: serde_json::Value =
+        serde_json::from_str(&stdout(&output)).expect("stdout must be one JSON document");
+    assert_eq!(document["command"], "debug skills");
+    assert_eq!(document["status"], "error");
+    assert_eq!(document["checks"][0]["id"], "settings.load_failed");
+}
+
+#[test]
+fn debug_skills_json_orders_rows_and_respects_skills_filter() {
+    let env = cake_env();
+    let root = env.workspace_dir.join(".agents/skills");
+    write_skill(&root, "zeta", "A zeta skill");
+    write_skill(&root, "alpha", "An alpha skill");
+
+    let output = run(&env, &["debug", "skills", "--json"]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let document: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    let skills = document["data"]["skills"].as_array().unwrap();
+    assert_eq!(skills[0]["name"], "alpha");
+    assert_eq!(skills[1]["name"], "zeta");
+
+    let output = run(&env, &["debug", "skills", "--json", "--skills=alpha"]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let document: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(document["summary"]["count"], 1);
+    let skills = document["data"]["skills"].as_array().unwrap();
+    assert_eq!(skills[0]["name"], "alpha");
+}
+
+#[test]
+fn debug_skills_json_reports_diagnostics_in_checks_without_stderr() {
+    let env = cake_env();
+    let broken_dir = env.workspace_dir.join(".agents/skills/broken");
+    fs::create_dir_all(&broken_dir).expect("failed to create broken skill dir");
+    let broken = broken_dir.join("SKILL.md");
+    fs::write(&broken, "missing frontmatter\n").expect("failed to write malformed skill");
+
+    let output = run(&env, &["debug", "skills", "--json", "--skills=absent"]);
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert_eq!(stderr(&output), "");
+    let document: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(document["status"], "warning");
+    assert_eq!(document["summary"]["count"], 0);
+    assert_eq!(document["data"]["skills"], serde_json::json!([]));
+    let checks = document["checks"].as_array().expect("checks array");
+    assert_eq!(checks.len(), 2);
+    assert_eq!(checks[0]["id"], "skills.discovery_failed");
+    assert_eq!(checks[1]["id"], "skills.discovery_failed");
+    assert!(
+        checks[0]["message"]
+            .as_str()
+            .expect("requested-skill message")
+            .contains("Requested skill 'absent'")
+    );
+    assert!(
+        checks[1]["message"]
+            .as_str()
+            .expect("malformed-skill message")
+            .contains("missing YAML frontmatter")
+    );
+    assert!(
+        checks[1]["message"]
+            .as_str()
+            .expect("malformed-skill message")
+            .contains(&broken.display().to_string())
+    );
+}
+
+#[test]
+fn debug_skills_json_reports_an_empty_catalog_without_findings() {
+    let env = cake_env();
+
+    let output = run(&env, &["debug", "skills", "--json", "--no-skills"]);
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert_eq!(stderr(&output), "");
+    let document: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(document["status"], "ok");
+    assert_eq!(document["summary"]["count"], 0);
+    assert_eq!(document["summary"]["rendered_characters"], 0);
+    assert_eq!(document["summary"]["estimated_tokens"], 0);
+    assert_eq!(document["checks"], serde_json::json!([]));
+    assert_eq!(document["data"]["skills"], serde_json::json!([]));
+}
+
+#[test]
+fn debug_skills_json_reports_settings_and_project_trust_checks() {
+    let env = cake_env();
+    let configured = env.workspace_dir.join("configured-skills");
+    fs::create_dir_all(&configured).unwrap();
+    env.write_project_settings(&format!(
+        "[skills]\npath = \"{}\"\n\n[unauthenticated]\ntypo_key = true\n",
+        configured.display()
+    ));
+
+    let output = run(&env, &["debug", "skills", "--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert_eq!(stderr(&output), "");
+    let document: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(document["status"], "warning");
+    assert_eq!(document["data"]["project_trust"]["state"], "untrusted");
+    let checks = document["checks"].as_array().expect("checks array");
+    assert!(
+        checks
+            .iter()
+            .any(|check| check["id"] == "settings.unknown_key")
+    );
+    assert!(
+        checks
+            .iter()
+            .any(|check| check["id"] == "skills.project_trust")
+    );
+}
+
+#[test]
+fn debug_skills_json_marks_over_budget_catalog_and_descriptions() {
+    let env = cake_env();
+    let root = env.workspace_dir.join(".agents/skills");
+    write_skill(&root, "verbose", "a deliberately long routing description");
+
+    let output = run(
+        &env,
+        &[
+            "debug",
+            "skills",
+            "--json",
+            "--catalog-budget",
+            "1",
+            "--description-budget",
+            "1",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let document: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(document["status"], "ok");
+    assert_eq!(document["summary"]["catalog_over_budget"], true);
+    assert!(
+        document["summary"]["catalog_over_budget_characters"]
+            .as_u64()
+            .expect("over-budget characters")
+            > 0
+    );
+    assert_eq!(document["summary"]["descriptions_over_budget"], 1);
+    assert_eq!(
+        document["data"]["skills"][0]["description_over_budget"],
+        true
     );
 }
 

@@ -16,11 +16,14 @@ use serde_json::json;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+mod skills_report;
+
 /// Debug and introspection commands.
 #[derive(Clone, Debug, Parser)]
 #[command(after_help = "\
 Examples:
   cake debug skills --catalog-budget 4000
+  cake debug skills --json | jq '.data.skills[].name'
   cake debug models --json | jq '.data.models[].name'")]
 pub struct DebugCommand {
     #[command(subcommand)]
@@ -29,7 +32,11 @@ pub struct DebugCommand {
 
 #[derive(Clone, Debug, Subcommand)]
 enum DebugSubcommand {
-    /// Report selected skill catalog size without calling a model
+    /// Inspect selected skills and report catalog size without calling a model
+    #[command(after_help = "\
+Examples:
+  cake debug skills
+  cake debug skills --json | jq '.data.skills[].name'")]
     Skills {
         /// Advisory rendered XML budget in Unicode characters
         #[arg(long, default_value_t = 8000)]
@@ -43,6 +50,9 @@ enum DebugSubcommand {
         /// Only include these comma-separated skill names
         #[arg(long, value_name = "NAMES")]
         skills: Option<String>,
+        /// Output the selected catalog as one diagnostic JSON document
+        #[arg(long, default_value_t = false)]
+        json: bool,
     },
     /// Show configured models from settings.toml
     #[command(after_help = "\
@@ -83,11 +93,13 @@ impl CmdRunner for DebugCommand {
                 description_budget,
                 no_skills,
                 skills,
+                json,
             } => run_skills(
                 *catalog_budget,
                 *description_budget,
                 *no_skills,
                 skills.as_deref(),
+                *json,
                 options,
             ),
             DebugSubcommand::Models { json } => run_models(*json, options),
@@ -96,16 +108,24 @@ impl CmdRunner for DebugCommand {
     }
 }
 
-/// Tell a human that authority-bearing project configuration was ignored.
-fn print_project_trust_warning(trust: &ProjectTrustReport) {
-    if matches!(
+/// Build the warning for authority-bearing project configuration that was ignored.
+fn project_trust_warning_message(trust: &ProjectTrustReport) -> Option<String> {
+    matches!(
         trust.state,
         TrustState::Untrusted | TrustState::Changed | TrustState::Invalid
-    ) {
-        eprintln!(
-            "warning: project configuration is {}; authority-bearing settings were ignored. Run `cake trust` to review.",
+    )
+    .then(|| {
+        format!(
+            "project configuration is {}; authority-bearing settings were ignored. Run `cake trust` to review.",
             trust.state.label()
-        );
+        )
+    })
+}
+
+/// Tell a human that authority-bearing project configuration was ignored.
+fn print_project_trust_warning(trust: &ProjectTrustReport) {
+    if let Some(message) = project_trust_warning_message(trust) {
+        eprintln!("warning: {message}");
     }
 }
 
@@ -142,12 +162,11 @@ fn run_skills(
     description_budget: usize,
     no_skills: bool,
     skills: Option<&str>,
+    json: bool,
     options: &CommandRunOptions<'_>,
 ) -> anyhow::Result<()> {
-    let load = load_settings("debug skills", false, options)?;
+    let load = load_settings("debug skills", json, options)?;
     let loaded = load.settings;
-    loaded.print_warnings();
-    print_project_trust_warning(&load.trust);
     let roots = loaded
         .skills
         .path
@@ -158,17 +177,26 @@ fn run_skills(
         .map_err(|error| anyhow::anyhow!("Failed to get current directory: {error}"))?;
     let config = SettingsLoader::resolve_skill_config(no_skills, skills, &loaded.skills);
     let catalog = config.apply(discover_skills_with_paths(&current_dir, &roots));
-    for diagnostic in &catalog.diagnostics {
-        eprintln!(
-            "Skill diagnostic ({}): {}",
-            diagnostic.file.display(),
-            diagnostic.message
+
+    if json {
+        print!(
+            "{}",
+            skills_report::render_json(
+                &catalog,
+                &loaded.warnings,
+                &load.trust,
+                catalog_budget,
+                description_budget,
+            )?
+        );
+    } else {
+        loaded.print_warnings();
+        print_project_trust_warning(&load.trust);
+        print!(
+            "{}",
+            skills_report::format_text(&catalog, catalog_budget, description_budget)
         );
     }
-    print!(
-        "{}",
-        catalog.size_report(catalog_budget, description_budget)
-    );
     Ok(())
 }
 
@@ -544,6 +572,10 @@ fn separator(widths: &[usize; 5]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::{CHECK_SKILLS_DISCOVERY, CHECK_SKILLS_PROJECT_TRUST};
+    use crate::config::skills::{
+        DiagnosticLevel, Skill, SkillCatalog, SkillDiagnostic, SkillScope,
+    };
 
     fn model(name: &str, api_type: ApiType) -> ModelDefinition {
         ModelDefinition {
@@ -564,6 +596,34 @@ mod tests {
             reasoning_summary: None,
             reasoning_max_tokens: None,
             providers: vec![],
+        }
+    }
+
+    fn skill(name: &str, scope: SkillScope, location: &str, description: &str) -> Skill {
+        Skill {
+            name: name.to_string(),
+            description: description.to_string(),
+            location: std::path::PathBuf::from(location),
+            base_directory: std::path::Path::new(location)
+                .parent()
+                .expect("skill fixture needs a parent")
+                .to_path_buf(),
+            scope,
+        }
+    }
+
+    fn skill_catalog(skills: Vec<Skill>, diagnostics: Vec<SkillDiagnostic>) -> SkillCatalog {
+        SkillCatalog {
+            skills,
+            diagnostics,
+        }
+    }
+
+    fn skill_diagnostic(level: DiagnosticLevel, file: &str, message: &str) -> SkillDiagnostic {
+        SkillDiagnostic {
+            level,
+            message: message.to_string(),
+            file: std::path::PathBuf::from(file),
         }
     }
 
@@ -591,6 +651,235 @@ mod tests {
     fn format_models_handles_empty_settings() {
         let output = format_models(&std::collections::HashMap::new());
         assert_eq!(output, "No models configured.\n");
+    }
+
+    #[test]
+    fn format_skills_report_lists_rows_in_name_order_with_scope_and_location() {
+        let catalog = skill_catalog(
+            vec![
+                skill(
+                    "zeta",
+                    SkillScope::User,
+                    "/home/trav/.agents/skills/zeta/SKILL.md",
+                    "A user skill",
+                ),
+                skill(
+                    "alpha",
+                    SkillScope::Project,
+                    "/repo/.agents/skills/alpha/SKILL.md",
+                    "A project skill",
+                ),
+            ],
+            Vec::new(),
+        );
+
+        let output = skills_report::format_text(&catalog, 8000, 400);
+
+        assert!(output.contains("Selected: 2 skills"));
+        assert!(output.contains("Name"));
+        assert!(output.contains("Scope"));
+        assert!(output.contains("Desc chars"));
+        assert!(output.contains("Budget"));
+        assert!(output.contains("Location"));
+        assert!(output.contains("alpha"));
+        assert!(output.contains("project"));
+        assert!(output.contains("/repo/.agents/skills/alpha/SKILL.md"));
+        assert!(output.contains("zeta"));
+        assert!(output.contains("user"));
+        assert!(output.contains("/home/trav/.agents/skills/zeta/SKILL.md"));
+        assert!(output.contains("Diagnostics: none"));
+        assert!(output.find("alpha").expect("alpha row") < output.find("zeta").expect("zeta row"));
+    }
+
+    #[test]
+    fn format_skills_report_marks_description_and_catalog_budgets() {
+        let catalog = skill_catalog(
+            vec![skill(
+                "verbose",
+                SkillScope::Configured,
+                "/skills/verbose/SKILL.md",
+                "a description that is intentionally long",
+            )],
+            Vec::new(),
+        );
+
+        let over = skills_report::format_text(&catalog, 1, 1);
+        assert!(over.contains("Selected: 1 skill"));
+        assert!(over.contains("configured"));
+        assert!(over.contains("Descriptions over budget: 1"));
+        assert!(over.contains("over"));
+        assert!(over.contains("Catalog budget: WARNING: rendered catalog exceeds"));
+
+        let within = skills_report::format_text(&catalog, 10_000, 400);
+        assert!(within.contains("Catalog budget: within budget"));
+        assert!(within.contains("Descriptions over budget: 0"));
+        assert!(within.contains(" ok "));
+    }
+
+    #[test]
+    fn format_skills_report_empty_state_is_explicit() {
+        let output = skills_report::format_text(&SkillCatalog::empty(), 8000, 400);
+
+        assert!(output.starts_with("Skill catalog\nNo skills selected.\n"));
+        assert!(!output.contains("Name"));
+        assert!(output.contains("Rendered catalog: 0 bytes, 0 characters, ~0 tokens"));
+        assert!(output.contains("Descriptions over budget: 0"));
+        assert!(output.contains("Diagnostics: none"));
+    }
+
+    #[test]
+    fn format_skills_report_shows_sorted_diagnostics() {
+        let catalog = skill_catalog(
+            Vec::new(),
+            vec![
+                skill_diagnostic(DiagnosticLevel::Warning, "/z/SKILL.md", "z warning"),
+                skill_diagnostic(DiagnosticLevel::Error, "/a/SKILL.md", "a error"),
+                skill_diagnostic(
+                    DiagnosticLevel::Warning,
+                    "",
+                    "Requested skill 'absent' was not found among discovered skills",
+                ),
+            ],
+        );
+
+        let output = skills_report::format_text(&catalog, 8000, 400);
+
+        assert!(output.contains("Diagnostics\n"));
+        assert!(output.contains("warning: Requested skill 'absent' was not found"));
+        assert!(output.contains("error: /a/SKILL.md: a error"));
+        assert!(output.contains("warning: /z/SKILL.md: z warning"));
+        assert!(!output.contains("Skill diagnostic ("));
+        assert!(
+            output
+                .find("Requested skill")
+                .expect("requested diagnostic")
+                < output.find("a error").expect("error diagnostic")
+        );
+        assert!(
+            output.find("a error").expect("error diagnostic")
+                < output.find("z warning").expect("warning diagnostic")
+        );
+    }
+
+    #[test]
+    fn skill_rows_sort_duplicate_names_by_location() {
+        let catalog = skill_catalog(
+            vec![
+                skill("duplicate", SkillScope::User, "/b/SKILL.md", "b"),
+                skill("duplicate", SkillScope::Project, "/a/SKILL.md", "a"),
+            ],
+            Vec::new(),
+        );
+
+        let output = skills_report::format_text(&catalog, 8000, 400);
+
+        assert!(
+            output.find("/a/SKILL.md").expect("first duplicate")
+                < output.find("/b/SKILL.md").expect("second duplicate")
+        );
+    }
+
+    fn assert_skill_json_rows(parsed: &serde_json::Value) {
+        let skills = parsed["data"]["skills"].as_array().unwrap();
+        assert_eq!(skills.len(), 2);
+        assert_eq!(skills[0]["name"], "alpha");
+        assert_eq!(skills[0]["scope"], "project");
+        assert_eq!(skills[0]["description"], "a project skill");
+        assert_eq!(skills[0]["description_over_budget"], true);
+        assert_eq!(skills[1]["name"], "zeta");
+        assert_eq!(skills[1]["scope"], "user");
+    }
+
+    #[test]
+    fn render_skills_json_reports_rows_and_summary() {
+        let catalog = skill_catalog(
+            vec![
+                skill(
+                    "zeta",
+                    SkillScope::User,
+                    "/home/trav/.agents/skills/zeta/SKILL.md",
+                    "a user skill",
+                ),
+                skill(
+                    "alpha",
+                    SkillScope::Project,
+                    "/repo/.agents/skills/alpha/SKILL.md",
+                    "a project skill",
+                ),
+            ],
+            Vec::new(),
+        );
+        let loaded = loaded_settings(std::collections::HashMap::default(), None, Vec::new());
+
+        let output =
+            skills_report::render_json(&catalog, &loaded.warnings, &trust_report(), 1, 1).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["command"], "debug skills");
+        assert_eq!(parsed["status"], "ok");
+        assert_eq!(parsed["summary"]["count"], 2);
+        assert_eq!(parsed["summary"]["catalog_budget"], 1);
+        assert_eq!(parsed["summary"]["description_budget"], 1);
+        assert_eq!(parsed["summary"]["catalog_over_budget"], true);
+        assert_eq!(parsed["summary"]["descriptions_over_budget"], 2);
+        assert_skill_json_rows(&parsed);
+        assert_eq!(parsed["data"]["project_trust"]["state"], "not_required");
+    }
+
+    #[test]
+    fn render_skills_json_reports_checks_in_order() {
+        let catalog = skill_catalog(
+            Vec::new(),
+            vec![
+                skill_diagnostic(DiagnosticLevel::Error, "/repo/broken/SKILL.md", "broken"),
+                skill_diagnostic(
+                    DiagnosticLevel::Warning,
+                    "",
+                    "Requested skill 'absent' was not found among discovered skills",
+                ),
+            ],
+        );
+        let loaded = loaded_settings(
+            std::collections::HashMap::default(),
+            None,
+            vec!["unknown key 'temparature' in .cake/settings.toml".to_string()],
+        );
+
+        let output =
+            skills_report::render_json(&catalog, &loaded.warnings, &trust_report(), 1, 1).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(parsed["status"], "warning");
+        assert_eq!(parsed["checks"].as_array().unwrap().len(), 3);
+        assert_eq!(parsed["checks"][0]["id"], "settings.unknown_key");
+        assert_eq!(parsed["checks"][1]["id"], CHECK_SKILLS_DISCOVERY);
+        assert_eq!(parsed["checks"][2]["id"], CHECK_SKILLS_DISCOVERY);
+        assert_eq!(
+            parsed["checks"][1]["message"],
+            "warning: Requested skill 'absent' was not found among discovered skills"
+        );
+    }
+
+    #[test]
+    fn render_skills_json_reports_untrusted_project_configuration() {
+        let loaded = loaded_settings(std::collections::HashMap::default(), None, Vec::new());
+        let mut trust = trust_report();
+        trust.state = TrustState::Untrusted;
+
+        let output =
+            skills_report::render_json(&SkillCatalog::empty(), &loaded.warnings, &trust, 8000, 400)
+                .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(parsed["status"], "warning");
+        assert_eq!(parsed["checks"][0]["id"], CHECK_SKILLS_PROJECT_TRUST);
+        assert!(
+            parsed["checks"][0]["message"]
+                .as_str()
+                .expect("trust message")
+                .contains("project configuration is untrusted")
+        );
     }
 
     #[test]

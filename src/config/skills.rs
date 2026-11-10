@@ -44,6 +44,18 @@ pub enum SkillScope {
     User,
 }
 
+impl SkillScope {
+    /// Stable label used by diagnostic and inventory output.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Project => "project",
+            Self::Configured => "configured",
+            Self::User => "user",
+        }
+    }
+}
+
 /// Diagnostic level for skill parsing/loading issues.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiagnosticLevel {
@@ -51,6 +63,17 @@ pub enum DiagnosticLevel {
     Warning,
     /// Fatal issue that prevents the skill from being loaded
     Error,
+}
+
+impl DiagnosticLevel {
+    /// Stable label used by diagnostic output.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Warning => "warning",
+            Self::Error => "error",
+        }
+    }
 }
 
 /// A diagnostic message about a skill.
@@ -311,26 +334,70 @@ impl Skill {
 // Skill Catalog
 // =============================================================================
 
+/// Size metrics for the rendered skill catalog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillCatalogMetrics {
+    /// UTF-8 bytes in the rendered catalog XML.
+    pub bytes: usize,
+    /// Unicode scalar characters in the rendered catalog XML.
+    pub characters: usize,
+    /// Advisory token estimate: `ceil(characters / 4)`.
+    pub estimated_tokens: usize,
+}
+
+impl SkillCatalogMetrics {
+    /// Whether the rendered catalog exceeds an advisory character budget.
+    #[must_use]
+    pub const fn catalog_over_budget(self, budget: usize) -> bool {
+        self.characters > budget
+    }
+
+    /// Characters over an advisory budget, or zero when within it.
+    #[must_use]
+    pub const fn catalog_over_budget_by(self, budget: usize) -> usize {
+        self.characters.saturating_sub(budget)
+    }
+}
+
 impl SkillCatalog {
+    /// Measure the rendered catalog without changing its contents.
+    #[must_use]
+    pub fn metrics(&self) -> SkillCatalogMetrics {
+        let xml = self.to_prompt_xml();
+        let characters = xml.chars().count();
+        SkillCatalogMetrics {
+            bytes: xml.len(),
+            characters,
+            estimated_tokens: characters.div_ceil(4),
+        }
+    }
+
     /// Report the actual rendered catalog without changing its contents.
     ///
     /// Budgets are advisory Unicode-scalar counts. The token estimate is
     /// ceil(characters / 4), not a provider tokenizer or a context guarantee.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "kept as the compatibility reference for catalog budget semantics"
+        )
+    )]
     pub fn size_report(&self, catalog_budget: usize, description_budget: usize) -> String {
         use std::fmt::Write;
 
-        let xml = self.to_prompt_xml();
-        let characters = xml.chars().count();
+        let metrics = self.metrics();
         let mut report = format!(
-            "Skill catalog: {} skills, {} bytes, {characters} characters, ~{} tokens \
+            "Skill catalog: {} skills, {} bytes, {} characters, ~{} tokens \
              (ceil(characters / 4); not a provider token count).\n\
              Advisory thresholds: {catalog_budget} catalog characters; \
              {description_budget} description characters.\n",
             self.skills.len(),
-            xml.len(),
-            characters.div_ceil(4),
+            metrics.bytes,
+            metrics.characters,
+            metrics.estimated_tokens,
         );
-        if characters > catalog_budget {
+        if metrics.catalog_over_budget(catalog_budget) {
             _ = writeln!(
                 report,
                 "WARNING: rendered catalog exceeds the advisory budget."

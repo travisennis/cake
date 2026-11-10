@@ -1,4 +1,4 @@
-//! Integration tests for `cake debug models`.
+//! Integration tests for `cake debug` inspection commands.
 
 #![expect(clippy::expect_used, reason = "test code uses expect for assertions")]
 
@@ -74,28 +74,140 @@ fn debug_skills_respects_profiles_and_cli_filters_without_a_model() {
         .unwrap();
     assert!(output.status.success(), "{:?}", output.stderr);
     let report = String::from_utf8_lossy(&output.stdout);
-    assert!(report.contains("1 skills"));
-    assert!(report.contains(": short WARNING"));
-    assert!(!report.contains(": long"));
+    assert!(report.contains("Selected: 1 skill"));
+    assert!(report.contains("short"));
+    assert!(report.contains("project"));
+    assert!(report.contains("Descriptions over budget: 1"));
+    assert!(report.contains("over"));
     assert!(report.contains("WARNING: rendered catalog exceeds"));
-
-    for filter in ["--no-skills", "--skills=absent"] {
-        let output = env
-            .command()
-            .args(["debug", "skills", filter])
-            .output()
-            .unwrap();
-        assert!(output.status.success());
-        assert!(
-            String::from_utf8_lossy(&output.stdout).contains("0 skills, 0 bytes, 0 characters")
-        );
-    }
+    assert!(!report.contains("long"));
     assert_eq!(
         std::fs::read_dir(env.data_dir.join("sessions"))
             .unwrap()
             .count(),
         0
     );
+}
+
+#[test]
+fn debug_skills_no_skills_prints_explicit_empty_state() {
+    let env = cake_env();
+    let output = env
+        .command()
+        .args(["debug", "skills", "--no-skills"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let report = String::from_utf8_lossy(&output.stdout);
+    assert!(report.contains("No skills selected."));
+    assert!(report.contains("Diagnostics: none"));
+}
+
+#[test]
+fn debug_skills_missing_requested_name_prints_diagnostic() {
+    let env = cake_env();
+    let output = env
+        .command()
+        .args(["debug", "skills", "--skills=absent"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let report = String::from_utf8_lossy(&output.stdout);
+    assert!(report.contains("No skills selected."));
+    assert!(report.contains("Requested skill 'absent' was not found among discovered skills"));
+}
+
+#[test]
+fn debug_skills_reports_scope_and_location_in_name_order() {
+    let env = cake_env();
+    let project_dir = env.workspace_dir.join(".agents/skills/alpha-project");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    std::fs::write(
+        project_dir.join("SKILL.md"),
+        "---\nname: alpha-project\ndescription: A project skill\n---\n",
+    )
+    .unwrap();
+
+    let user_dir = env.home_dir.join(".agents/skills/beta-user");
+    std::fs::create_dir_all(&user_dir).unwrap();
+    std::fs::write(
+        user_dir.join("SKILL.md"),
+        "---\nname: beta-user\ndescription: A user skill\n---\n",
+    )
+    .unwrap();
+
+    let configured_dir = env.workspace_dir.join("configured-skills/gamma-configured");
+    std::fs::create_dir_all(&configured_dir).unwrap();
+    std::fs::write(
+        configured_dir.join("SKILL.md"),
+        "---\nname: gamma-configured\ndescription: A configured skill\n---\n",
+    )
+    .unwrap();
+    env.write_global_settings(&format!(
+        "[skills]\npath = \"{}\"\n",
+        configured_dir
+            .parent()
+            .expect("configured skill directory")
+            .display()
+    ));
+
+    let output = env.command().args(["debug", "skills"]).output().unwrap();
+
+    assert!(output.status.success(), "{:?}", output.stderr);
+    let report = String::from_utf8_lossy(&output.stdout);
+    assert!(report.contains("Selected: 3 skills"));
+    assert!(report.contains("project"));
+    assert!(report.contains("configured"));
+    assert!(report.contains("user"));
+    assert!(report.contains(&project_dir.join("SKILL.md").display().to_string()));
+    assert!(report.contains(&configured_dir.join("SKILL.md").display().to_string()));
+    assert!(report.contains(&user_dir.join("SKILL.md").display().to_string()));
+    assert!(
+        report.find("alpha-project").expect("project row")
+            < report.find("beta-user").expect("user row")
+    );
+    assert!(
+        report.find("beta-user").expect("user row")
+            < report.find("gamma-configured").expect("configured row")
+    );
+}
+
+#[test]
+fn debug_skills_reports_malformed_skill_diagnostics_on_stdout() {
+    let env = cake_env();
+    let broken_dir = env.workspace_dir.join(".agents/skills/broken");
+    std::fs::create_dir_all(&broken_dir).unwrap();
+    let broken = broken_dir.join("SKILL.md");
+    std::fs::write(&broken, "missing frontmatter\n").unwrap();
+
+    let output = env.command().args(["debug", "skills"]).output().unwrap();
+
+    assert!(output.status.success(), "{:?}", output.stderr);
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    let report = String::from_utf8_lossy(&output.stdout);
+    assert!(report.contains("No skills selected."));
+    assert!(report.contains("Diagnostics\n"));
+    assert!(report.contains("error:"));
+    assert!(report.contains(&broken.display().to_string()));
+    assert!(report.contains("missing YAML frontmatter"));
+    assert!(!report.contains("Skill diagnostic ("));
+}
+
+#[test]
+fn debug_skills_help_lists_json_output() {
+    let env = cake_env();
+    let output = env
+        .command()
+        .args(["debug", "skills", "--help"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--json"));
+    assert!(stdout.contains("cake debug skills --json"));
 }
 
 #[test]

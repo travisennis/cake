@@ -369,12 +369,15 @@ Inspect the selected catalog without calling a model:
 
 ```bash
 cake debug skills
+cake debug skills --json
 cake --profile review debug skills --skills debugging-cake,review
 cake debug skills --no-skills
 cake debug skills --catalog-budget 8000 --description-budget 400
 ```
 
-The report counts the rendered XML, including escaping and locations, in UTF-8 bytes and Unicode characters. Its token estimate is characters divided by four, rounded up; it is not a provider token count. It lists descriptions largest first and warns above the advisory defaults of 8,000 catalog characters and 400 description characters. These are configurable review thresholds, not model limits or measurements of instruction quality. Warnings exit successfully and never truncate descriptions or remove skills. Select fewer skills with `skills.only`, a profile, or `--no-skills` when appropriate.
+The report lists every selected skill in name order, with location breaking duplicate names, and shows its scope (`project`, `configured`, or `user`), `SKILL.md` location, description character count, and `ok` or `over` description-budget marker. The summary counts the rendered XML, including escaping and locations, in UTF-8 bytes and Unicode characters. Its token estimate is characters divided by four, rounded up; it is not a provider token count. It warns above the advisory defaults of 8,000 catalog characters and 400 description characters. Discovery and selection diagnostics appear under `Diagnostics`; an empty selection prints `No skills selected.` These are configurable review thresholds, not model limits or measurements of instruction quality. Warnings exit successfully and never truncate descriptions or remove skills. Select fewer skills with `skills.only`, a profile, or `--no-skills` when appropriate.
+
+`--json` emits the same selection as one versioned diagnostic document. `summary` carries the skill count, advisory budgets, rendered size, and over-budget counts; each `data.skills` entry carries the name, description, scope, location, base directory, description character count, and over-budget flag; `data.project_trust` reports the trust decision. Settings, project-trust, discovery, and selection findings appear in `checks`, so machine mode writes no diagnostics to stderr.
 
 The report measures the selected catalog, not the complete prompt; an agent run includes the catalog only when the run can read a `SKILL.md` (see above). Discovery precedence and profile filtering match an agent run. Place `--skills` and `--no-skills` after `debug skills` for this report.
 

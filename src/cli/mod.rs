@@ -33,7 +33,8 @@ pub use debug::DebugCommand;
 pub use diagnostic::{
     CHECK_MCP_CONFIG, CHECK_MCP_NOT_FOUND, CHECK_MCP_SERVER, CHECK_SESSIONS_CHECKPOINT,
     CHECK_SESSIONS_DIRECTORY, CHECK_SESSIONS_DISCOVERY, CHECK_SETTINGS_LOAD_FAILED,
-    DiagnosticCheck, DiagnosticDocument, report_failure, settings_warnings,
+    CHECK_SKILLS_DISCOVERY, CHECK_SKILLS_PROJECT_TRUST, DiagnosticCheck, DiagnosticDocument,
+    report_failure, settings_warnings,
 };
 pub use gates::GatesCommand;
 pub use init::{InitCommand, InitError};

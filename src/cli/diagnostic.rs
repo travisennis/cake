@@ -1,10 +1,10 @@
 //! The versioned diagnostic JSON document emitted by machine-mode commands.
 //!
-//! `debug models --json`, `sessions list --json`, and `bash check --json` all
-//! emit one object with the same top-level fields, so a consumer parses one
-//! shape instead of one dialect per command. The contract's semantics live in
-//! [docs/integrations.md](../../docs/integrations.md); the decision is recorded
-//! in [ADR 029](../../docs/adr/029-diagnostic-json-document.md).
+//! `debug models --json`, `debug skills --json`, `sessions list --json`, and
+//! `bash check --json` all emit one object with the same top-level fields, so a
+//! consumer parses one shape instead of one dialect per command. The contract's
+//! semantics live in [docs/integrations.md](../../docs/integrations.md); the
+//! decision is recorded in [ADR 029](../../docs/adr/029-diagnostic-json-document.md).
 //!
 //! Every document is:
 //!
@@ -37,6 +37,12 @@ pub const CHECK_SETTINGS_UNKNOWN_KEY: &str = "settings.unknown_key";
 
 /// Check id for settings that could not be loaded or parsed.
 pub const CHECK_SETTINGS_LOAD_FAILED: &str = "settings.load_failed";
+
+/// Check id for a skill discovery, parse, or selection diagnostic.
+pub const CHECK_SKILLS_DISCOVERY: &str = "skills.discovery_failed";
+
+/// Check id for authority-bearing project configuration that was not trusted.
+pub const CHECK_SKILLS_PROJECT_TRUST: &str = "skills.project_trust";
 
 /// Check id for a sessions directory that could not be read.
 pub const CHECK_SESSIONS_DIRECTORY: &str = "sessions.directory_unreadable";

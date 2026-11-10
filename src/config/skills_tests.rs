@@ -333,6 +333,42 @@ fn catalog_size_report_orders_descriptions_largest_first() {
 }
 
 #[test]
+fn skill_scope_labels_are_stable() {
+    assert_eq!(SkillScope::Project.label(), "project");
+    assert_eq!(SkillScope::Configured.label(), "configured");
+    assert_eq!(SkillScope::User.label(), "user");
+}
+
+#[test]
+fn diagnostic_level_labels_are_stable() {
+    assert_eq!(DiagnosticLevel::Warning.label(), "warning");
+    assert_eq!(DiagnosticLevel::Error.label(), "error");
+}
+
+#[test]
+fn catalog_metrics_match_rendered_xml_and_budget_boundaries() {
+    let mut catalog = SkillCatalog::empty();
+    catalog.skills.push(Skill {
+        name: "routing".to_string(),
+        description: "é<&".to_string(),
+        location: PathBuf::from("/skills/routing/SKILL.md"),
+        base_directory: PathBuf::from("/skills/routing"),
+        scope: SkillScope::Project,
+    });
+
+    let xml = catalog.to_prompt_xml();
+    let metrics = catalog.metrics();
+    assert_eq!(metrics.bytes, xml.len());
+    assert_eq!(metrics.characters, xml.chars().count());
+    assert_eq!(metrics.estimated_tokens, metrics.characters.div_ceil(4));
+    assert!(!metrics.catalog_over_budget(metrics.characters));
+    assert!(metrics.catalog_over_budget(metrics.characters - 1));
+    assert_eq!(metrics.catalog_over_budget_by(metrics.characters), 0);
+    assert_eq!(metrics.catalog_over_budget_by(metrics.characters - 1), 1);
+    assert_eq!(catalog.to_prompt_xml(), xml);
+}
+
+#[test]
 fn catalog_to_prompt_xml_escapes() {
     let mut catalog = SkillCatalog::empty();
     catalog.skills.push(Skill {
