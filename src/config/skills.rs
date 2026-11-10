@@ -335,6 +335,119 @@ impl Skill {
 // Skill Catalog
 // =============================================================================
 
+/// Compiled default for the rendered skill catalog, in Unicode scalar
+/// characters.
+pub const DEFAULT_SKILL_CATALOG_CHARACTERS: usize = 8_000;
+/// Compiled default for each routing description, in Unicode scalar characters.
+pub const DEFAULT_SKILL_DESCRIPTION_CHARACTERS: usize = 400;
+/// The share of a known context window reserved for the skill catalog.
+const SKILL_CATALOG_CONTEXT_PERCENT: u64 = 2;
+/// Character estimate used to translate context-window tokens into characters.
+const CHARACTERS_PER_TOKEN: u64 = 4;
+/// Keep a context-relative catalog large enough for a useful handful of skills.
+const MIN_CONTEXT_SKILL_CATALOG_CHARACTERS: usize = 1_000;
+/// Keep a malformed or enormous context window from producing an absurd budget.
+const MAX_CONTEXT_SKILL_CATALOG_CHARACTERS: usize = 64 * 1024 * 1024;
+/// Bound the names repeated in an omission notice.
+const MAX_OMITTED_SKILL_NAMES: usize = 8;
+
+/// Resolved character budgets for the skill catalog.
+///
+/// The catalog budget applies to the complete rendered XML, including escaping,
+/// locations, and any omission notice. The description budget applies to each
+/// routing description before the catalog is assembled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillCatalogBudget {
+    /// Maximum rendered catalog characters.
+    pub catalog_characters: usize,
+    /// Maximum characters of each routing description.
+    pub description_characters: usize,
+}
+
+impl SkillCatalogBudget {
+    /// Build an explicit budget.
+    #[must_use]
+    pub const fn new(catalog_characters: usize, description_characters: usize) -> Self {
+        Self {
+            catalog_characters,
+            description_characters,
+        }
+    }
+
+    /// The compiled fallback used when the model has no context window.
+    #[must_use]
+    pub const fn defaults() -> Self {
+        Self::new(
+            DEFAULT_SKILL_CATALOG_CHARACTERS,
+            DEFAULT_SKILL_DESCRIPTION_CHARACTERS,
+        )
+    }
+
+    /// Resolve a context-relative catalog budget.
+    ///
+    /// A known context window reserves roughly 2% of its tokens for the skill
+    /// catalog, converted at four characters per token. The result is clamped
+    /// so tiny windows still get a usable catalog and malformed windows cannot
+    /// allocate an unbounded prompt. Unknown windows use the compiled fallback.
+    /// The description budget stays fixed; descriptions are shortened before
+    /// entries are omitted.
+    #[must_use]
+    pub fn from_context_window(context_window: Option<u32>) -> Self {
+        let Some(window) = context_window else {
+            return Self::defaults();
+        };
+        let characters = u64::from(window)
+            .saturating_mul(CHARACTERS_PER_TOKEN)
+            .saturating_mul(SKILL_CATALOG_CONTEXT_PERCENT)
+            / 100;
+        let catalog_characters = usize::try_from(characters).unwrap_or(usize::MAX).clamp(
+            MIN_CONTEXT_SKILL_CATALOG_CHARACTERS,
+            MAX_CONTEXT_SKILL_CATALOG_CHARACTERS,
+        );
+        Self::new(catalog_characters, DEFAULT_SKILL_DESCRIPTION_CHARACTERS)
+    }
+
+    /// Resolve explicit settings over the context-relative default.
+    #[must_use]
+    pub fn resolve(
+        context_window: Option<u32>,
+        catalog_characters: Option<usize>,
+        description_characters: Option<usize>,
+    ) -> Self {
+        let mut budget = Self::from_context_window(context_window);
+        if let Some(catalog_characters) = catalog_characters {
+            budget.catalog_characters = catalog_characters;
+        }
+        if let Some(description_characters) = description_characters {
+            budget.description_characters = description_characters;
+        }
+        budget
+    }
+}
+
+/// A budgeted rendering of the skill catalog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillCatalogRender {
+    /// Rendered catalog XML, possibly with an omission notice.
+    pub xml: String,
+    /// Names omitted from the catalog, in discovery order.
+    pub omitted_skills: Vec<String>,
+    /// Number of retained descriptions that were shortened.
+    pub shortened_descriptions: usize,
+    /// Whether the rendered catalog still exceeds its resolved budget.
+    pub over_budget: bool,
+    /// The budget used for this rendering.
+    pub budget: SkillCatalogBudget,
+}
+
+impl SkillCatalogRender {
+    /// Measure the rendered catalog.
+    #[must_use]
+    pub fn metrics(&self) -> SkillCatalogMetrics {
+        SkillCatalogMetrics::from_xml(&self.xml)
+    }
+}
+
 /// Size metrics for the rendered skill catalog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SkillCatalogMetrics {
@@ -347,6 +460,17 @@ pub struct SkillCatalogMetrics {
 }
 
 impl SkillCatalogMetrics {
+    /// Measure already-rendered catalog XML.
+    #[must_use]
+    pub fn from_xml(xml: &str) -> Self {
+        let characters = xml.chars().count();
+        Self {
+            bytes: xml.len(),
+            characters,
+            estimated_tokens: characters.div_ceil(4),
+        }
+    }
+
     /// Whether the rendered catalog exceeds an advisory character budget.
     #[must_use]
     pub const fn catalog_over_budget(self, budget: usize) -> bool {
@@ -364,13 +488,7 @@ impl SkillCatalog {
     /// Measure the rendered catalog without changing its contents.
     #[must_use]
     pub fn metrics(&self) -> SkillCatalogMetrics {
-        let xml = self.to_prompt_xml();
-        let characters = xml.chars().count();
-        SkillCatalogMetrics {
-            bytes: xml.len(),
-            characters,
-            estimated_tokens: characters.div_ceil(4),
-        }
+        SkillCatalogMetrics::from_xml(&self.to_prompt_xml())
     }
 
     /// Report the actual rendered catalog without changing its contents.
@@ -463,28 +581,137 @@ impl SkillCatalog {
 
     /// Generate XML catalog for system prompt.
     ///
-    /// Returns an empty string if no valid skills are in the catalog.
+    /// Returns an empty string if no valid skills are in the catalog. Prefer
+    /// [`Self::to_prompt_xml_with_budget`] for prompt construction; this method
+    /// is the unbudgeted compatibility view.
     pub fn to_prompt_xml(&self) -> String {
         if self.skills.is_empty() {
             return String::new();
         }
+        render_skill_catalog(
+            self.skills
+                .iter()
+                .map(|skill| (skill, skill.description.as_str())),
+            &[],
+        )
+    }
 
-        let mut xml = String::from("<available_skills>\n");
-        for skill in &self.skills {
-            use std::fmt::Write;
-            xml.push_str("  <skill>\n");
-            _ = writeln!(xml, "    <name>{}</name>", xml_escape(&skill.name));
+    /// Render the catalog within `budget`.
+    ///
+    /// Descriptions are shortened first. When the catalog still exceeds the
+    /// budget and `allow_omissions` is true, entries at the end of discovery
+    /// order are omitted and a bounded notice names them. Omission is disabled
+    /// when the run has no way to search the full catalog.
+    pub fn to_prompt_xml_with_budget(
+        &self,
+        budget: SkillCatalogBudget,
+        allow_omissions: bool,
+    ) -> SkillCatalogRender {
+        if self.skills.is_empty() {
+            return SkillCatalogRender {
+                xml: String::new(),
+                omitted_skills: Vec::new(),
+                shortened_descriptions: 0,
+                over_budget: false,
+                budget,
+            };
+        }
+
+        let descriptions: Vec<String> = self
+            .skills
+            .iter()
+            .map(|skill| shorten_description(&skill.description, budget.description_characters))
+            .collect();
+        let mut keep = self.skills.len();
+        loop {
+            let omitted_skills: Vec<String> = self.skills[keep..]
+                .iter()
+                .map(|skill| skill.name.clone())
+                .collect();
+            let xml = render_skill_catalog(
+                self.skills[..keep]
+                    .iter()
+                    .zip(descriptions[..keep].iter())
+                    .map(|(skill, description)| (skill, description.as_str())),
+                &omitted_skills,
+            );
+            let over_budget = xml.chars().count() > budget.catalog_characters;
+            if !over_budget || !allow_omissions || keep == 0 {
+                let shortened_descriptions = self.skills[..keep]
+                    .iter()
+                    .zip(descriptions[..keep].iter())
+                    .filter(|(skill, description)| {
+                        skill.description.as_str() != description.as_str()
+                    })
+                    .count();
+                return SkillCatalogRender {
+                    xml,
+                    omitted_skills,
+                    shortened_descriptions,
+                    over_budget,
+                    budget,
+                };
+            }
+            keep -= 1;
+        }
+    }
+}
+
+/// Render the catalog XML for a selected set of skills.
+fn render_skill_catalog<'a>(
+    skills: impl IntoIterator<Item = (&'a Skill, &'a str)>,
+    omitted_skills: &[String],
+) -> String {
+    use std::fmt::Write as _;
+
+    let mut xml = String::from("<available_skills>\n");
+    for (skill, description) in skills {
+        xml.push_str("  <skill>\n");
+        _ = writeln!(xml, "    <name>{}</name>", xml_escape(&skill.name));
+        _ = writeln!(
+            xml,
+            "    <description>{}</description>",
+            xml_escape(description)
+        );
+        _ = writeln!(xml, "    <location>{}</location>", skill.location.display());
+        xml.push_str("  </skill>\n");
+    }
+    if !omitted_skills.is_empty() {
+        _ = writeln!(xml, "  <omitted_skills count=\"{}\">", omitted_skills.len());
+        for name in omitted_skills.iter().take(MAX_OMITTED_SKILL_NAMES) {
+            _ = writeln!(xml, "    <skill>{}</skill>", xml_escape(name));
+        }
+        if omitted_skills.len() > MAX_OMITTED_SKILL_NAMES {
             _ = writeln!(
                 xml,
-                "    <description>{}</description>",
-                xml_escape(&skill.description)
+                "    <more count=\"{}\"/>",
+                omitted_skills.len() - MAX_OMITTED_SKILL_NAMES
             );
-            _ = writeln!(xml, "    <location>{}</location>", skill.location.display());
-            xml.push_str("  </skill>\n");
         }
-        xml.push_str("</available_skills>");
-        xml
+        xml.push_str("  </omitted_skills>\n");
     }
+    xml.push_str("</available_skills>");
+    xml
+}
+
+/// Shorten a routing description at a word boundary, preserving the budget.
+fn shorten_description(description: &str, max_characters: usize) -> String {
+    if description.chars().count() <= max_characters {
+        return description.to_string();
+    }
+    if max_characters == 0 {
+        return String::new();
+    }
+
+    let mut shortened: String = description.chars().take(max_characters - 1).collect();
+    if let Some(index) = shortened.rfind(char::is_whitespace) {
+        let word_boundary = shortened.get(..index).unwrap_or_default().trim_end();
+        if !word_boundary.is_empty() {
+            shortened.truncate(word_boundary.len());
+        }
+    }
+    shortened.push('…');
+    shortened
 }
 
 /// Escape special XML characters in a string.

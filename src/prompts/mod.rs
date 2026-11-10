@@ -25,12 +25,12 @@ use chrono::Local;
 use tracing::{debug, warn};
 
 use crate::clients::{
-    ExternalServerInfo, ExternalToolInfo, SandboxPolicy, format_tool_list_section_with_mcp,
-    tool_search_enabled,
+    ExternalServerInfo, ExternalToolInfo, SandboxPolicy,
+    format_tool_list_section_with_mcp_and_skill_search, skill_search_enabled, tool_search_enabled,
 };
 use crate::config::mcp::McpExposure;
 use crate::config::toolbox::ToolboxTool;
-use crate::config::{AgentsFile, SkillCatalog};
+use crate::config::{AgentsFile, SkillCatalog, SkillCatalogBudget};
 use crate::types::Role;
 
 /// Built-in default system prompt, embedded at compile time from `system.md`.
@@ -57,6 +57,9 @@ the shell, before proceeding.
 When a skill references relative paths, resolve them against the skill's
 directory (the parent of SKILL.md) and use absolute paths in tool calls.
 </skill_instructions>";
+
+/// Additional instructions when the bounded catalog can omit entries.
+const SKILL_SEARCH_HINT: &str = "\nWhen the catalog reports omitted skills, use the SkillSearch tool to find them by name or description, then read the returned SKILL.md location.";
 
 /// Built-in tools that can read a `SKILL.md` without the `Read` tool.
 const SHELL_TOOL_NAMES: &[&str] = &["Bash"];
@@ -314,6 +317,7 @@ pub fn resolve_system_prompt_with_project(
         &[],
         enabled_tools,
         supports_images,
+        false,
         include_project_prompt,
     )
 }
@@ -333,6 +337,7 @@ pub fn resolve_system_prompt_with_mcp(
     mcp_servers: &[crate::clients::mcp::McpServer],
     enabled_tools: Option<&[String]>,
     supports_images: bool,
+    has_skill_search: bool,
     include_project_prompt: bool,
 ) -> String {
     // 1. --system-prompt CLI flag
@@ -369,6 +374,7 @@ pub fn resolve_system_prompt_with_mcp(
         mcp_servers,
         enabled_tools,
         supports_images,
+        has_skill_search,
     )
 }
 
@@ -411,6 +417,7 @@ fn builtin_prompt(
     mcp_servers: &[crate::clients::mcp::McpServer],
     enabled_tools: Option<&[String]>,
     supports_images: bool,
+    has_skill_search: bool,
 ) -> String {
     let builtin = BUILTIN_SYSTEM_PROMPT.trim().to_string();
     if builtin.contains("{{AVAILABLE_TOOLS}}") {
@@ -446,13 +453,14 @@ fn builtin_prompt(
             .collect();
         builtin.replace(
             "{{AVAILABLE_TOOLS}}",
-            &format_tool_list_section_with_mcp(
+            &format_tool_list_section_with_mcp_and_skill_search(
                 sandbox_policy,
                 toolbox_tools,
                 &mcp_server_infos,
                 &mcp_tools,
                 enabled_tools,
                 supports_images,
+                has_skill_search,
             ),
         )
     } else {
@@ -545,6 +553,7 @@ pub fn build_initial_prompt_messages_with_project(
         settings_system_prompt,
         agents_files,
         skill_catalog,
+        SkillCatalogBudget::defaults(),
         sandbox_policy,
         toolbox_tools,
         &[],
@@ -567,6 +576,7 @@ pub fn build_initial_prompt_messages_with_mcp(
     settings_system_prompt: Option<&Path>,
     agents_files: &[AgentsFile],
     skill_catalog: &SkillCatalog,
+    skill_budget: SkillCatalogBudget,
     sandbox_policy: SandboxPolicy,
     toolbox_tools: &[ToolboxTool],
     mcp_servers: &[crate::clients::mcp::McpServer],
@@ -575,6 +585,9 @@ pub fn build_initial_prompt_messages_with_mcp(
     include_runtime_context: bool,
     include_project_prompt: bool,
 ) -> Vec<(Role, String)> {
+    let skill_search_available = skill_search_enabled(enabled_tools)
+        && !skill_catalog.skills.is_empty()
+        && SkillReader::resolve(enabled_tools).is_some();
     let mut messages = vec![(
         Role::System,
         resolve_system_prompt_with_mcp(
@@ -587,6 +600,7 @@ pub fn build_initial_prompt_messages_with_mcp(
             mcp_servers,
             enabled_tools,
             supports_images,
+            skill_search_available,
             include_project_prompt,
         ),
     )];
@@ -598,12 +612,32 @@ pub fn build_initial_prompt_messages_with_mcp(
     if let Some(reader) = SkillReader::resolve(enabled_tools)
         && !skill_catalog.skills.is_empty()
     {
-        let catalog_xml = skill_catalog.to_prompt_xml();
-        if !catalog_xml.is_empty() {
+        // Omission is allowed only when the run can search the complete
+        // catalog. Without SkillSearch the catalog stays complete and the
+        // over-budget warning names the missing search surface.
+        let search_available = skill_search_available;
+        let render = skill_catalog.to_prompt_xml_with_budget(skill_budget, search_available);
+        let metrics = render.metrics();
+        if render.over_budget {
+            warn!(
+                catalog_characters = metrics.characters,
+                budget_characters = skill_budget.catalog_characters,
+                shortened_descriptions = render.shortened_descriptions,
+                omitted_skills = render.omitted_skills.len(),
+                search_available,
+                "skill catalog exceeds its resolved budget"
+            );
+        }
+        if !render.xml.is_empty() {
             let instructions = reader.instructions();
+            let search_hint = if search_available {
+                SKILL_SEARCH_HINT
+            } else {
+                ""
+            };
             messages.push((
                 Role::Developer,
-                format!("## Skills\n\n{instructions}\n\n{catalog_xml}"),
+                format!("## Skills\n\n{instructions}{search_hint}\n\n{}", render.xml),
             ));
         }
     }
@@ -1397,6 +1431,51 @@ mod tests {
             assert!(prompt.contains("use your file-read tool"));
             assert!(!prompt.contains("`cat <location>`"));
         }
+    }
+
+    #[test]
+    fn budgeted_catalog_omits_only_when_skill_search_is_available() {
+        let config_dir = default_config_dir();
+        let mut catalog = SkillCatalog::empty();
+        for name in ["one", "two", "three"] {
+            catalog.skills.push(Skill {
+                name: name.to_string(),
+                description: "a long routing description that must be shortened".to_string(),
+                location: PathBuf::from(format!("/skills/{name}/SKILL.md")),
+                base_directory: PathBuf::from(format!("/skills/{name}")),
+                scope: SkillScope::Project,
+            });
+        }
+        let budget = SkillCatalogBudget::new(300, 10);
+        let build = |enabled: &[String]| {
+            build_initial_prompt_messages_with_mcp(
+                Path::new("/project"),
+                config_dir.path(),
+                None,
+                None,
+                &[],
+                &catalog,
+                budget,
+                SandboxPolicy::WorkspaceWrite,
+                &[],
+                &[],
+                Some(enabled),
+                true,
+                true,
+                true,
+            )
+        };
+
+        let with_search = render_messages(&build(&["Read".to_string(), "SkillSearch".to_string()]));
+        assert!(with_search.contains("<omitted_skills"));
+        assert!(with_search.contains("SkillSearch tool"));
+        assert!(with_search.contains("- **SkillSearch**:"));
+
+        let without_search = render_messages(&build(&["Read".to_string()]));
+        assert!(!without_search.contains("<omitted_skills"));
+        assert!(!without_search.contains("SkillSearch tool"));
+        assert!(without_search.contains("<name>one</name>"));
+        assert!(without_search.contains("<name>three</name>"));
     }
 
     #[test]

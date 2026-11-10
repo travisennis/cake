@@ -28,7 +28,8 @@ mod tools;
 pub use agent::Agent;
 #[doc(inline)]
 pub use tools::ToolContext;
-pub use tools::format_tool_list_section_with_mcp;
+pub use tools::format_tool_list_section_with_mcp_and_skill_search;
+pub use tools::skill_search_enabled;
 pub use tools::tool_search_enabled;
 pub use tools::{
     BuiltinToolFilterReason, BuiltinToolInventoryEntry, TOOL_SEARCH_NAME, builtin_tool_inventory,

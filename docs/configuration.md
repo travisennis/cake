@@ -417,13 +417,19 @@ Default roots are `<working-directory>/.agents/skills/` for project skills and `
 disabled = false
 only = ["debugging-cake", "review"]
 path = "~/my-skills:/shared/team-skills"
+catalog_budget = 16000
+description_budget = 400
 ```
 
 `path` uses the platform path separator. An empty `only` list permits all discovered skills. `--no-skills` disables them for one run; `--skills name1,name2` selects a one-run allowlist.
 
+`catalog_budget` caps the rendered `<available_skills>` XML in Unicode characters. When it is absent, Cake reserves roughly 2% of the resolved model's context window in tokens, converted at four characters per token and clamped between 1,000 and 64 MiB; a run whose model has no configured `context_window` uses 8,000. `description_budget` caps each routing description and defaults to 400. Both values must be positive integers; they accept no `"unlimited"` sentinel.
+
+Cake shortens over-budget descriptions at a word boundary before it removes any skill. If the catalog still exceeds `catalog_budget` and `SkillSearch` is available to the run, Cake omits entries from the end of discovery order (user skills before configured skills before project skills) and adds a bounded `<omitted_skills>` notice. `SkillSearch` searches the complete discovered catalog by name and description and returns the `SKILL.md` location; it never reads the body. The tool defaults to five matches and returns at most twenty. If `SkillSearch` is excluded from the tool selection, Cake keeps the complete catalog and logs an over-budget warning instead of making a skill unreachable.
+
 A run receives the catalog only when it can read a `SKILL.md`: the `Read` tool when it is selected, otherwise a shell-capable tool such as `Bash`, whose instructions load a skill with `cat <location>`. A run with neither, such as `--no-tools`, receives no catalog. `SkillActivated` session records remain `Read`-only, so a skill loaded through `Bash` is not recorded.
 
-Profiles may overlay `disabled`, `only`, and `path` under `[profiles.<name>.skills]`.
+Profiles may overlay `disabled`, `only`, `path`, `catalog_budget`, and `description_budget` under `[profiles.<name>.skills]`.
 
 Inspect the selected catalog without calling a model:
 
@@ -435,9 +441,10 @@ cake debug skills --no-skills
 cake debug skills --catalog-budget 8000 --description-budget 400
 ```
 
-The report lists every selected skill in name order, with location breaking duplicate names, and shows its scope (`project`, `configured`, or `user`), `SKILL.md` location, description character count, and `ok` or `over` description-budget marker. The summary counts the rendered XML, including escaping and locations, in UTF-8 bytes and Unicode characters. Its token estimate is characters divided by four, rounded up; it is not a provider token count. It warns above the advisory defaults of 8,000 catalog characters and 400 description characters. Discovery and selection diagnostics appear under `Diagnostics`; an empty selection prints `No skills selected.` These are configurable review thresholds, not model limits or measurements of instruction quality. Warnings exit successfully and never truncate descriptions or remove skills. Select fewer skills with `skills.only`, a profile, or `--no-skills` when appropriate.
+The report uses the same budget resolver as a run. It lists every selected skill in name order, with location breaking duplicate names, and shows its scope (`project`, `configured`, or `user`), `SKILL.md` location, description character count, `ok` or `over` description-budget marker, and whether the skill appears in the bounded prompt catalog. The summary counts the rendered XML, including escaping, locations, and any omission notice, in UTF-8 bytes and Unicode characters. Its token estimate is characters divided by four, rounded up; it is not a provider token count. It reports the effective catalog and description budgets, how many descriptions were shortened, how many skills were omitted, and whether the rendered catalog still exceeds its budget. Because `debug skills` resolves no model, an unset `catalog_budget` uses the 8,000-character fallback; `--catalog-budget` and `--description-budget` override settings for the inspection. Omissions assume `SkillSearch` is available.
+Discovery and selection diagnostics appear under `Diagnostics`; an empty selection prints `No skills selected.` Select fewer skills with `skills.only`, a profile, or `--no-skills` when appropriate.
 
-`--json` emits the same selection as one versioned diagnostic document. `summary` carries the skill count, advisory budgets, rendered size, and over-budget counts; each `data.skills` entry carries the name, description, scope, location, base directory, description character count, and over-budget flag; `data.project_trust` reports the trust decision. Settings, project-trust, discovery, and selection findings appear in `checks`, so machine mode writes no diagnostics to stderr.
+`--json` emits the same selection as one versioned diagnostic document. `summary` carries the skill count, effective budgets, rendered size, shortened and omitted counts, and over-budget state; each `data.skills` entry carries the name, description, scope, location, base directory, description character count, over-budget flag, and prompt membership; `data.project_trust` reports the trust decision. Settings, project-trust, discovery, and selection findings appear in `checks`, so machine mode writes no diagnostics to stderr.
 
 The report measures the selected catalog, not the complete prompt; an agent run includes the catalog only when the run can read a `SKILL.md` (see above). Discovery precedence and profile filtering match an agent run. Place `--skills` and `--no-skills` after `debug skills` for this report.
 

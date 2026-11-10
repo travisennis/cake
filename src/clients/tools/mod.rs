@@ -330,6 +330,7 @@ mod read_tracker;
 mod scheduling;
 mod script_evidence;
 mod secure_temp_dir;
+mod skill_search;
 mod tool_search;
 mod toolbox;
 mod write;
@@ -340,6 +341,9 @@ pub use json_repair::repair_json_args;
 pub(super) use mcp::mcp_tool_entry;
 pub use read::extract_path as read_extract_path;
 pub(super) use scheduling::{ScheduledToolCall, schedule_tool_calls};
+pub use skill_search::{
+    SKILL_SEARCH_NAME, SkillSearchEntry, skill_search_enabled, skill_search_entry,
+};
 pub use tool_search::{TOOL_SEARCH_NAME, ToolSearchEntry, tool_search_enabled, tool_search_entry};
 pub(super) use toolbox::toolbox_tool_entry;
 
@@ -1718,6 +1722,7 @@ pub struct ExternalServerInfo {
 /// `mcp_tools` is empty under the read-only policy, matching the registry's
 /// filtering of external tools. `mcp_servers` carries one summary row per
 /// non-hidden, model-accessible server.
+#[cfg(test)]
 pub fn format_tool_list_section_with_mcp(
     sandbox_policy: SandboxPolicy,
     toolbox_tools: &[crate::config::toolbox::ToolboxTool],
@@ -1725,6 +1730,27 @@ pub fn format_tool_list_section_with_mcp(
     mcp_tools: &[ExternalToolInfo],
     enabled_tools: Option<&[String]>,
     supports_images: bool,
+) -> String {
+    format_tool_list_section_with_mcp_and_skill_search(
+        sandbox_policy,
+        toolbox_tools,
+        mcp_servers,
+        mcp_tools,
+        enabled_tools,
+        supports_images,
+        false,
+    )
+}
+
+/// Format the tool list with the optional `SkillSearch` built-in.
+pub fn format_tool_list_section_with_mcp_and_skill_search(
+    sandbox_policy: SandboxPolicy,
+    toolbox_tools: &[crate::config::toolbox::ToolboxTool],
+    mcp_servers: &[ExternalServerInfo],
+    mcp_tools: &[ExternalToolInfo],
+    enabled_tools: Option<&[String]>,
+    supports_images: bool,
+    has_skill_search: bool,
 ) -> String {
     let mut registry = default_tool_registry();
     registry.retain_model_supported_tools(supports_images);
@@ -1752,12 +1778,51 @@ pub fn format_tool_list_section_with_mcp(
         && summarized_servers
             .iter()
             .any(|server| server.exposure == McpExposure::Deferred);
+    append_tool_lines(&mut s, &registry, toolbox_lines, mcp_tools, enabled_tools);
+    if has_deferred_tools {
+        s.push_str(
+            "- **ToolSearch**: Search MCP tools that are not loaded yet and make matching \
+             tools available on the next turn.\n",
+        );
+    }
+    if has_skill_search {
+        s.push_str(
+            "- **SkillSearch**: Search the full skill catalog by name and description, \
+             including skills omitted from the prompt. Returns the SKILL.md location to read.\n",
+        );
+    }
+    append_mcp_server_summary(&mut s, &summarized_servers);
+    let has_tools = has_any_enabled_tools(
+        &registry,
+        has_toolbox_tools,
+        has_mcp_tools || !summarized_servers.is_empty(),
+    ) || has_deferred_tools
+        || has_skill_search;
+    if has_tools {
+        s.push_str(
+            "\nEvery tool call may include an optional `intent` string: one short, \
+             present-progressive sentence describing what the call does, written for the user. \
+             Include it on every call when you can.\n",
+        );
+    }
+    append_tool_availability_footer(&mut s, has_tools, has_deferred_tools);
+    s
+}
+
+/// Append one model-visible line for each enabled built-in, toolbox, or MCP tool.
+fn append_tool_lines(
+    output: &mut String,
+    registry: &ToolRegistry,
+    toolbox_tools: &[crate::config::toolbox::ToolboxTool],
+    mcp_tools: &[ExternalToolInfo],
+    enabled_tools: Option<&[String]>,
+) {
     for (name, desc) in registry
         .definitions()
         .iter()
         .map(|def| (&def.name, &def.description))
         .chain(
-            toolbox_lines
+            toolbox_tools
                 .iter()
                 .filter(|tool| is_enabled_tool(&tool.registered_name, enabled_tools))
                 .map(|tool| (&tool.registered_name, &tool.description)),
@@ -1775,29 +1840,8 @@ pub fn format_tool_list_section_with_mcp(
             .unwrap_or(desc)
             .trim()
             .trim_end_matches('.');
-        _ = writeln!(s, "- **{name}**: {first_sentence}.");
+        _ = writeln!(output, "- **{name}**: {first_sentence}.");
     }
-    if has_deferred_tools {
-        s.push_str(
-            "- **ToolSearch**: Search MCP tools that are not loaded yet and make matching \
-             tools available on the next turn.\n",
-        );
-    }
-    append_mcp_server_summary(&mut s, &summarized_servers);
-    let has_tools = has_any_enabled_tools(
-        &registry,
-        has_toolbox_tools,
-        has_mcp_tools || !summarized_servers.is_empty(),
-    );
-    if has_tools {
-        s.push_str(
-            "\nEvery tool call may include an optional `intent` string: one short, \
-             present-progressive sentence describing what the call does, written for the user. \
-             Include it on every call when you can.\n",
-        );
-    }
-    append_tool_availability_footer(&mut s, has_tools, has_deferred_tools);
-    s
 }
 
 /// Bound on one server description in the prompt summary.
@@ -2622,6 +2666,31 @@ mod tests {
         assert!(result.contains("- **Write**:"));
         assert!(result.contains("Only these tools are available."));
         assert!(result.contains("no Glob, Grep, or LS tool"));
+    }
+
+    #[test]
+    fn format_tool_list_section_advertises_skill_search_when_requested() {
+        let result = format_tool_list_section_with_mcp_and_skill_search(
+            SandboxPolicy::WorkspaceWrite,
+            &[],
+            &[],
+            &[],
+            None,
+            true,
+            true,
+        );
+        assert!(result.contains("- **SkillSearch**:"));
+
+        let without = format_tool_list_section_with_mcp_and_skill_search(
+            SandboxPolicy::WorkspaceWrite,
+            &[],
+            &[],
+            &[],
+            None,
+            true,
+            false,
+        );
+        assert!(!without.contains("- **SkillSearch**:"));
     }
 
     #[test]

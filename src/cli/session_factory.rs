@@ -13,10 +13,12 @@ use tracing::info;
 use crate::cli::run_mode::{RunMode, SessionPersistencePlan};
 use crate::clients::mcp::McpServer;
 use crate::clients::{Agent, ToolContext};
+use crate::config::settings::SkillSettings;
 use crate::config::skills::Skill;
 use crate::config::toolbox::ToolboxTool;
 use crate::config::{
     AgentsFile, DataDir, ModelDefinition, ResolvedModelConfig, Session, SkillCatalog,
+    SkillCatalogBudget,
 };
 use crate::prompts::build_initial_prompt_messages_with_mcp;
 use crate::types::SessionRecord;
@@ -297,6 +299,7 @@ impl crate::CodingAssistant {
         enabled_tools: Option<&[String]>,
         task_id: uuid::Uuid,
         loaded_system_prompt: Option<&str>,
+        skill_settings: &SkillSettings,
         include_project_prompt: bool,
     ) -> anyhow::Result<RunSession> {
         let inputs = RunInputs {
@@ -309,6 +312,7 @@ impl crate::CodingAssistant {
             skill_locations: skill_locations(skill_catalog),
             models,
             default_model,
+            skill_settings,
             tool_context,
             toolbox_tools,
             mcp_servers,
@@ -345,7 +349,10 @@ impl crate::CodingAssistant {
             restored.model.as_deref(),
             restored.model_config.as_deref(),
         )?;
-        let initial_messages = inputs.initial_messages(resolved.model_config.supports_images);
+        let initial_messages = inputs.initial_messages(
+            resolved.model_config.supports_images,
+            resolved.model_config.context_window,
+        );
         let tool_context = Arc::clone(inputs.tool_context);
         Self::restored_client_and_session(
             restored,
@@ -391,7 +398,10 @@ impl crate::CodingAssistant {
             restored.model.as_deref(),
             restored.model_config.as_deref(),
         )?;
-        let initial_messages = inputs.initial_messages(resolved.model_config.supports_images);
+        let initial_messages = inputs.initial_messages(
+            resolved.model_config.supports_images,
+            resolved.model_config.context_window,
+        );
         let tool_context = Arc::clone(inputs.tool_context);
         Self::forked_client_and_session(
             &restored,
@@ -417,7 +427,10 @@ impl crate::CodingAssistant {
         let (config, model_config_name) =
             self.resolve_model_config(inputs.models, inputs.default_model)?;
         let resolved = ResolvedModelConfig::resolve(config)?;
-        let initial_messages = inputs.initial_messages(resolved.model_config.supports_images);
+        let initial_messages = inputs.initial_messages(
+            resolved.model_config.supports_images,
+            resolved.model_config.context_window,
+        );
         Ok(Self::new_client_and_session(
             resolved,
             model_config_name,
@@ -445,6 +458,7 @@ struct RunInputs<'a> {
     skill_locations: HashMap<PathBuf, Skill>,
     models: &'a HashMap<String, ModelDefinition>,
     default_model: Option<&'a str>,
+    skill_settings: &'a SkillSettings,
     tool_context: &'a Arc<ToolContext>,
     toolbox_tools: &'a [ToolboxTool],
     mcp_servers: &'a [McpServer],
@@ -460,7 +474,16 @@ impl RunInputs<'_> {
     /// The tool list is built after the model is resolved so it can reflect
     /// model capabilities: a model that does not accept image input never
     /// advertises `ReadImage`.
-    fn initial_messages(&self, supports_images: bool) -> Vec<(crate::types::Role, String)> {
+    fn initial_messages(
+        &self,
+        supports_images: bool,
+        context_window: Option<u32>,
+    ) -> Vec<(crate::types::Role, String)> {
+        let skill_budget = SkillCatalogBudget::resolve(
+            context_window,
+            self.skill_settings.catalog_budget(),
+            self.skill_settings.description_budget(),
+        );
         build_initial_prompt_messages_with_mcp(
             &self.current_dir,
             self.config_dir,
@@ -468,6 +491,7 @@ impl RunInputs<'_> {
             self.settings_system_prompt,
             self.agents_files,
             self.skill_catalog,
+            skill_budget,
             self.tool_context.sandbox_policy(),
             self.toolbox_tools,
             self.mcp_servers,
@@ -678,6 +702,7 @@ mod tests {
                     None,
                     uuid::Uuid::new_v4(),
                     None,
+                    &SkillSettings::default(),
                     true,
                 )
                 .expect("session construction should succeed");
@@ -937,6 +962,7 @@ mod tests {
             None,
             uuid::Uuid::new_v4(),
             None,
+            &SkillSettings::default(),
             true,
         )
     }

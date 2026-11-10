@@ -1630,6 +1630,7 @@ impl CmdRunner for CodingAssistant {
             resources.tools_enabled.as_deref(),
             task_id,
             resources.loaded.system_prompt.as_deref(),
+            &resources.loaded.skills,
             resources.project_config_mode.loads_project_config(),
         )?;
 

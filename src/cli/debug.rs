@@ -8,7 +8,9 @@ use crate::clients::mcp::connect_server;
 use crate::config::mcp::discover_mcp_servers;
 use crate::config::model::ApiType;
 use crate::config::settings::LoadedSettings;
-use crate::config::skills::{discover_skills_with_paths, parse_skill_path_list};
+use crate::config::skills::{
+    SkillCatalogBudget, discover_skills_with_paths, parse_skill_path_list,
+};
 use crate::config::trust::{ProjectTrustReport, TrustState};
 use crate::config::{DataDir, ModelDefinition, SettingsLoader};
 use clap::{Parser, Subcommand};
@@ -102,12 +104,12 @@ Examples:
   cake debug skills
   cake debug skills --json | jq '.data.skills[].name'")]
     Skills {
-        /// Advisory rendered XML budget in Unicode characters
-        #[arg(long, default_value_t = 8000)]
-        catalog_budget: usize,
-        /// Advisory routing-description budget in Unicode characters
-        #[arg(long, default_value_t = 400)]
-        description_budget: usize,
+        /// Override the rendered XML budget in Unicode characters
+        #[arg(long, value_name = "CHARS")]
+        catalog_budget: Option<usize>,
+        /// Override the routing-description budget in Unicode characters
+        #[arg(long, value_name = "CHARS")]
+        description_budget: Option<usize>,
         /// Report an empty catalog, as for a run with --no-skills
         #[arg(long)]
         no_skills: bool,
@@ -322,13 +324,16 @@ fn render_models(
 
 /// Inspect the selected skill catalog without setting up an agent session.
 fn run_skills(
-    catalog_budget: usize,
-    description_budget: usize,
+    catalog_budget: Option<usize>,
+    description_budget: Option<usize>,
     no_skills: bool,
     skills: Option<&str>,
     json: bool,
     options: &CommandRunOptions<'_>,
 ) -> anyhow::Result<()> {
+    if catalog_budget == Some(0) || description_budget == Some(0) {
+        return Err(anyhow::anyhow!("skill budgets must be positive integers"));
+    }
     let load = load_settings("debug skills", json, options)?;
     let loaded = load.settings;
     let roots = loaded
@@ -341,25 +346,21 @@ fn run_skills(
         .map_err(|error| anyhow::anyhow!("Failed to get current directory: {error}"))?;
     let config = SettingsLoader::resolve_skill_config(no_skills, skills, &loaded.skills);
     let catalog = config.apply(discover_skills_with_paths(&current_dir, &roots));
+    let budget = SkillCatalogBudget::resolve(
+        None,
+        catalog_budget.or_else(|| loaded.skills.catalog_budget()),
+        description_budget.or_else(|| loaded.skills.description_budget()),
+    );
 
     if json {
         print!(
             "{}",
-            skills_report::render_json(
-                &catalog,
-                &loaded.warnings,
-                &load.trust,
-                catalog_budget,
-                description_budget,
-            )?
+            skills_report::render_json(&catalog, &loaded.warnings, &load.trust, budget)?
         );
     } else {
         loaded.print_warnings();
         print_project_trust_warning(&load.trust);
-        print!(
-            "{}",
-            skills_report::format_text(&catalog, catalog_budget, description_budget)
-        );
+        print!("{}", skills_report::format_text(&catalog, budget));
     }
     Ok(())
 }
@@ -837,7 +838,7 @@ mod tests {
             Vec::new(),
         );
 
-        let output = skills_report::format_text(&catalog, 8000, 400);
+        let output = skills_report::format_text(&catalog, SkillCatalogBudget::new(8000, 400));
 
         assert!(output.contains("Selected: 2 skills"));
         assert!(output.contains("Name"));
@@ -867,14 +868,18 @@ mod tests {
             Vec::new(),
         );
 
-        let over = skills_report::format_text(&catalog, 1, 1);
+        let over = skills_report::format_text(&catalog, SkillCatalogBudget::new(1, 1));
         assert!(over.contains("Selected: 1 skill"));
         assert!(over.contains("configured"));
         assert!(over.contains("Descriptions over budget: 1"));
         assert!(over.contains("over"));
-        assert!(over.contains("Catalog budget: WARNING: rendered catalog exceeds"));
+        assert!(over.contains("Catalog budget: WARNING: rendered catalog still exceeds"));
+        assert!(over.contains("Skills omitted: 1"));
+        assert!(over.contains("Omitted: verbose"));
+        assert!(over.contains("Omissions assume SkillSearch is available."));
+        assert!(over.contains("omitted"));
 
-        let within = skills_report::format_text(&catalog, 10_000, 400);
+        let within = skills_report::format_text(&catalog, SkillCatalogBudget::new(10_000, 400));
         assert!(within.contains("Catalog budget: within budget"));
         assert!(within.contains("Descriptions over budget: 0"));
         assert!(within.contains(" ok "));
@@ -882,7 +887,8 @@ mod tests {
 
     #[test]
     fn format_skills_report_empty_state_is_explicit() {
-        let output = skills_report::format_text(&SkillCatalog::empty(), 8000, 400);
+        let output =
+            skills_report::format_text(&SkillCatalog::empty(), SkillCatalogBudget::new(8000, 400));
 
         assert!(output.starts_with("Skill catalog\nNo skills selected.\n"));
         assert!(!output.contains("Name"));
@@ -906,7 +912,7 @@ mod tests {
             ],
         );
 
-        let output = skills_report::format_text(&catalog, 8000, 400);
+        let output = skills_report::format_text(&catalog, SkillCatalogBudget::new(8000, 400));
 
         assert!(output.contains("Diagnostics\n"));
         assert!(output.contains("warning: Requested skill 'absent' was not found"));
@@ -935,7 +941,7 @@ mod tests {
             Vec::new(),
         );
 
-        let output = skills_report::format_text(&catalog, 8000, 400);
+        let output = skills_report::format_text(&catalog, SkillCatalogBudget::new(8000, 400));
 
         assert!(
             output.find("/a/SKILL.md").expect("first duplicate")
@@ -975,8 +981,13 @@ mod tests {
         );
         let loaded = loaded_settings(std::collections::HashMap::default(), None, Vec::new());
 
-        let output =
-            skills_report::render_json(&catalog, &loaded.warnings, &trust_report(), 1, 1).unwrap();
+        let output = skills_report::render_json(
+            &catalog,
+            &loaded.warnings,
+            &trust_report(),
+            SkillCatalogBudget::new(1, 1),
+        )
+        .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
 
         assert_eq!(parsed["schema_version"], 1);
@@ -987,6 +998,11 @@ mod tests {
         assert_eq!(parsed["summary"]["description_budget"], 1);
         assert_eq!(parsed["summary"]["catalog_over_budget"], true);
         assert_eq!(parsed["summary"]["descriptions_over_budget"], 2);
+        assert_eq!(parsed["summary"]["omitted_count"], 2);
+        let omitted = parsed["summary"]["omitted_skills"].as_array().unwrap();
+        assert!(omitted.iter().any(|name| name == "alpha"));
+        assert!(omitted.iter().any(|name| name == "zeta"));
+        assert_eq!(parsed["data"]["skills"][0]["in_prompt"], false);
         assert_skill_json_rows(&parsed);
         assert_eq!(parsed["data"]["project_trust"]["state"], "not_required");
     }
@@ -1010,8 +1026,13 @@ mod tests {
             vec!["unknown key 'temparature' in .cake/settings.toml".to_string()],
         );
 
-        let output =
-            skills_report::render_json(&catalog, &loaded.warnings, &trust_report(), 1, 1).unwrap();
+        let output = skills_report::render_json(
+            &catalog,
+            &loaded.warnings,
+            &trust_report(),
+            SkillCatalogBudget::new(1, 1),
+        )
+        .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
 
         assert_eq!(parsed["status"], "warning");
@@ -1031,9 +1052,13 @@ mod tests {
         let mut trust = trust_report();
         trust.state = TrustState::Untrusted;
 
-        let output =
-            skills_report::render_json(&SkillCatalog::empty(), &loaded.warnings, &trust, 8000, 400)
-                .unwrap();
+        let output = skills_report::render_json(
+            &SkillCatalog::empty(),
+            &loaded.warnings,
+            &trust,
+            SkillCatalogBudget::new(8000, 400),
+        )
+        .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
 
         assert_eq!(parsed["status"], "warning");

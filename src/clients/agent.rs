@@ -12,9 +12,9 @@ use crate::clients::agent_state::{ConversationState, accumulate_usage};
 use crate::clients::backend::Backend;
 use crate::clients::mcp::{McpClient, McpServer, McpTool};
 use crate::clients::tools::{
-    SandboxPolicy, TOOL_SEARCH_NAME, ToolContext, ToolRegistry, ToolSearchEntry,
-    default_tool_registry, mcp_tool_entry, tool_search_enabled, tool_search_entry,
-    toolbox_tool_entry,
+    SKILL_SEARCH_NAME, SandboxPolicy, SkillSearchEntry, TOOL_SEARCH_NAME, ToolContext,
+    ToolRegistry, ToolSearchEntry, default_tool_registry, mcp_tool_entry, skill_search_enabled,
+    skill_search_entry, tool_search_enabled, tool_search_entry, toolbox_tool_entry,
 };
 use crate::config::model::ResolvedModelConfig;
 use crate::config::output_schema::OutputSchema;
@@ -158,6 +158,8 @@ pub struct Agent {
     active_mcp_tools: Arc<Mutex<HashSet<String>>>,
     /// Whether this agent installed the `ToolSearch` entry.
     tool_search_installed: bool,
+    /// Whether this agent installed the `SkillSearch` entry.
+    skill_search_installed: bool,
     tool_context: Arc<ToolContext>,
     /// Session ID for tracking
     session_id: uuid::Uuid,
@@ -228,6 +230,7 @@ impl Agent {
             pending_tool_activations: Arc::new(Mutex::new(Vec::new())),
             active_mcp_tools: Arc::new(Mutex::new(HashSet::new())),
             tool_search_installed: false,
+            skill_search_installed: false,
             tool_context: Arc::new(ToolContext::from_current_process()),
             session_id: uuid::Uuid::new_v4(),
             task_id: uuid::Uuid::new_v4(),
@@ -605,6 +608,7 @@ impl Agent {
             self.tools.retain_enabled_tools(enabled_tools);
         }
         self.refresh_tool_search();
+        self.install_skill_search();
         self
     }
 
@@ -843,7 +847,42 @@ impl Agent {
     /// emitted once per skill per session.
     pub fn with_skill_locations(mut self, locations: HashMap<PathBuf, Skill>) -> Self {
         self.skill_locations = Arc::new(locations);
+        self.install_skill_search();
         self
+    }
+
+    /// Install `SkillSearch` when the catalog is visible and the run can read
+    /// a `SKILL.md`. The tool searches metadata only; it never opens a body.
+    fn install_skill_search(&mut self) {
+        if self.skill_search_installed {
+            self.tools.remove_by_name(SKILL_SEARCH_NAME);
+            self.skill_search_installed = false;
+        }
+        if self.skill_locations.is_empty()
+            || !skill_search_enabled(self.enabled_tool_names.as_deref())
+            || (!self.tools.has("Read") && !self.tools.has("Bash"))
+        {
+            return;
+        }
+        if self.tools.has(SKILL_SEARCH_NAME) {
+            tracing::warn!(
+                target: "cake",
+                "an existing tool already uses the registered name '{SKILL_SEARCH_NAME}'; \
+                 skill catalog omissions are disabled"
+            );
+            return;
+        }
+        let entries: Vec<SkillSearchEntry> = self
+            .skill_locations
+            .values()
+            .map(|skill| SkillSearchEntry {
+                name: skill.name.clone(),
+                description: skill.description.clone(),
+                location: skill.location.clone(),
+            })
+            .collect();
+        self.tools.push_entry(skill_search_entry(entries));
+        self.skill_search_installed = true;
     }
 
     /// Seeds the set of skill names already activated in this session.

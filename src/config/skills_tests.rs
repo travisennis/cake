@@ -346,6 +346,185 @@ fn diagnostic_level_labels_are_stable() {
 }
 
 #[test]
+fn skill_catalog_budget_uses_context_window_and_clamps() {
+    assert_eq!(
+        SkillCatalogBudget::from_context_window(None),
+        SkillCatalogBudget::defaults()
+    );
+    assert_eq!(
+        SkillCatalogBudget::from_context_window(Some(200_000)).catalog_characters,
+        16_000
+    );
+    assert_eq!(
+        SkillCatalogBudget::from_context_window(Some(1_000)).catalog_characters,
+        MIN_CONTEXT_SKILL_CATALOG_CHARACTERS
+    );
+    assert_eq!(
+        SkillCatalogBudget::from_context_window(Some(u32::MAX)).catalog_characters,
+        MAX_CONTEXT_SKILL_CATALOG_CHARACTERS
+    );
+    assert_eq!(
+        SkillCatalogBudget::from_context_window(Some(200_000)).description_characters,
+        DEFAULT_SKILL_DESCRIPTION_CHARACTERS
+    );
+}
+
+#[test]
+fn skill_catalog_budget_explicit_values_override_context_default() {
+    let budget = SkillCatalogBudget::resolve(Some(200_000), Some(1_234), Some(56));
+    assert_eq!(
+        budget,
+        SkillCatalogBudget::new(1_234, 56),
+        "explicit settings must win over the context-relative default"
+    );
+
+    let budget = SkillCatalogBudget::resolve(Some(200_000), None, Some(56));
+    assert_eq!(budget.catalog_characters, 16_000);
+    assert_eq!(budget.description_characters, 56);
+}
+
+#[test]
+fn shorten_description_uses_a_word_boundary_and_ellipsis() {
+    assert_eq!(shorten_description("abc", 3), "abc");
+    assert_eq!(shorten_description("one two three four", 10), "one two…");
+    assert_eq!(shorten_description("abc", 1), "…");
+    assert_eq!(shorten_description("abc", 0), "");
+    assert_eq!(shorten_description("ééé", 2), "é…");
+    assert_eq!(shorten_description("abcdef", 4), "abc…");
+}
+
+#[test]
+fn budgeted_catalog_shortens_descriptions_before_omitting_entries() {
+    let mut catalog = SkillCatalog::empty();
+    for (name, description) in [
+        ("one", "a description that is much too long"),
+        ("two", "another description that is much too long"),
+        ("three", "a third description that is much too long"),
+    ] {
+        catalog.skills.push(Skill {
+            name: name.to_string(),
+            description: description.to_string(),
+            location: PathBuf::from(format!("/skills/{name}/SKILL.md")),
+            base_directory: PathBuf::from(format!("/skills/{name}")),
+            scope: SkillScope::Project,
+        });
+    }
+    let original = catalog.to_prompt_xml();
+    let budget = SkillCatalogBudget::new(300, 12);
+
+    let render = catalog.to_prompt_xml_with_budget(budget, true);
+
+    assert!(!render.over_budget);
+    assert!(render.metrics().characters <= budget.catalog_characters);
+    assert!(render.shortened_descriptions > 0);
+    assert!(!render.omitted_skills.is_empty());
+    assert!(render.xml.contains("<omitted_skills"));
+    assert_eq!(catalog.to_prompt_xml(), original);
+}
+
+#[test]
+fn budgeted_catalog_does_not_omit_without_a_search_path() {
+    let mut catalog = SkillCatalog::empty();
+    for name in ["one", "two", "three"] {
+        catalog.skills.push(Skill {
+            name: name.to_string(),
+            description: "a description that is much too long".to_string(),
+            location: PathBuf::from(format!("/skills/{name}/SKILL.md")),
+            base_directory: PathBuf::from(format!("/skills/{name}")),
+            scope: SkillScope::Project,
+        });
+    }
+    let budget = SkillCatalogBudget::new(1, 12);
+
+    let render = catalog.to_prompt_xml_with_budget(budget, false);
+
+    assert!(render.over_budget);
+    assert!(render.omitted_skills.is_empty());
+    assert!(!render.xml.contains("<omitted_skills"));
+    assert!(render.xml.contains("<name>one</name>"));
+    assert!(render.xml.contains("<name>three</name>"));
+}
+
+#[test]
+fn budgeted_catalog_retains_discovery_prefix_when_omitting() {
+    let mut catalog = SkillCatalog::empty();
+    for (index, name) in ["project", "configured", "user"].into_iter().enumerate() {
+        catalog.skills.push(Skill {
+            name: name.to_string(),
+            description: "a long routing description that must be shortened".to_string(),
+            location: PathBuf::from(format!("/skills/{name}/SKILL.md")),
+            base_directory: PathBuf::from(format!("/skills/{name}")),
+            scope: match index {
+                0 => SkillScope::Project,
+                1 => SkillScope::Configured,
+                _ => SkillScope::User,
+            },
+        });
+    }
+
+    let render = catalog.to_prompt_xml_with_budget(SkillCatalogBudget::new(350, 10), true);
+
+    assert!(render.xml.contains("<name>project</name>"));
+    assert!(render.omitted_skills.contains(&"user".to_string()));
+    assert!(
+        !render.omitted_skills.contains(&"project".to_string()),
+        "higher-precedence skills must survive omission"
+    );
+}
+
+#[test]
+fn budgeted_catalog_notice_is_bounded_and_never_empty_when_skills_exist() {
+    let mut catalog = SkillCatalog::empty();
+    for index in 0..12 {
+        let name = format!("skill-{index}");
+        catalog.skills.push(Skill {
+            name: name.clone(),
+            description: "a long routing description that must be shortened".to_string(),
+            location: PathBuf::from(format!("/skills/{name}/SKILL.md")),
+            base_directory: PathBuf::from(format!("/skills/{name}")),
+            scope: SkillScope::User,
+        });
+    }
+
+    let render = catalog.to_prompt_xml_with_budget(SkillCatalogBudget::new(0, 10), true);
+
+    assert!(render.over_budget);
+    assert_eq!(render.omitted_skills.len(), 12);
+    assert!(render.xml.contains("<omitted_skills count=\"12\">"));
+    assert!(render.xml.contains("<more count=\"4\"/>"));
+    assert!(render.xml.contains("<available_skills>"));
+}
+
+#[test]
+fn budgeted_catalog_omission_is_deterministic() {
+    let mut catalog = SkillCatalog::empty();
+    for name in ["one", "two", "three", "four"] {
+        catalog.skills.push(Skill {
+            name: name.to_string(),
+            description: "a long routing description that must be shortened".to_string(),
+            location: PathBuf::from(format!("/skills/{name}/SKILL.md")),
+            base_directory: PathBuf::from(format!("/skills/{name}")),
+            scope: SkillScope::Project,
+        });
+    }
+    let budget = SkillCatalogBudget::new(300, 10);
+    let expected = catalog.to_prompt_xml_with_budget(budget, true);
+
+    for _ in 0..5 {
+        assert_eq!(catalog.to_prompt_xml_with_budget(budget, true), expected);
+    }
+}
+
+#[test]
+fn budgeted_catalog_empty_catalog_is_empty() {
+    let render =
+        SkillCatalog::empty().to_prompt_xml_with_budget(SkillCatalogBudget::new(100, 10), true);
+    assert!(render.xml.is_empty());
+    assert!(render.omitted_skills.is_empty());
+    assert!(!render.over_budget);
+}
+
+#[test]
 fn catalog_metrics_match_rendered_xml_and_budget_boundaries() {
     let mut catalog = SkillCatalog::empty();
     catalog.skills.push(Skill {

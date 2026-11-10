@@ -208,6 +208,8 @@ struct SkillSettingsSnapshot {
     disabled: bool,
     only: Vec<String>,
     path: Option<String>,
+    catalog_budget: Option<usize>,
+    description_budget: Option<usize>,
     resolved_paths: Vec<String>,
 }
 
@@ -287,6 +289,8 @@ impl SettingsSnapshot {
                 disabled: loaded.skills.disabled,
                 only: loaded.skills.only.clone(),
                 path: loaded.skills.path.clone(),
+                catalog_budget: loaded.skills.catalog_budget(),
+                description_budget: loaded.skills.description_budget(),
                 resolved_paths: path_strings(roots),
             },
             tools_enabled: loaded.tools_enabled.clone(),
@@ -1055,8 +1059,12 @@ impl ConfigReport {
         append_string_list(output, "sandbox.writable", &self.settings.sandbox.writable);
         _ = writeln!(
             output,
-            "  skills: disabled={}, only={:?}, path={:?}",
-            self.settings.skills.disabled, self.settings.skills.only, self.settings.skills.path
+            "  skills: disabled={}, only={:?}, path={:?}, catalog_budget={:?}, description_budget={:?}",
+            self.settings.skills.disabled,
+            self.settings.skills.only,
+            self.settings.skills.path,
+            self.settings.skills.catalog_budget,
+            self.settings.skills.description_budget
         );
         match &self.settings.tools_enabled {
             Some(names) => _ = writeln!(output, "  tools.enabled: {names:?}"),

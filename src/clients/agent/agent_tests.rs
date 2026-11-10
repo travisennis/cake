@@ -80,6 +80,66 @@ fn empty_enabled_tool_selection_removes_builtins() {
     assert!(agent.tool_names().is_empty());
 }
 
+fn skill_fixture() -> HashMap<PathBuf, Skill> {
+    let path = PathBuf::from("/skills/browser/SKILL.md");
+    HashMap::from([(
+        path.clone(),
+        Skill {
+            name: "browser".to_string(),
+            description: "List open browser tabs.".to_string(),
+            location: path,
+            base_directory: PathBuf::from("/skills/browser"),
+            scope: crate::config::skills::SkillScope::Project,
+        },
+    )])
+}
+
+#[test]
+fn skill_search_is_registered_when_skills_and_a_reader_are_available() {
+    let agent = Agent::new(
+        test_resolved_model_config(ApiType::ChatCompletions, "https://api.example.com"),
+        &[(Role::System, "test system prompt".to_string())],
+    )
+    .with_skill_locations(skill_fixture());
+
+    assert!(agent.tool_names().contains(&"SkillSearch".to_string()));
+}
+
+#[test]
+fn skill_search_respects_the_tool_allowlist() {
+    let agent = Agent::new(
+        test_resolved_model_config(ApiType::ChatCompletions, "https://api.example.com"),
+        &[(Role::System, "test system prompt".to_string())],
+    )
+    .with_enabled_tools(Some(&["Read".to_string()]))
+    .with_skill_locations(skill_fixture());
+
+    assert!(!agent.tool_names().contains(&"SkillSearch".to_string()));
+}
+
+#[test]
+fn skill_search_is_not_registered_without_a_reader() {
+    let agent = Agent::new(
+        test_resolved_model_config(ApiType::ChatCompletions, "https://api.example.com"),
+        &[(Role::System, "test system prompt".to_string())],
+    )
+    .with_enabled_tools(Some(&["SkillSearch".to_string(), "Edit".to_string()]))
+    .with_skill_locations(skill_fixture());
+
+    assert!(!agent.tool_names().contains(&"SkillSearch".to_string()));
+}
+
+#[test]
+fn skill_search_is_not_registered_without_skills() {
+    let agent = Agent::new(
+        test_resolved_model_config(ApiType::ChatCompletions, "https://api.example.com"),
+        &[(Role::System, "test system prompt".to_string())],
+    )
+    .with_skill_locations(HashMap::new());
+
+    assert!(!agent.tool_names().contains(&"SkillSearch".to_string()));
+}
+
 #[test]
 fn enabled_tool_selection_filters_toolbox_tools() {
     let enabled = vec!["tb__run_tests".to_string()];
