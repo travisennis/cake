@@ -14,7 +14,7 @@ For model and behavior settings, project values overlay global values. When a pr
 4. project top-level settings
 5. global top-level settings
 
-Keys in a settings file that Cake does not recognize are ignored and reported as a warning on stderr, so a misspelled key (for example `temparature` instead of `temperature`) is surfaced instead of silently dropped. The warning names the file and the section, for example `unknown key 'temparature' in [[models]] entry 'zen'; ignored`.
+Keys in a settings file that Cake does not recognize are ignored and reported as a warning on stderr, so a misspelled key (for example `temparature` instead of `temperature`) is surfaced instead of silently dropped. The warning names the file and the section, for example `unknown key 'temparature' in [[models]] entry 'zen'; ignored`. `cake doctor` reports the same warnings in its health report.
 
 Model definitions are global-only. A project settings file may select a global `[[models]]` entry by name but may not define one; a project `[[models]]` entry is a settings error even after `cake trust`. Additional `directories` are merged. Profiles may select a model and overlay behavior but may not define model providers.
 
@@ -40,7 +40,21 @@ One-run modes never write a record:
 - `--trust-project` or `CAKE_TRUST_PROJECT=1` accepts the current snapshot for one invocation. Use it in CI after reviewing the checkout.
 - `--no-project-config` or `CAKE_PROJECT_CONFIG=off` ignores project `.cake/` settings, hooks, toolbox tools, MCP servers, and the automatic project prompt for one invocation. Repository content such as `AGENTS.md` and default-root skills remains untrusted model input.
 
-The two modes conflict and fail closed. When authority-bearing configuration is present and untrusted, Cake exits `3` before resolving a provider credential, running a hook, describing a toolbox tool, starting an MCP server or gate, creating a writable grant, registering a tool, or opening a session. Read-only inspection commands (`cake trust --status`, `cake debug config`, `cake debug session`, `cake debug models`, `cake debug skills`, `cake debug grants`, `cake debug mcp`, `cake mcp list`, `cake mcp get`, `cake gates list`) report the state without applying authority; `cake gates doctor` and `cake bash check` enforce the trust check.
+The two modes conflict and fail closed. When authority-bearing configuration is present and untrusted, Cake exits `3` before resolving a provider credential, running a hook, describing a toolbox tool, starting an MCP server or gate, creating a writable grant, registering a tool, or opening a session. Read-only inspection commands (`cake trust --status`, `cake doctor`, `cake debug config`, `cake debug session`, `cake debug models`, `cake debug skills`, `cake debug grants`, `cake debug mcp`, `cake mcp list`, `cake mcp get`, `cake gates list`) report the state without applying authority; `cake gates doctor` and `cake bash check` enforce the trust check.
+
+## Settings health with `cake doctor`
+
+`cake doctor` validates the global and project settings files and the selected profile without starting a session. It uses the ordinary settings loader and its round-trip diff, so unknown keys, parse failures, invalid profile names or selections, and invalid `default_model` or judge model references are reported with their source file.
+
+```bash
+cake doctor
+cake doctor --json | jq '.checks'
+cake --profile review doctor --json | jq '.data.grants'
+```
+
+The report lists each settings source with its path and whether it is present, the selected profile and default model, and the merged `directories`, `[sandbox].writable`, and `[sandbox].read_only` grants with resolved paths, their source setting, and a `granted`, `would-create`, `missing`, `not-a-directory`, or `excluded` status. A missing writable path is `would-create`, and doctor never creates it. These are the configured grant settings, not the complete OS-level sandbox policy; `cake debug grants` reports the full effective grant value and every source behind it.
+
+Unknown keys and grant path problems are warnings: they appear in `checks` and exit `0`. An unreadable, unparsable, or self-contradictory settings file is an error document and exits `3`. Doctor resolves no credential value, calls no provider or gate, runs no hook or toolbox `describe`, connects no MCP server, and opens no session. Untrusted project authority is reported but not applied; `--trust-project` accepts it for one report, and `--no-project-config` omits it.
 
 ## Effective configuration
 

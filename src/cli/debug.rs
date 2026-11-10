@@ -18,7 +18,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 mod config_report;
-mod grants;
+pub mod grants;
 mod session_report;
 mod skills_report;
 
@@ -257,7 +257,7 @@ fn project_trust_warning_message(trust: &ProjectTrustReport) -> Option<String> {
 }
 
 /// Tell a human that authority-bearing project configuration was ignored.
-fn print_project_trust_warning(trust: &ProjectTrustReport) {
+pub fn print_project_trust_warning(trust: &ProjectTrustReport) {
     if let Some(message) = project_trust_warning_message(trust) {
         eprintln!("warning: {message}");
     }
