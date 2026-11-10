@@ -757,6 +757,34 @@ fn try_lock_session_file_with_retries(file: &File, path: &Path) -> anyhow::Resul
     try_lock_session_file(file, path)
 }
 
+/// The result of a non-blocking check for an active session writer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionLiveness {
+    /// Another process holds the session's append lock.
+    Live,
+    /// The lock is free, so no writer is currently appending.
+    NotLive,
+    /// The file could not be opened or its lock state could not be inspected.
+    Unknown,
+}
+
+/// Probe whether a session file is held by an active writer.
+///
+/// The probe opens the file read-only and makes one non-blocking advisory lock
+/// attempt. The lock is released as soon as the probe returns. A missing file,
+/// unreadable file, or unsupported lock operation reports `Unknown` rather than
+/// waiting or mutating the session.
+pub fn probe_session_liveness(path: &Path) -> SessionLiveness {
+    let Ok(file) = fs::File::open(path) else {
+        return SessionLiveness::Unknown;
+    };
+    match FileExt::try_lock(&file) {
+        Ok(()) => SessionLiveness::NotLive,
+        Err(TryLockError::WouldBlock) => SessionLiveness::Live,
+        Err(TryLockError::Error(_)) => SessionLiveness::Unknown,
+    }
+}
+
 /// The session file is locked by another cake invocation.
 ///
 /// This is an operational conflict rather than an input error: the caller's
@@ -2241,5 +2269,24 @@ mod tests {
             "durable summary"
         );
         assert_eq!(seed.boundary, Some(0));
+    }
+
+    #[test]
+    fn liveness_probe_observes_a_held_append_lock_without_mutating_the_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let session = make_test_session();
+        let file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
+        let before = fs::read(&path).unwrap();
+
+        assert_eq!(probe_session_liveness(&path), SessionLiveness::Live);
+        FileExt::unlock(&file).expect("release the writer lock");
+        drop(file);
+        assert_eq!(probe_session_liveness(&path), SessionLiveness::NotLive);
+        assert_eq!(
+            probe_session_liveness(&dir.path().join("missing.jsonl")),
+            SessionLiveness::Unknown
+        );
+        assert_eq!(fs::read(&path).unwrap(), before);
     }
 }

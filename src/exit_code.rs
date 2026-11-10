@@ -123,15 +123,25 @@ fn classify_typed_error(err: &anyhow::Error) -> Option<u8> {
         return Some(code::INPUT_ERROR);
     }
 
-    // `cake replay` maps each failure category to its documented exit code
-    // (see `ReplayError::exit_code`); the same mapping drives the
-    // `replay_error` stream record's `exit_code` field.
+    // Commands with a documented structured failure mapping own their exit
+    // classes: `cake replay`, `cake debug session`, and `cake sessions
+    // checkpoint`.
+    if let Some(class) = classify_cli_command_error(err) {
+        return Some(class);
+    }
+
+    None
+}
+
+fn classify_cli_command_error(err: &anyhow::Error) -> Option<u8> {
     if let Some(replay_err) = err.downcast_ref::<crate::cli::ReplayError>() {
         return Some(replay_err.exit_code());
     }
 
-    // `cake sessions checkpoint` reports invalid payloads and identities as
-    // input errors and lock, read, or append failures as operational errors.
+    if let Some(session_err) = err.downcast_ref::<crate::cli::SessionDiagnosticError>() {
+        return Some(session_err.exit_code());
+    }
+
     if let Some(checkpoint_err) = err.downcast_ref::<crate::cli::CheckpointError>() {
         return Some(checkpoint_err.exit_code());
     }

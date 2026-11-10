@@ -14,6 +14,17 @@ pub fn load_settings(
     json_output: bool,
     options: &CommandRunOptions<'_>,
 ) -> anyhow::Result<SettingsLoad> {
+    try_load_settings(options)
+        .map_err(|error| report_failure(json_output, command, CHECK_SETTINGS_LOAD_FAILED, error))
+}
+
+/// Attempt to load settings and project trust without rendering a failure
+/// document.
+///
+/// Commands whose primary subject is not the current configuration use this
+/// to degrade to an omitted configuration context instead of failing the
+/// whole report.
+pub fn try_load_settings(options: &CommandRunOptions<'_>) -> anyhow::Result<SettingsLoad> {
     let current_dir = std::env::current_dir()
         .map_err(|error| anyhow::anyhow!("Failed to get current directory: {error}"))?;
     SettingsLoader::load_with_project_config(
@@ -23,12 +34,5 @@ pub fn load_settings(
         &crate::config::config_dir(),
         options.project_config_mode,
     )
-    .map_err(|error| {
-        report_failure(
-            json_output,
-            command,
-            CHECK_SETTINGS_LOAD_FAILED,
-            error.into(),
-        )
-    })
+    .map_err(anyhow::Error::from)
 }

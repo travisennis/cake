@@ -697,7 +697,7 @@ impl ToolboxReport {
 }
 
 /// The complete read-only configuration report.
-struct ConfigReport {
+pub(super) struct ConfigReport {
     working_dir: PathBuf,
     profile: Option<String>,
     model: ModelReport,
@@ -714,7 +714,7 @@ struct ConfigReport {
 }
 
 impl ConfigReport {
-    fn build(
+    pub(super) fn build(
         loaded: &LoadedSettings,
         trust: &ProjectTrustReport,
         hook_files: &[HookFileSource],
@@ -796,6 +796,64 @@ impl ConfigReport {
             ));
         }
         checks.extend(self.report_checks());
+        checks
+    }
+
+    /// A compact, shareable context for another diagnostic command.
+    ///
+    /// This deliberately omits the configured endpoint, credential variable
+    /// name, prompt path and body, hook text, and every full grant path list.
+    pub(super) fn session_context(&self) -> serde_json::Value {
+        json!({
+            "working_directory": self.working_dir.display().to_string(),
+            "profile": self.profile,
+            "model": {
+                "name": self.model.name,
+                "source": self.model.source,
+                "configured": self.model.configured,
+                "provider_model": self.model.provider_model,
+                "api_type": self.model.api_type,
+                "credential_source": self.model.credential.as_ref().map(|credential| credential.source),
+                "credential_present": self.model.credential.as_ref().map(|credential| credential.present),
+            },
+            "project_trust": {
+                "state": self.trust.state.label(),
+                "mode": self.trust.mode.label(),
+                "one_run": self.trust.mode.one_run(),
+            },
+            "grants": grants::summary(&self.grants),
+            "tools": {
+                "source": self.tools.source,
+                "selected": self.tools.selected,
+                "builtin_count": self.tools.builtin.len(),
+            },
+            "skills": {
+                "selected_count": self.skills.selected.len(),
+                "filtered_count": self.skills.filtered.len(),
+            },
+        })
+    }
+
+    /// Findings that matter when the configuration report is context for
+    /// another command: settings warnings, project trust, and an unavailable
+    /// selected model. Skill, grant, hook, and toolbox details stay with the
+    /// commands that own them.
+    pub(super) fn session_checks(&self) -> Vec<DiagnosticCheck> {
+        let mut checks = settings_warnings(&self.settings_warnings);
+        if let Some(message) = project_trust_warning_message(&self.trust) {
+            checks.push(DiagnosticCheck::warning(
+                CHECK_CONFIG_PROJECT_TRUST,
+                message,
+            ));
+        }
+        if let Some(name) = &self.model.name
+            && !self.model.configured
+        {
+            checks.push(DiagnosticCheck::warning(
+                CHECK_CONFIG_MODEL,
+                format!("selected model '{name}' is not configured in settings.toml"),
+            ));
+        }
         checks
     }
 

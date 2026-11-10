@@ -20,7 +20,7 @@ pub mod hooks;
 pub mod mcp;
 pub mod model;
 pub mod output_schema;
-mod owner_only;
+pub mod owner_only;
 pub mod session;
 pub mod session_jsonl;
 mod session_paths;
@@ -45,7 +45,9 @@ pub use model::{ModelConfig, ReasoningEffort, ResolvedModelConfig};
 #[doc(inline)]
 pub use output_schema::{OutputSchema, OutputSchemaError};
 #[doc(inline)]
-pub use session::{Session, SessionLockedError, SessionWriter};
+pub use session::{
+    Session, SessionLiveness, SessionLockedError, SessionWriter, probe_session_liveness,
+};
 #[doc(inline)]
 pub use settings::{ModelDefinition, SettingsLoader};
 #[doc(inline)]

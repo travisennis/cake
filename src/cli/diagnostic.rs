@@ -68,6 +68,47 @@ pub const CHECK_SESSIONS_DISCOVERY: &str = "sessions.discovery_failed";
 /// Check id for a checkpoint append that failed.
 pub const CHECK_SESSIONS_CHECKPOINT: &str = "sessions.checkpoint_failed";
 
+/// Check id for a session diagnostic invocation that cannot proceed because
+/// its identity or destination is invalid.
+pub const CHECK_SESSION_INPUT: &str = "session.invalid_input";
+
+/// Check id for a session transcript that is malformed or internally
+/// inconsistent.
+pub const CHECK_SESSION_TRANSCRIPT_CORRUPT: &str = "session.transcript_corrupt";
+
+/// Check id for a session transcript that could not be opened or read.
+pub const CHECK_SESSION_TRANSCRIPT_UNREADABLE: &str = "session.transcript_unreadable";
+
+/// Check id for a truncated final record in a session artifact.
+pub const CHECK_SESSION_PARTIAL_TAIL: &str = "session.partial_tail";
+
+/// Check id for a session telemetry sidecar that is absent.
+pub const CHECK_SESSION_TELEMETRY_MISSING: &str = "session.telemetry_missing";
+
+/// Check id for a session telemetry sidecar with a malformed record.
+pub const CHECK_SESSION_TELEMETRY_CORRUPT: &str = "session.telemetry_corrupt";
+
+/// Check id for a session telemetry sidecar that could not be opened or read.
+pub const CHECK_SESSION_TELEMETRY_UNREADABLE: &str = "session.telemetry_unreadable";
+
+/// Check id for a session liveness probe that could not determine whether a
+/// writer holds the session.
+pub const CHECK_SESSION_LIVENESS_UNKNOWN: &str = "session.liveness_unknown";
+
+/// Check id for a started task with no terminal completion record.
+pub const CHECK_SESSION_INCOMPLETE_TASK: &str = "session.incomplete_task";
+
+/// Check id for a session diagnostic that omitted the current configuration
+/// context because settings could not be loaded.
+pub const CHECK_SESSION_CONFIG_UNAVAILABLE: &str = "session.current_config_unavailable";
+
+/// Check id for a log directory or log entry that could not be inspected.
+pub const CHECK_SESSION_LOGS_UNREADABLE: &str = "session.logs_unreadable";
+
+/// Check id for a telemetry invocation that could not be correlated with a
+/// transcript task.
+pub const CHECK_SESSION_INVOCATION_UNMATCHED: &str = "session.invocation_unmatched";
+
 /// Check id for an MCP configuration problem or a skipped server definition.
 pub const CHECK_MCP_CONFIG: &str = "mcp.config_invalid";
 

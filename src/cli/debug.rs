@@ -19,7 +19,10 @@ use std::path::{Path, PathBuf};
 
 mod config_report;
 mod grants;
+mod session_report;
 mod skills_report;
+
+pub use session_report::SessionDiagnosticError;
 
 /// Debug and introspection commands.
 #[derive(Clone, Debug, Parser)]
@@ -27,6 +30,7 @@ mod skills_report;
 Examples:
   cake debug config
   cake debug config --json | jq '.data.model'
+  cake debug session 550e8400-e29b-41d4-a716-446655440000 --json | jq '.data.tasks'
   cake debug skills --catalog-budget 4000
   cake debug skills --json | jq '.data.skills[].name'
   cake debug grants --json | jq '.data.read_write[]'
@@ -67,6 +71,26 @@ Examples:
         #[arg(long, value_name = "DIR")]
         toolbox: Vec<PathBuf>,
         /// Output the configuration report as one diagnostic JSON document
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Diagnose one persisted session without resuming it
+    #[command(after_help = "\
+Examples:
+  cake debug session 550e8400-e29b-41d4-a716-446655440000
+  cake debug session 550e8400-e29b-41d4-a716-446655440000 --json | jq '.data.tasks'
+  cake debug session 550e8400-e29b-41d4-a716-446655440000 --export /tmp/session-diagnostic.json")]
+    Session {
+        /// Session UUID to diagnose
+        #[arg(value_name = "UUID")]
+        uuid: String,
+        /// Write the redacted diagnostic document to a new local file
+        #[arg(long, value_name = "PATH")]
+        export: Option<PathBuf>,
+        /// Report operations at or above this duration as slow
+        #[arg(long, value_name = "MS", default_value_t = 2000)]
+        slow_ms: u64,
+        /// Output the session diagnostic as one JSON document
         #[arg(long, default_value_t = false)]
         json: bool,
     },
@@ -163,6 +187,21 @@ impl CmdRunner for DebugCommand {
                     no_tools: *no_tools,
                     tools: tools.as_deref(),
                     toolbox,
+                },
+                *json,
+                data_dir,
+                options,
+            ),
+            DebugSubcommand::Session {
+                uuid,
+                export,
+                slow_ms,
+                json,
+            } => session_report::run_session(
+                &session_report::SessionInputs {
+                    uuid,
+                    export: export.as_deref(),
+                    slow_ms: *slow_ms,
                 },
                 *json,
                 data_dir,

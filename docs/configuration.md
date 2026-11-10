@@ -40,7 +40,7 @@ One-run modes never write a record:
 - `--trust-project` or `CAKE_TRUST_PROJECT=1` accepts the current snapshot for one invocation. Use it in CI after reviewing the checkout.
 - `--no-project-config` or `CAKE_PROJECT_CONFIG=off` ignores project `.cake/` settings, hooks, toolbox tools, MCP servers, and the automatic project prompt for one invocation. Repository content such as `AGENTS.md` and default-root skills remains untrusted model input.
 
-The two modes conflict and fail closed. When authority-bearing configuration is present and untrusted, Cake exits `3` before resolving a provider credential, running a hook, describing a toolbox tool, starting an MCP server or gate, creating a writable grant, registering a tool, or opening a session. Read-only inspection commands (`cake trust --status`, `cake debug config`, `cake debug models`, `cake debug skills`, `cake debug grants`, `cake debug mcp`, `cake mcp list`, `cake mcp get`, `cake gates list`) report the state without applying authority; `cake gates doctor` and `cake bash check` enforce the trust check.
+The two modes conflict and fail closed. When authority-bearing configuration is present and untrusted, Cake exits `3` before resolving a provider credential, running a hook, describing a toolbox tool, starting an MCP server or gate, creating a writable grant, registering a tool, or opening a session. Read-only inspection commands (`cake trust --status`, `cake debug config`, `cake debug session`, `cake debug models`, `cake debug skills`, `cake debug grants`, `cake debug mcp`, `cake mcp list`, `cake mcp get`, `cake gates list`) report the state without applying authority; `cake gates doctor` and `cake bash check` enforce the trust check.
 
 ## Effective configuration
 
@@ -541,6 +541,25 @@ cake debug mcp --mcp-config ./mcp.json
 `cake debug mcp` reports a `hidden` server without connecting, and reports `description` and `exposure` for every entry.
 
 Safari 27 exposes its developer automation this way. Enable Develop settings and "Allow remote automation and external agents", add the `safari-mcp` entry above, and run `cake debug mcp` to confirm the connection.
+
+## Session diagnostics
+
+Inspect one persisted session without resuming it or writing its artifacts:
+
+```bash
+cake debug session 550e8400-e29b-41d4-a716-446655440000
+cake debug session 550e8400-e29b-41d4-a716-446655440000 --json | jq '.data.tasks'
+cake debug session 550e8400-e29b-41d4-a716-446655440000 --slow-ms 5000
+cake debug session 550e8400-e29b-41d4-a716-446655440000 --export /tmp/session-diagnostic.json
+```
+
+The report correlates the transcript, its optional telemetry sidecar, and the daily logs whose dates overlap the session. It shows the terminal state and subtype of each task, whether the session writer still holds the append lock, the last activity across both artifacts, retries, operations at or above `--slow-ms` (default 2000 ms), and the artifact paths. A telemetry `task_id` is the preferred task-to-invocation join; when the sidecar does not carry one, the report names the nearest start-time match within 120 seconds as `start_time`. Unmatched invocations are reported instead of being guessed into a task.
+
+The top-level state is `completed`, `interrupted`, `live`, `unknown_liveness`, or `corrupt`. Transcript and telemetry states are reported separately as `ok`, `corrupt`, or `unreadable`, and `present`, `missing`, `corrupt`, or `unreadable`. A missing sidecar is a warning. A corrupt or unreadable transcript or sidecar is an error and exits `1`; the report still carries the evidence it could read. An invalid UUID, missing session, or invalid export destination exits `3`. An unterminated final record is reported as a partial tail and makes `diagnosis_complete` false, so an incomplete run is never presented as a completed diagnosis.
+
+The current-configuration context reuses `cake debug config` and includes only the selected model identity and credential presence, sandbox policy and grant counts, tool and skill counts, and project trust state. It is the configuration for the invocation that runs the diagnostic, not a historical snapshot of the session. If settings cannot be loaded, the session report still runs and omits that context with a warning.
+
+`--export` writes the same redacted diagnostic document as `--json` to a new local file. It refuses an existing file, a symlink, a missing parent, or a source transcript or telemetry path, and creates the export with mode `0600`. The document contains no prompts, assistant text, tool output, hook commands or output, provider payloads or URLs, credentials, or log bodies. It is never uploaded.
 
 ## Data and diagnostics
 

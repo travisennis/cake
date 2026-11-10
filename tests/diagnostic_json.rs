@@ -1052,6 +1052,7 @@ fn help_documents_examples_for_the_touched_commands() {
         &["debug", "models", "--help"][..],
         &["debug", "grants", "--help"][..],
         &["debug", "config", "--help"][..],
+        &["debug", "session", "--help"][..],
         &["sessions", "--help"][..],
         &["sessions", "list", "--help"][..],
         &["bash", "--help"][..],
@@ -1087,6 +1088,10 @@ fn help_examples_are_copy_pasteable_machine_mode_invocations() {
         (
             &["debug", "config", "--help"][..],
             "cake debug config --json",
+        ),
+        (
+            &["debug", "session", "--help"][..],
+            "cake debug session 550e8400-e29b-41d4-a716-446655440000 --json",
         ),
         (
             &["sessions", "list", "--help"][..],
