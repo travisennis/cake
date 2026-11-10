@@ -20,7 +20,7 @@ use crate::cli::{
     CHECK_SKILLS_DISCOVERY, CommandRunOptions, DiagnosticCheck, DiagnosticDocument,
     settings_warnings,
 };
-use crate::clients::{GrantReport, SandboxPolicy, effective_builtin_tool_names};
+use crate::clients::{GrantReport, SandboxPolicy, builtin_tool_inventory};
 use crate::config::hooks::{HookGroup, HookMatcher, HooksLoader};
 use crate::config::settings::{JudgeSettings, LoadedSettings, ResolvedLimits};
 use crate::config::skills::{
@@ -326,6 +326,11 @@ impl PromptReport {
     }
 }
 
+/// The pre-existing `debug config` built-in order. Membership comes from the
+/// shared inventory; this only preserves the command's established JSON order.
+const CONFIG_BUILTIN_ORDER: &[&str] =
+    &["Bash", "BashSession", "Edit", "Read", "ReadImage", "Write"];
+
 /// The effective tool selection and the built-in registry subset.
 #[derive(Debug, Serialize)]
 struct ToolsReport {
@@ -358,8 +363,18 @@ impl ToolsReport {
         } else {
             "default"
         };
-        let builtin =
-            effective_builtin_tool_names(policy, model.supports_images, selected.as_deref());
+        let mut builtin: Vec<String> =
+            builtin_tool_inventory(policy, model.supports_images, selected.as_deref())
+                .into_iter()
+                .filter(|entry| entry.enabled)
+                .map(|entry| entry.name.to_string())
+                .collect();
+        builtin.sort_by_key(|name| {
+            CONFIG_BUILTIN_ORDER
+                .iter()
+                .position(|candidate| candidate == name)
+                .unwrap_or(usize::MAX)
+        });
         Self {
             source,
             selected,
