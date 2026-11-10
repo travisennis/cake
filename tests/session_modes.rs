@@ -9,7 +9,11 @@
 
 mod support;
 
-use std::{fs, process::Stdio};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Stdio,
+};
 
 use support::TestEnv;
 use wiremock::matchers::{method, path};
@@ -110,6 +114,30 @@ fn session_file_count(env: &TestEnv) -> usize {
         .filter_map(Result::ok)
         .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "jsonl"))
         .count()
+}
+
+fn session_file(env: &TestEnv) -> PathBuf {
+    env.data_dir
+        .join("sessions")
+        .join(format!("{SESSION_ID}.jsonl"))
+}
+
+#[cfg(unix)]
+fn mode(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    fs::metadata(path)
+        .expect("path should have metadata")
+        .permissions()
+        .mode()
+        & 0o777
+}
+
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).expect("failed to set test mode");
 }
 
 /// Mount a mock Responses backend that answers one call, then run `cake` with
@@ -501,5 +529,214 @@ async fn resume_rejects_an_unknown_checkpoint_version_without_a_provider_call() 
     assert!(
         stderr.contains("Unsupported compaction checkpoint_version: 2"),
         "the error must name the checkpoint version: {stderr}"
+    );
+}
+
+// -------------------------------------------------------------------------
+// Session storage permissions
+// -------------------------------------------------------------------------
+
+#[cfg(unix)]
+#[tokio::test]
+async fn new_session_store_is_owner_only_under_a_permissive_umask() {
+    use std::os::unix::process::CommandExt as _;
+
+    let env = TestEnv::new("cake-session-permissions-umask");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let mut command = env.command();
+    command
+        .arg("hello")
+        .env(TEST_KEY, "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // SAFETY: the closure runs in the forked child before exec and calls only
+    // the async-signal-safe `umask` syscall, matching the parent process state.
+    unsafe {
+        command.pre_exec(|| {
+            libc::umask(0o000);
+            Ok(())
+        });
+    }
+    let output = command.output().expect("failed to execute cake");
+
+    assert!(
+        output.status.success(),
+        "umask 000 run should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let sessions_dir = env.data_dir.join("sessions");
+    let file = fs::read_dir(&sessions_dir)
+        .expect("sessions directory should exist")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+        .expect("a session file should exist");
+
+    assert_eq!(mode(&env.data_dir), 0o700, "data directory mode");
+    assert_eq!(mode(&sessions_dir), 0o700, "sessions directory mode");
+    assert_eq!(mode(&file), 0o600, "session file mode");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn resume_tightens_a_broad_session_file_before_append() {
+    let env = TestEnv::new("cake-resume-permissions");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+    write_session_fixture(&env, &minimal_records(&env));
+
+    let sessions_dir = env.data_dir.join("sessions");
+    let path = session_file(&env);
+    set_mode(&sessions_dir, 0o755);
+    set_mode(&path, 0o644);
+
+    let output = run_mode(&env, &mock_server, &["--resume", SESSION_ID, "carry on"]).await;
+
+    assert!(
+        output.status.success(),
+        "resume should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        mode(&sessions_dir),
+        0o700,
+        "store initialization should tighten the sessions directory"
+    );
+    assert_eq!(
+        mode(&path),
+        0o600,
+        "append should tighten the existing session file"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn listing_and_replay_leave_a_broad_session_file_untouched() {
+    let env = TestEnv::new("cake-session-read-only-modes");
+    write_session_fixture(&env, &minimal_records(&env));
+
+    let sessions_dir = env.data_dir.join("sessions");
+    let path = session_file(&env);
+    set_mode(&sessions_dir, 0o755);
+    set_mode(&path, 0o644);
+
+    let list = env
+        .command()
+        .args(["sessions", "list"])
+        .output()
+        .expect("failed to execute cake sessions list");
+    assert!(
+        list.status.success(),
+        "sessions list should succeed. stderr: {}",
+        String::from_utf8_lossy(&list.stderr)
+    );
+    assert_eq!(mode(&sessions_dir), 0o700, "store initialization mode");
+    assert_eq!(mode(&path), 0o644, "listing must not change the file mode");
+
+    let replay = env
+        .command()
+        .args(["--output-format", "stream-json", "replay", SESSION_ID])
+        .output()
+        .expect("failed to execute cake replay");
+    assert!(
+        replay.status.success(),
+        "replay should succeed. stderr: {}",
+        String::from_utf8_lossy(&replay.stderr)
+    );
+    assert_eq!(mode(&path), 0o644, "replay must not change the file mode");
+}
+
+#[cfg(unix)]
+#[test]
+fn resume_rejects_a_symlinked_session_file_without_writing_through_it() {
+    use std::os::unix::fs::symlink;
+
+    let env = TestEnv::new("cake-session-file-symlink");
+    write_responses_settings(&env, "http://127.0.0.1:1");
+    write_session_fixture(&env, &minimal_records(&env));
+
+    let link = session_file(&env);
+    let target = env.data_dir.join("target.jsonl");
+    fs::rename(&link, &target).expect("failed to move the session fixture");
+    symlink(&target, &link).expect("failed to create the session symlink");
+    let before = fs::read(&target).expect("target should be readable");
+
+    let output = env
+        .command()
+        .args(["--resume", SESSION_ID, "carry on"])
+        .env(TEST_KEY, "test-token")
+        .output()
+        .expect("failed to execute cake");
+
+    assert!(!output.status.success(), "a symlinked session must fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("symlink"),
+        "the error must name the symlink: {stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("{SESSION_ID}.jsonl")),
+        "the error must name the session path: {stderr}"
+    );
+    assert_eq!(
+        fs::read(&target).expect("target should still be readable"),
+        before,
+        "a rejected symlink must not write through to its target"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_sessions_directory_is_rejected_at_startup() {
+    use std::os::unix::fs::symlink;
+
+    let env = TestEnv::new("cake-session-dir-symlink");
+    fs::create_dir_all(&env.data_dir).expect("failed to create the data directory");
+    let target = env.data_dir.join("real-sessions");
+    fs::create_dir_all(&target).expect("failed to create the target directory");
+    symlink(&target, env.data_dir.join("sessions")).expect("failed to create the symlink");
+
+    let output = env
+        .command()
+        .args(["sessions", "list"])
+        .output()
+        .expect("failed to execute cake");
+
+    assert!(!output.status.success(), "a symlinked store must fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("sessions directory") && stderr.contains("symlink"),
+        "the error must name the symlinked sessions directory: {stderr}"
+    );
+}
+
+#[test]
+fn sessions_path_that_is_not_a_directory_is_rejected_at_startup() {
+    let env = TestEnv::new("cake-session-dir-file");
+    fs::create_dir_all(&env.data_dir).expect("failed to create the data directory");
+    fs::write(env.data_dir.join("sessions"), "not a directory")
+        .expect("failed to create the sessions file fixture");
+
+    let output = env
+        .command()
+        .args(["sessions", "list"])
+        .output()
+        .expect("failed to execute cake");
+
+    assert!(!output.status.success(), "a non-directory store must fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("sessions directory") && stderr.contains("not a directory"),
+        "the error must name the non-directory sessions path: {stderr}"
     );
 }

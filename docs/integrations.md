@@ -193,6 +193,8 @@ Replay requires `--output-format stream-json`. On failure it emits one `replay_e
 
 Resumable sessions are flat `{session_id}.jsonl` files under `~/.local/share/cake/sessions/`, or under `{CAKE_DATA_DIR}/sessions/` when the data root is overridden.
 
+On Unix, session storage is owner-only: Cake creates a missing data directory and the sessions directory with mode `0700` and each session file with mode `0600`, independent of the process umask. The data directory and sessions directory must be real directories, not symlinks; an existing sessions directory that grants group or other access is tightened to `0700` during initialization, while a narrower mode is left alone. Session creation, append, resume, and fork reject a symlinked or non-regular session file and a symlinked or non-directory parent, using no-follow open semantics where the platform supports them. Append tightens a broader session-file mode to `0600`; read-only listing and replay do not change file modes. Non-Unix platforms keep the path checks but do not enforce Unix modes.
+
 The current format version is 4:
 
 1. The first non-empty record is one `session_meta`.

@@ -436,12 +436,44 @@ fn sessions_list_json_reports_an_empty_list_without_findings() {
 }
 
 #[test]
-fn sessions_list_json_reports_an_unreadable_directory_as_a_document() {
+fn sessions_list_rejects_a_non_directory_sessions_path_at_startup() {
     let env = cake_env();
-    // A regular file where the sessions directory belongs makes `read_dir` fail,
-    // which is the one listing failure the command reports in its document.
+    // Store initialization rejects a non-directory sessions path before the
+    // command can produce a document or reach `read_dir`.
     fs::create_dir_all(&env.data_dir).expect("failed to create data dir");
     fs::write(env.data_dir.join("sessions"), "").expect("failed to stage the sessions path");
+
+    let output = run(&env, &["sessions", "list", "--json"]);
+
+    assert!(!output.status.success());
+    assert!(stdout(&output).is_empty(), "stdout must stay empty");
+    let error = stderr(&output);
+    assert!(
+        error.contains("sessions directory") && error.contains("not a directory"),
+        "stderr must name the invalid store path: {error}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn sessions_list_json_reports_an_unreadable_directory_as_a_document() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    // Root ignores mode bits, so the denial cannot be simulated.
+    // SAFETY: geteuid is always safe to call.
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+
+    let env = cake_env();
+    // A real but unreadable sessions directory is the one listing failure the
+    // command reports in its document. Store initialization leaves a narrower
+    // mode alone instead of broadening it.
+    fs::create_dir_all(&env.data_dir).expect("failed to create data dir");
+    let sessions = env.data_dir.join("sessions");
+    fs::create_dir_all(&sessions).expect("failed to create sessions dir");
+    fs::set_permissions(&sessions, fs::Permissions::from_mode(0o000))
+        .expect("failed to make sessions unreadable");
 
     let output = run(&env, &["sessions", "list", "--json"]);
 
@@ -476,6 +508,10 @@ fn sessions_list_json_reports_an_unreadable_directory_as_a_document() {
         "stderr must carry the same diagnostic: {}",
         stderr(&output)
     );
+
+    // Restore access so the temporary root can be removed during cleanup.
+    fs::set_permissions(&sessions, fs::Permissions::from_mode(0o700))
+        .expect("failed to restore sessions access");
 }
 
 #[test]

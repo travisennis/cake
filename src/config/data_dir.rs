@@ -45,6 +45,35 @@ pub enum DataDirError {
         #[source]
         source: std::io::Error,
     },
+    /// A configured store path is a symlink, which Cake refuses to follow.
+    #[error("{kind} '{path}' is a symlink; Cake requires a real directory and will not follow it")]
+    Symlinked {
+        /// The data or sessions directory label.
+        kind: &'static str,
+        /// The symlinked path.
+        path: PathBuf,
+    },
+    /// A configured store path exists but is not a directory.
+    #[error("{kind} '{path}' is not a directory; Cake requires a real directory")]
+    NotADirectory {
+        /// The data or sessions directory label.
+        kind: &'static str,
+        /// The non-directory path.
+        path: PathBuf,
+    },
+    /// An existing sessions directory could not be tightened to `0700`.
+    #[error("failed to set owner-only mode {mode:04o} on {kind} '{path}'")]
+    TightenFailed {
+        /// The data or sessions directory label.
+        kind: &'static str,
+        /// The directory path.
+        path: PathBuf,
+        /// The required mode.
+        mode: u32,
+        /// The underlying permission error.
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 /// Manages the data directory for session storage.
@@ -107,8 +136,8 @@ impl DataDir {
             }
         };
 
-        ensure_dir(&data_dir)?;
-        ensure_dir(&sessions_dir)?;
+        ensure_dir(&data_dir, "data directory", false)?;
+        ensure_dir(&sessions_dir, "sessions directory", true)?;
 
         Ok(Self {
             data_dir,
@@ -341,7 +370,8 @@ fn read_session_header(path: &Path) -> anyhow::Result<SessionFileHeader> {
     Ok(header)
 }
 
-/// Ensures `path` exists, distinguishing a denied stat from a missing path.
+/// Ensures `path` is a real directory, distinguishing a denied stat from a
+/// missing path.
 ///
 /// `Path::exists()` reports every stat error as "missing", so under a sandbox
 /// that denies stat on an existing directory the previous
@@ -349,14 +379,62 @@ fn read_session_header(path: &Path) -> anyhow::Result<SessionFileHeader> {
 /// existing path and surfaced a misleading `AlreadyExists (os error 17)`.
 /// Here a stat failure that is not `NotFound` reports the path as
 /// inaccessible instead of attempting creation.
-fn ensure_dir(path: &Path) -> Result<(), DataDirError> {
-    match fs::metadata(path) {
-        Ok(_) => Ok(()),
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => fs::create_dir_all(path)
-            .map_err(|source| DataDirError::CreateFailed {
-                path: path.to_path_buf(),
-                source,
-            }),
+///
+/// A symlink or non-directory is rejected rather than followed, so a store path
+/// cannot redirect session writes outside the intended directory. New paths are
+/// created owner-only regardless of the process umask. `tighten_existing`
+/// applies `0700` to an existing directory; it is used for the sessions
+/// directory and deliberately not for a user-configured data root.
+fn ensure_dir(path: &Path, kind: &'static str, tighten_existing: bool) -> Result<(), DataDirError> {
+    ensure_dir_with(
+        path,
+        kind,
+        tighten_existing,
+        crate::config::owner_only::tighten_dir_owner_only,
+    )
+}
+
+/// The shared body of [`ensure_dir`], with the mode setter split out so the
+/// failure path is testable without requiring a directory owned by another
+/// user.
+fn ensure_dir_with(
+    path: &Path,
+    kind: &'static str,
+    tighten_existing: bool,
+    set_mode: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<(), DataDirError> {
+    // `lstat` follows a symlink when the path ends in a separator, so check a
+    // lexically normalized path. Otherwise `CAKE_DATA_DIR=/tmp/link/` would
+    // pass the symlink check and resolve through the link.
+    let checked = path.components().collect::<PathBuf>();
+    match fs::symlink_metadata(&checked) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(DataDirError::Symlinked {
+            kind,
+            path: path.to_path_buf(),
+        }),
+        Ok(metadata) if !metadata.is_dir() => Err(DataDirError::NotADirectory {
+            kind,
+            path: path.to_path_buf(),
+        }),
+        Ok(_) => {
+            if tighten_existing {
+                set_mode(&checked).map_err(|source| DataDirError::TightenFailed {
+                    kind,
+                    path: path.to_path_buf(),
+                    mode: crate::config::owner_only::OWNER_ONLY_DIR_MODE,
+                    source,
+                })?;
+            }
+            Ok(())
+        },
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            crate::config::owner_only::create_dir_all_owner_only(&checked).map_err(|source| {
+                DataDirError::CreateFailed {
+                    path: path.to_path_buf(),
+                    source,
+                }
+            })
+        },
         Err(source) => Err(DataDirError::NotAccessible {
             path: path.to_path_buf(),
             source,
@@ -666,7 +744,7 @@ mod tests {
     #[test]
     fn ensure_dir_accepts_existing_directory() {
         let tmp = TempDir::new().unwrap();
-        ensure_dir(tmp.path()).unwrap();
+        ensure_dir(tmp.path(), "sessions directory", true).unwrap();
     }
 
     #[test]
@@ -674,9 +752,163 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let missing = tmp.path().join("nested/data");
 
-        ensure_dir(&missing).unwrap();
+        ensure_dir(&missing, "sessions directory", true).unwrap();
 
         assert!(missing.is_dir());
+    }
+
+    #[cfg(unix)]
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn ensure_dir_creates_owner_only_directories() {
+        let tmp = TempDir::new().unwrap();
+        let missing = tmp.path().join("nested/data");
+
+        ensure_dir(&missing, "sessions directory", true).unwrap();
+
+        assert_eq!(mode(&missing), 0o700);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn ensure_dir_tightens_an_existing_sessions_directory() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let tmp = TempDir::new().unwrap();
+        let sessions = tmp.path().join("sessions");
+        fs::create_dir(&sessions).unwrap();
+        fs::set_permissions(&sessions, fs::Permissions::from_mode(0o755)).unwrap();
+
+        ensure_dir(&sessions, "sessions directory", true).unwrap();
+
+        assert_eq!(mode(&sessions), 0o700);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn ensure_dir_does_not_broaden_a_narrow_sessions_directory() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let tmp = TempDir::new().unwrap();
+        let sessions = tmp.path().join("sessions");
+        fs::create_dir(&sessions).unwrap();
+        fs::set_permissions(&sessions, fs::Permissions::from_mode(0o000)).unwrap();
+
+        ensure_dir(&sessions, "sessions directory", true).unwrap();
+
+        assert_eq!(mode(&sessions), 0o000);
+
+        // Restore access so the temporary root can be removed during cleanup.
+        fs::set_permissions(&sessions, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn ensure_dir_leaves_an_existing_data_root_mode_alone() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let tmp = TempDir::new().unwrap();
+        let data = tmp.path().join("data");
+        fs::create_dir(&data).unwrap();
+        fs::set_permissions(&data, fs::Permissions::from_mode(0o755)).unwrap();
+
+        ensure_dir(&data, "data directory", false).unwrap();
+
+        assert_eq!(mode(&data), 0o755);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn ensure_dir_rejects_a_symlinked_store_path() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let link = tmp.path().join("sessions");
+        symlink(&target, &link).unwrap();
+
+        let err = ensure_dir(&link, "sessions directory", true).unwrap_err();
+
+        match &err {
+            DataDirError::Symlinked { kind, path } => {
+                assert_eq!(*kind, "sessions directory");
+                assert_eq!(path, &link);
+            },
+            other => panic!("expected Symlinked, got {other:?}"),
+        }
+        assert!(err.to_string().contains("symlink"), "{err}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn ensure_dir_rejects_a_symlink_with_a_trailing_separator() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let link = tmp.path().join("sessions");
+        symlink(&target, &link).unwrap();
+        let with_separator = PathBuf::from(format!("{}/", link.display()));
+
+        let err = ensure_dir(&with_separator, "sessions directory", true).unwrap_err();
+
+        assert!(
+            matches!(err, DataDirError::Symlinked { .. }),
+            "expected Symlinked, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn ensure_dir_rejects_a_non_directory_store_path() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("sessions");
+        fs::write(&file, "not a directory").unwrap();
+
+        let err = ensure_dir(&file, "sessions directory", true).unwrap_err();
+
+        match &err {
+            DataDirError::NotADirectory { kind, path } => {
+                assert_eq!(*kind, "sessions directory");
+                assert_eq!(path, &file);
+            },
+            other => panic!("expected NotADirectory, got {other:?}"),
+        }
+        assert!(err.to_string().contains("not a directory"), "{err}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn ensure_dir_reports_a_failed_tighten_with_path_and_mode() {
+        let tmp = TempDir::new().unwrap();
+        let sessions = tmp.path().join("sessions");
+        fs::create_dir(&sessions).unwrap();
+
+        let err = ensure_dir_with(&sessions, "sessions directory", true, |_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "operation not permitted",
+            ))
+        })
+        .unwrap_err();
+
+        match &err {
+            DataDirError::TightenFailed { path, mode, .. } => {
+                assert_eq!(path, &sessions);
+                assert_eq!(*mode, 0o700);
+            },
+            other => panic!("expected TightenFailed, got {other:?}"),
+        }
+        let text = err.to_string();
+        assert!(text.contains("sessions directory"), "{text}");
+        assert!(text.contains("0700"), "{text}");
     }
 
     #[test]
@@ -701,7 +933,7 @@ mod tests {
         std::fs::set_permissions(&sealed, perms).unwrap();
         let child = sealed.join("child");
 
-        let err = ensure_dir(&child).unwrap_err();
+        let err = ensure_dir(&child, "sessions directory", true).unwrap_err();
 
         // Restore before the TempDir drops so cleanup can unlink the child.
         let mut perms = std::fs::metadata(&sealed).unwrap().permissions();
@@ -710,9 +942,7 @@ mod tests {
 
         match &err {
             DataDirError::NotAccessible { path, .. } => assert_eq!(path, &child),
-            other @ DataDirError::CreateFailed { .. } => {
-                panic!("expected NotAccessible, got {other:?}")
-            },
+            other => panic!("expected NotAccessible, got {other:?}"),
         }
         let text = err.to_string();
         assert!(

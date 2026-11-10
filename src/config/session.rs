@@ -8,7 +8,11 @@ use std::{
     time::Duration,
 };
 
-use crate::config::session_jsonl::SessionFramer;
+use crate::config::{
+    owner_only,
+    session_jsonl::SessionFramer,
+    session_paths::{validate_session_parent, validate_session_target},
+};
 
 use anyhow::Context;
 use fs4::{FileExt, TryLockError};
@@ -408,22 +412,30 @@ impl Session {
     }
 
     /// Create a new session file, write its metadata record, and return a locked append handle.
+    ///
+    /// The session file and any directory created for it are owner-only on
+    /// Unix, independent of the process umask. A symlinked or non-directory
+    /// parent, or a symlinked final component, is rejected.
     pub fn create_on_disk(path: &Path, meta: &SessionRecord) -> anyhow::Result<File> {
         if !matches!(meta, SessionRecord::SessionMeta { .. }) {
             anyhow::bail!("First record in a new session file must be session_meta");
         }
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!("Failed to create session directory: {}", parent.display())
-            })?;
-        }
+        validate_session_parent(path, true, "create")?;
+        validate_session_target(path, "create")?;
 
-        let mut file = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .create_new(true)
+        let mut options = OpenOptions::new();
+        options.read(true).append(true).create_new(true);
+        owner_only::apply_session_options(&mut options);
+        let mut file = options
             .open(path)
             .with_context(|| format!("Failed to create session file: {}", path.display()))?;
+        owner_only::set_file_owner_only(&file).with_context(|| {
+            format!(
+                "Failed to create session file '{}': cannot set owner-only mode {:04o}",
+                path.display(),
+                owner_only::OWNER_ONLY_FILE_MODE
+            )
+        })?;
         lock_session_file(&file, path)?;
         Self::append_record(&mut file, meta)?;
         Ok(file)
@@ -431,16 +443,41 @@ impl Session {
 
     /// Open an existing session file for append and acquire an advisory lock.
     ///
-    /// An incomplete final record left by an interrupted writer is repaired
-    /// under the lock before the handle is returned, so the next append starts
-    /// at a record boundary. See [`repair_partial_tail`].
+    /// The final component must be a regular file, not a symlink, and its
+    /// parent must be a real directory. On Unix a broader file mode is
+    /// tightened to `0600` before the caller can write. An incomplete final
+    /// record left by an interrupted writer is repaired under the lock after
+    /// the mode check, so the next append starts at a record boundary. See
+    /// [`repair_partial_tail`].
     pub fn open_for_append(path: &Path) -> anyhow::Result<File> {
-        let file = OpenOptions::new()
-            .read(true)
-            .append(true)
+        validate_session_parent(path, false, "open")?;
+        validate_session_target(path, "open")?;
+
+        let mut options = OpenOptions::new();
+        options.read(true).append(true);
+        owner_only::apply_session_options(&mut options);
+        let file = options
             .open(path)
             .with_context(|| format!("Failed to open session file: {}", path.display()))?;
+        if !file
+            .metadata()
+            .with_context(|| format!("Failed to inspect session file: {}", path.display()))?
+            .is_file()
+        {
+            anyhow::bail!(
+                "Failed to open session file '{}': path is not a regular file (required mode {:04o})",
+                path.display(),
+                owner_only::OWNER_ONLY_FILE_MODE
+            );
+        }
         lock_session_file(&file, path)?;
+        owner_only::set_file_owner_only(&file).with_context(|| {
+            format!(
+                "Failed to open session file '{}': cannot set owner-only mode {:04o}",
+                path.display(),
+                owner_only::OWNER_ONLY_FILE_MODE
+            )
+        })?;
         repair_partial_tail(&file, path).map(|()| file)
     }
 
@@ -1151,6 +1188,149 @@ mod tests {
 
         assert!(error.contains("no complete record to recover"), "{error}");
         assert_eq!(fs::read(&path).unwrap(), before);
+    }
+
+    #[cfg(unix)]
+    fn file_mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn create_on_disk_writes_an_owner_only_session_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let session = make_test_session();
+
+        drop(Session::create_on_disk(&path, &meta_record(&session)).unwrap());
+
+        assert_eq!(file_mode(&path), 0o600);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn create_on_disk_creates_an_owner_only_parent() {
+        let dir = TempDir::new().unwrap();
+        let parent = dir.path().join("sessions");
+        let path = parent.join("session.jsonl");
+        let session = make_test_session();
+
+        drop(Session::create_on_disk(&path, &meta_record(&session)).unwrap());
+
+        assert_eq!(file_mode(&parent), 0o700);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn open_for_append_tightens_a_broad_session_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = TempDir::new().unwrap();
+        let (_, path) = write_session_with_raw_tail(&dir, "broad.jsonl", "");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        drop(Session::open_for_append(&path).unwrap());
+
+        assert_eq!(file_mode(&path), 0o600);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn load_does_not_change_a_broad_session_file_mode() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = TempDir::new().unwrap();
+        let (_, path) = write_session_with_raw_tail(&dir, "broad.jsonl", "");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        Session::load(&path).unwrap();
+
+        assert_eq!(file_mode(&path), 0o644);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn open_for_append_rejects_a_symlinked_session_file() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TempDir::new().unwrap();
+        let session = make_test_session();
+        let target = dir.path().join("target.jsonl");
+        drop(Session::create_on_disk(&target, &meta_record(&session)).unwrap());
+        let before = fs::read(&target).unwrap();
+        let link = dir.path().join("session.jsonl");
+        symlink(&target, &link).unwrap();
+
+        let error = Session::open_for_append(&link).unwrap_err().to_string();
+
+        assert!(error.contains("symlink"), "{error}");
+        assert_eq!(fs::read(&target).unwrap(), before);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn create_on_disk_rejects_a_symlinked_session_file() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TempDir::new().unwrap();
+        let session = make_test_session();
+        let target = dir.path().join("target.jsonl");
+        drop(Session::create_on_disk(&target, &meta_record(&session)).unwrap());
+        let link = dir.path().join("session.jsonl");
+        symlink(&target, &link).unwrap();
+
+        let error = Session::create_on_disk(&link, &meta_record(&session))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("symlink"), "{error}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn open_for_append_rejects_a_symlinked_parent() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let link = dir.path().join("sessions");
+        symlink(&target, &link).unwrap();
+
+        let error = Session::open_for_append(&link.join("session.jsonl"))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("parent"), "{error}");
+        assert!(error.contains("symlink"), "{error}");
+    }
+
+    #[test]
+    fn open_for_append_rejects_a_non_directory_parent() {
+        let dir = TempDir::new().unwrap();
+        let parent = dir.path().join("parent");
+        fs::write(&parent, "not a directory").unwrap();
+
+        let error = Session::open_for_append(&parent.join("session.jsonl"))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("parent"), "{error}");
+        assert!(error.contains("not a directory"), "{error}");
+    }
+
+    #[test]
+    fn open_for_append_rejects_a_non_regular_session_path() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        fs::create_dir(&path).unwrap();
+
+        let error = Session::open_for_append(&path).unwrap_err().to_string();
+
+        assert!(error.contains("not a regular file"), "{error}");
+        assert!(error.contains("0600"), "{error}");
     }
 
     #[test]

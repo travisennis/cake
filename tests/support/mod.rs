@@ -83,6 +83,11 @@ impl TestEnv {
 
     pub fn command(&self) -> Command {
         let mut cmd = Command::new(binary_path());
+        self.configure(&mut cmd);
+        cmd
+    }
+
+    fn configure(&self, cmd: &mut Command) {
         cmd.current_dir(&self.workspace_dir)
             .env("HOME", &self.home_dir)
             .env("XDG_CONFIG_HOME", self.home_dir.join(".config"))
@@ -101,7 +106,6 @@ impl TestEnv {
         // project pass a test that expects the trust boundary.
         cmd.env_remove("CAKE_TRUST_PROJECT");
         cmd.env_remove("CAKE_PROJECT_CONFIG");
-        cmd
     }
 
     pub fn write_project_settings(&self, content: &str) {
