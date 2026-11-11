@@ -76,6 +76,6 @@ Merge mechanically safe updates. Escalate an update that changes behavior, migra
 
 ## Enforcement
 
-`just check` runs the fast local gate. `just check-full` adds coverage/change-risk, the CI fixture suites, dependency checks, documentation, and a release build. The scheduled workflow runs advisories, outdated dependencies, unused dependencies, and MSRV weekly. Dependabot opens weekly Cargo and GitHub Actions updates. The manual review procedure for the remaining version surfaces is [Dependency sweep](automations/dependency-sweep.md).
+`just check` runs the fast local gate. `just check-full` adds coverage/change-risk, the CI fixture suites, dependency checks, documentation, and a release build. The scheduled workflow runs advisories, outdated dependencies, unused dependencies, and MSRV weekly. Dependabot opens weekly Cargo and GitHub Actions updates, with a one-week cooldown on Cargo version updates. The manual review procedure for the remaining version surfaces is [Dependency sweep](automations/dependency-sweep.md).
 
 These mechanisms enforce parts of this posture, not all of it. Where a rule here has no check, it is a rule a reviewer applies.
