@@ -4,7 +4,7 @@ rust = { version = "1.99.1", components = [
   "rustfmt",
   "rust-analyzer",
 ] }
-just = "1.58.0"
+just = "1.59.0"
 sccache = "0.17.0"
 
 # Share compiled dependencies across worktrees. Each worktree gets its own
