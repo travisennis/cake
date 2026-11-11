@@ -188,6 +188,48 @@ rc=$?
 set -e
 expect_status "$rc" 1
 
+# JSON read-only report: stable fields and a pass exit.
+reset_state
+seed_all
+output=$(run_check --json)
+printf '%s' "$output" | python3 -c '
+import json, sys
+report = json.load(sys.stdin)
+assert report["ok"] is True, report
+tools = {tool["package"]: tool for tool in report["tools"]}
+assert tools["cargo-edit"]["binary"] == "cargo-add", tools["cargo-edit"]
+assert tools["cargo-deny"]["version"] == "0.20.2", tools["cargo-deny"]
+assert tools["cargo-deny"]["status"] == "ok", tools["cargo-deny"]
+assert tools["cargo-deny"]["installed_version"] == "0.20.2", tools["cargo-deny"]
+assert tools["cargo-deny"]["detail"] is None, tools["cargo-deny"]
+'
+
+# JSON failure report keeps the status and observed version.
+reset_state
+seed_all
+seed cargo-deny 0.19.0 cargo-deny
+set +e
+output=$(run_check --json)
+rc=$?
+set -e
+expect_status "$rc" 1
+printf '%s' "$output" | python3 -c '
+import json, sys
+report = json.load(sys.stdin)
+assert report["ok"] is False, report
+tools = {tool["package"]: tool for tool in report["tools"]}
+assert tools["cargo-deny"]["status"] == "version-mismatch", tools["cargo-deny"]
+assert tools["cargo-deny"]["installed_version"] == "0.19.0", tools["cargo-deny"]
+assert tools["cargo-deny"]["detail"] == "installed at 0.19.0", tools["cargo-deny"]
+'
+
+# --json is read-only and cannot be combined with --install.
+set +e
+run_check --json --install >/dev/null 2>&1
+rc=$?
+set -e
+expect_status "$rc" 2
+
 # Unknown argument exits 2.
 set +e
 run_check --bogus >/dev/null 2>&1

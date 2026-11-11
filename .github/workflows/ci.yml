@@ -85,6 +85,9 @@ jobs:
       - name: Dev-tools checker fixture tests
         shell: bash
         run: scripts/test-dev-tools.sh
+      - name: Doctor fixture tests
+        shell: bash
+        run: python3 scripts/test-doctor.py -v
       - name: Install just
         uses: taiki-e/install-action@v2
         with:
