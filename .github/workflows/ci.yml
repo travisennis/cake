@@ -82,6 +82,9 @@ jobs:
       - name: Documentation corpus fixture tests
         shell: bash
         run: scripts/test-docs-corpus.sh
+      - name: Dev-tools checker fixture tests
+        shell: bash
+        run: scripts/test-dev-tools.sh
       - name: Install just
         uses: taiki-e/install-action@v2
         with:

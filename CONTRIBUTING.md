@@ -14,7 +14,7 @@ just setup
 
 `mise trust` marks the repository's `.mise.toml` as trusted; mise refuses to read an untrusted config, so it must run before `mise install`. It is a one-time step per clone location.
 
-`just setup` installs the Cargo utilities used by repository recipes and the git hooks declared in `prek.toml` (`pre-commit`, `pre-push`, and `commit-msg`). Re-running it is safe: the hook install is idempotent. Run `just --list` for the authoritative command catalog.
+`just setup` installs the pinned Cargo utilities used by repository recipes and the git hooks declared in `prek.toml` (`pre-commit`, `pre-push`, and `commit-msg`). It verifies every pinned version after installing and exits nonzero with the tool name and install command when one is missing or broken. Re-running it is safe: the tool and hook installs are idempotent. Run `just --list` for the authoritative command catalog.
 
 `mise install` also provides `sccache` and points `RUSTC_WRAPPER` at it, so a newly created worktree reuses already-compiled dependencies instead of rebuilding the graph from cold. Without mise, install `sccache` and export `RUSTC_WRAPPER=sccache` yourself.
 
@@ -98,6 +98,7 @@ Additional checks:
 - Label changes: `just labels-check-file` (file validation, also CI), `just labels-check` (repo drift vs `.github/labels.yml`), `just labels` (apply), `just labels-prune` (delete unlisted labels).
 - Instruction changes (AGENTS.md, `.agents/skills/`, guardrails, runbooks): no size cap applies; [Agent-facing instructions](docs/guardrails/agent-instructions.md) is the authority for what an added instruction must justify.
 - Markdown gate scopes are intentional: the pre-commit hook checks formatting for changed Markdown and lint over the tracked corpus. The pre-push route checks both for changed living documents. `just docs-check` and CI check the tracked corpus, which is the whole corpus on a clean CI checkout. This gives formatting feedback before commit without adding a full-corpus formatting pass to every commit; the full-corpus gates remain the final check.
+- Pre-commit is deliberately cheap: Rust changes run `cargo fmt -- --check`, Markdown changes run the docs formatting and corpus checks, and every commit runs `git diff --check`. Strict Clippy belongs to `just check` (and therefore the pre-push code route) and CI, so a commit never repeats the full lint build.
 - `just pre-push-docs` measures the committed changes between the base and `HEAD` and prints that range, plus a note when worktree Markdown sits outside it, so an empty file list cannot read as a pass. Untracked Markdown becomes checkable the moment it is staged; `just docs-check` covers the tracked corpus, which is what the gates own. Neither gate looks at untracked files, and neither rewrites them.
 
 ### Pre-push routing
@@ -105,7 +106,7 @@ Additional checks:
 The pre-push hook routes by changed path class instead of running the full local validation suite unconditionally.
 
 - Markdown-only pushes run `just pre-push-docs`: targeted `panache format --check` and `panache lint` on the changed living documents, plus `git diff --check`.
-- Pushes touching `src/`, `tests/`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/`, `.github/workflows/`, `justfile`, `scripts/`, or `ci/` run the fast `just check` gate, which includes the complexity ratchet and the script fixture suites.
+- Pushes touching `src/`, `tests/`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/`, `.github/workflows/`, `justfile`, `prek.toml`, `scripts/`, or `ci/` run the fast `just check` gate, which includes the complexity ratchet and the script fixture suites.
 - Mixed pushes run both.
 - Anything unclassified or unresolvable fails closed to `just check-full`.
 - `just pre-push-force` always runs `just check-full`; `just pre-push-classify` prints the classification for the current branch.
