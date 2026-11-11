@@ -380,6 +380,11 @@ struct McpServerReport {
     status: &'static str,
     protocol_version: Option<String>,
     server_info: Option<String>,
+    /// How the client watches for a tool-list change: `subscription` for a
+    /// modern server, `notifications` for a legacy one. Absent when the
+    /// server never connected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_updates: Option<String>,
     error: Option<String>,
     tools: Vec<McpToolReport>,
 }
@@ -520,6 +525,7 @@ async fn report_server(
         status: "failed",
         protocol_version: None,
         server_info: None,
+        tool_updates: None,
         error: None,
         tools: Vec::new(),
     };
@@ -532,6 +538,7 @@ async fn report_server(
             report.status = "ready";
             report.protocol_version = Some(server.protocol_version.clone());
             report.server_info = server.server_info.clone();
+            report.tool_updates = Some(server.tool_list_change_mode().as_str().to_string());
             report.tools = server
                 .tools
                 .iter()
@@ -556,39 +563,47 @@ fn format_mcp_report(reports: &[McpServerReport]) -> String {
     }
     let mut output = String::from("MCP servers\n");
     for report in reports {
-        output.push('\n');
-        _ = writeln!(output, "{} ({})", report.name, report.status);
-        _ = writeln!(output, "  source: {}", report.source);
-        let command = std::iter::once(report.command.as_str())
-            .chain(report.args.iter().map(String::as_str))
-            .collect::<Vec<_>>()
-            .join(" ");
-        _ = writeln!(output, "  command: {command}");
-        _ = writeln!(output, "  timeout: {}s", report.timeout_secs);
-        _ = writeln!(output, "  exposure: {}", report.exposure.as_str());
-        if let Some(description) = &report.description {
-            _ = writeln!(output, "  description: {description}");
-        }
-        if !report.env.is_empty() {
-            _ = writeln!(output, "  env: {}", report.env.join(", "));
-        }
-        if let Some(version) = &report.protocol_version {
-            _ = writeln!(output, "  protocol: {version}");
-        }
-        if let Some(info) = &report.server_info {
-            _ = writeln!(output, "  server: {info}");
-        }
-        if let Some(error) = &report.error {
-            _ = writeln!(output, "  error: {error}");
-        }
-        if !report.tools.is_empty() {
-            _ = writeln!(output, "  tools ({}):", report.tools.len());
-            for tool in &report.tools {
-                _ = writeln!(output, "    - {} -> {}", tool.name, tool.registered_name);
-            }
-        }
+        format_mcp_server(report, &mut output);
     }
     output
+}
+
+/// Append one server row to the `debug mcp` text report.
+fn format_mcp_server(report: &McpServerReport, output: &mut String) {
+    output.push('\n');
+    _ = writeln!(output, "{} ({})", report.name, report.status);
+    _ = writeln!(output, "  source: {}", report.source);
+    let command = std::iter::once(report.command.as_str())
+        .chain(report.args.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join(" ");
+    _ = writeln!(output, "  command: {command}");
+    _ = writeln!(output, "  timeout: {}s", report.timeout_secs);
+    _ = writeln!(output, "  exposure: {}", report.exposure.as_str());
+    if let Some(tool_updates) = &report.tool_updates {
+        _ = writeln!(output, "  tool updates: {tool_updates}");
+    }
+    if let Some(description) = &report.description {
+        _ = writeln!(output, "  description: {description}");
+    }
+    if !report.env.is_empty() {
+        _ = writeln!(output, "  env: {}", report.env.join(", "));
+    }
+    if let Some(version) = &report.protocol_version {
+        _ = writeln!(output, "  protocol: {version}");
+    }
+    if let Some(info) = &report.server_info {
+        _ = writeln!(output, "  server: {info}");
+    }
+    if let Some(error) = &report.error {
+        _ = writeln!(output, "  error: {error}");
+    }
+    if !report.tools.is_empty() {
+        _ = writeln!(output, "  tools ({}):", report.tools.len());
+        for tool in &report.tools {
+            _ = writeln!(output, "    - {} -> {}", tool.name, tool.registered_name);
+        }
+    }
 }
 
 fn format_models(models: &std::collections::HashMap<String, ModelDefinition>) -> String {
@@ -1230,6 +1245,7 @@ mod tests {
             status,
             protocol_version: (status == "ready").then(|| "2026-07-28".to_string()),
             server_info: (status == "ready").then(|| "Safari".to_string()),
+            tool_updates: (status == "ready").then(|| "subscription".to_string()),
             error: (status == "failed").then(|| "connection closed".to_string()),
             tools: if status == "ready" {
                 vec![McpToolReport {
@@ -1251,6 +1267,7 @@ mod tests {
         assert!(ready.contains("/usr/bin/safaridriver --mcp"));
         assert!(ready.contains("env: SAFARI_TOKEN"));
         assert!(ready.contains("exposure: direct"));
+        assert!(ready.contains("tool updates: subscription"));
         assert!(ready.contains("description: Browser automation"));
         assert!(ready.contains("list_tabs -> mcp__safari-mcp__list_tabs"));
 
@@ -1265,6 +1282,7 @@ mod tests {
         assert!(hidden.contains("safari-mcp (hidden)"));
         assert!(hidden.contains("exposure: hidden"));
         assert!(!hidden.contains("protocol:"));
+        assert!(!hidden.contains("tool updates:"));
     }
 
     #[test]

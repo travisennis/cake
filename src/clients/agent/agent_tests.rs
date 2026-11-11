@@ -5538,3 +5538,149 @@ async fn restored_mcp_tools_are_revalidated_against_the_live_catalog() {
 
     server.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_failed_mcp_relist_keeps_the_previous_tools() {
+    let (_directory, server) = crate::clients::mcp::test_support::connect_fixture(
+        "legacy",
+        true,
+        crate::config::mcp::McpExposure::Direct,
+        10,
+    )
+    .await;
+    let mut agent = test_agent().with_mcp_servers(vec![server.clone()]);
+    // Force the refresh to consider the server changed without waiting for a
+    // notification, then close the process so tools/list fails.
+    agent
+        .mcp_tool_generations
+        .insert("fake".to_string(), u64::MAX);
+    server.client.shutdown().await;
+
+    agent.refresh_changed_mcp_tools().await;
+
+    let names = agent.tool_names();
+    assert!(names.contains(&"mcp__fake__echo".to_string()), "{names:?}");
+    assert!(names.contains(&"mcp__fake__fail".to_string()), "{names:?}");
+    assert!(
+        names.contains(&"mcp__fake__mutate".to_string()),
+        "{names:?}"
+    );
+}
+
+#[tokio::test]
+async fn list_change_reconciles_direct_mcp_tools() {
+    use crate::clients::mcp::test_support::{connect_fixture, wait_for_tools_generation};
+
+    let (_directory, server) =
+        connect_fixture("legacy", true, crate::config::mcp::McpExposure::Direct, 10).await;
+    let mut agent = test_agent().with_mcp_servers(vec![server.clone()]);
+
+    let names = agent.tool_names();
+    assert!(
+        names.contains(&"mcp__fake__mutate".to_string()),
+        "{names:?}"
+    );
+    assert!(names.contains(&"mcp__fake__fail".to_string()), "{names:?}");
+    assert!(
+        !names.contains(&"mcp__fake__added".to_string()),
+        "{names:?}"
+    );
+
+    server
+        .client
+        .call_tool("mutate", serde_json::json!({}))
+        .await
+        .unwrap();
+    wait_for_tools_generation(&server, 0).await;
+    agent.refresh_changed_mcp_tools().await;
+
+    let names = agent.tool_names();
+    assert!(names.contains(&"mcp__fake__added".to_string()), "{names:?}");
+    assert!(!names.contains(&"mcp__fake__fail".to_string()), "{names:?}");
+    assert!(
+        !names.contains(&"mcp__fake__mutate".to_string()),
+        "{names:?}"
+    );
+    let echo = agent
+        .tools
+        .definitions()
+        .iter()
+        .find(|tool| tool.name == "mcp__fake__echo")
+        .expect("echo should stay registered");
+    assert!(
+        echo.description.contains("after the change"),
+        "a changed definition should be re-registered: {}",
+        echo.description
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn list_change_reconciles_deferred_and_active_mcp_tools() {
+    use crate::clients::mcp::test_support::{connect_fixture, wait_for_tools_generation};
+
+    let (_directory, server) = connect_fixture(
+        "legacy",
+        true,
+        crate::config::mcp::McpExposure::Deferred,
+        10,
+    )
+    .await;
+    let mut agent = test_agent()
+        .with_mcp_servers(vec![server.clone()])
+        .with_active_mcp_tools(["mcp__fake__echo".to_string(), "mcp__fake__fail".to_string()]);
+
+    let names = agent.tool_names();
+    assert!(names.contains(&"mcp__fake__echo".to_string()), "{names:?}");
+    assert!(names.contains(&"mcp__fake__fail".to_string()), "{names:?}");
+    assert!(names.contains(&"ToolSearch".to_string()), "{names:?}");
+
+    server
+        .client
+        .call_tool("mutate", serde_json::json!({}))
+        .await
+        .unwrap();
+    wait_for_tools_generation(&server, 0).await;
+    agent.refresh_changed_mcp_tools().await;
+
+    let names = agent.tool_names();
+    assert!(!names.contains(&"mcp__fake__fail".to_string()), "{names:?}");
+    assert!(names.contains(&"mcp__fake__echo".to_string()), "{names:?}");
+    assert!(
+        !names.contains(&"mcp__fake__added".to_string()),
+        "a new deferred tool stays in the catalog: {names:?}"
+    );
+    assert!(
+        agent
+            .deferred_mcp_tools
+            .iter()
+            .any(|deferred| deferred.tool.registered_name == "mcp__fake__added")
+    );
+    assert!(
+        !agent
+            .deferred_mcp_tools
+            .iter()
+            .any(|deferred| deferred.tool.registered_name == "mcp__fake__fail")
+    );
+    assert!(
+        !agent
+            .active_mcp_tools
+            .lock()
+            .unwrap()
+            .contains("mcp__fake__fail")
+    );
+    let echo = agent
+        .tools
+        .definitions()
+        .iter()
+        .find(|tool| tool.name == "mcp__fake__echo")
+        .expect("an active deferred tool should stay registered");
+    assert!(
+        echo.description.contains("after the change"),
+        "an active deferred tool should pick up its new definition: {}",
+        echo.description
+    );
+
+    server.shutdown().await;
+}
