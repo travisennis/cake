@@ -60,3 +60,5 @@ Server definitions are the ecosystem `mcpServers` JSON shape. Cake reads `~/.con
 ## More Information
 
 The wire and failure semantics are in [Integrations](../integrations.md#mcp-client-protocol), configuration in [Configuration](../configuration.md#mcp-servers), and the trust boundary in [Security](../security.md#trusted-extensions). Implementation and verification are tracked by the MCP client task.
+
+Partial supersession: [ADR 060](060-refresh-mcp-tools-when-the-server-reports-a-change.md) replaces the startup-snapshot bullet in the Decision Outcome and the "a server that changes its tools requires a new run" consequence with a between-turn refresh driven by `notifications/tools/list_changed`. The transport, configuration, trust, and naming decisions above remain in force.

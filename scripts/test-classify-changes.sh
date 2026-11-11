@@ -94,6 +94,11 @@ commit_files scripts-1 scripts/helper.sh "helper"
 expect_class scripts-1 code
 expect_files scripts-1 ""
 
+# commit-hook configuration changes the local gate, so it takes the code route.
+commit_files prek-config prek.toml '[[repos]]'
+expect_class prek-config code
+expect_files prek-config ""
+
 # ahm configuration and nested Markdown take the code route, including --files.
 commit_files ahm-config .ahm/config.json '{"tasks_location":"home"}'
 expect_class ahm-config code
@@ -119,7 +124,7 @@ expect_class mixed-1 mixed
 expect_files mixed-1 "docs/readme.md"
 
 # unknown: a changed file in neither class fails closed
-commit_files unknown-1 prek.toml "key = \"value\""
+commit_files unknown-1 LICENSE "license"
 expect_class unknown-1 unknown
 expect_files unknown-1 ""
 

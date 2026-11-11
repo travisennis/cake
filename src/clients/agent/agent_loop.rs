@@ -205,6 +205,11 @@ impl Agent {
             // schema-correction continue).
             self.enforce_limits(0, invocation_start)?;
 
+            // A server may have changed its tool surface since the previous
+            // turn. Reconcile before the request so it carries one coherent
+            // tool set; tool calls from the just-finished turn already ran.
+            self.refresh_changed_mcp_tools().await;
+
             let provider_turn_start = self.conversation.history().len();
             let TurnResult {
                 items,

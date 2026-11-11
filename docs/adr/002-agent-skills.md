@@ -19,7 +19,7 @@ We implement a skills system with the following design:
 
 2. **Parsing**: Each `SKILL.md` file contains YAML frontmatter with `name` and `description` fields, followed by markdown body content.
 
-3. **Catalog disclosure**: Discovered skills are listed in the system prompt as an XML `<available_skills>` catalog, telling the model which skills exist and where to find them.
+3. **Catalog disclosure**: Discovered skills are listed in the system prompt as an XML `<available_skills>` catalog, telling the model which skills exist and where to find them. The catalog is bounded by a resolved character budget: over-budget descriptions are shortened first, then low-precedence entries are omitted with a bounded `<omitted_skills>` notice when `SkillSearch` is available. A non-empty catalog always retains its first discovered skill; a budget that cannot fit that entry is reported over budget rather than emptying the catalog. `SkillSearch` searches the complete discovered catalog by name and description and returns a `SKILL.md` location without reading the body. If the run lacks `SkillSearch`, the complete catalog is kept and an over-budget warning is logged instead of making a skill unreachable.
 
 4. **Lazy activation**: The model loads a `SKILL.md` with whichever reader the run provides: the `Read` tool when it is available, otherwise a shell-capable tool such as `Bash` (`cat <location>`). The catalog's `<skill_instructions>` text matches the resolved reader, and a run with neither reader receives no catalog. The skill content is then in the conversation context. A `SkillActivated` session record is emitted once per skill per session on the first `Read` of that file, but the `Read` tool always returns the actual file contents.
 
@@ -69,6 +69,10 @@ We implement a skills system with the following design:
 
 2026-10-04: Decision point 7 extended so user-facing cake procedures may live in the separate `cake-skills` repository instead of `docs/runbooks/`. `AGENTS.md` routes to those skills by name, and this repository no longer keeps a runbook copy or pointer stub for them; runbooks here remain for repository operations. See PR #684.
 
+2026-11-10: Decision point 3 bounded the catalog disclosure. The budget defaults to roughly 2% of a known model context window, descriptions are shortened before entries are omitted, and `SkillSearch` keeps omitted skills reachable by name and description. When the tool selection has no `SkillSearch`, the catalog is not truncated. See task 179.
+
+2026-11-10: Follow-up to task 179: a non-empty catalog always retains its first discovered skill. If `catalog_budget` cannot fit that entry, the render is marked over budget instead of an empty catalog with every skill omitted. See task 180.
+
 ## References
 
 - `docs/configuration.md` - Current user configuration
@@ -76,3 +80,4 @@ We implement a skills system with the following design:
 - `src/config/skills.rs` - Skill discovery and parsing implementation
 - `src/prompts/mod.rs` - System prompt integration
 - `src/clients/agent.rs` - Path-watching skill activation tracking
+- `src/clients/tools/skill_search.rs` - Bounded-catalog search over skill metadata

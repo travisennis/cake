@@ -235,7 +235,7 @@ def cargo_install_value(line: str) -> tuple[str, str, bool] | None:
 def collect_text_tool_inventory(root: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     inventory: list[dict[str, Any]] = []
     findings: list[dict[str, Any]] = []
-    paths = [root / "justfile", *sorted((root / ".github" / "workflows").glob("*.yml"))]
+    paths = [root / "justfile", root / "scripts" / "dev-tools.sh", *sorted((root / ".github" / "workflows").glob("*.yml"))]
     for path in paths:
         name = relative(root, path)
         try:

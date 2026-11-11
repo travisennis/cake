@@ -12,9 +12,9 @@ use crate::clients::agent_state::{ConversationState, accumulate_usage};
 use crate::clients::backend::Backend;
 use crate::clients::mcp::{McpClient, McpServer, McpTool};
 use crate::clients::tools::{
-    SandboxPolicy, TOOL_SEARCH_NAME, ToolContext, ToolRegistry, ToolSearchEntry,
-    default_tool_registry, mcp_tool_entry, tool_search_enabled, tool_search_entry,
-    toolbox_tool_entry,
+    SKILL_SEARCH_NAME, SandboxPolicy, SkillSearchEntry, TOOL_SEARCH_NAME, ToolContext,
+    ToolRegistry, ToolSearchEntry, default_tool_registry, mcp_tool_entry, skill_search_enabled,
+    skill_search_entry, tool_search_enabled, tool_search_entry, toolbox_tool_entry,
 };
 use crate::config::model::ResolvedModelConfig;
 use crate::config::output_schema::OutputSchema;
@@ -151,6 +151,10 @@ pub struct Agent {
     enabled_tool_names: Option<Vec<String>>,
     /// MCP tools that are searchable but not registered yet.
     deferred_mcp_tools: Vec<DeferredMcpTool>,
+    /// Connected MCP servers and their latest advertised tool snapshots.
+    mcp_servers: Vec<McpServer>,
+    /// Last tool-change generation observed for each connected server.
+    mcp_tool_generations: HashMap<String, u64>,
     /// Registered names selected by `ToolSearch` during the current tool batch.
     pending_tool_activations: Arc<Mutex<Vec<String>>>,
     /// Deferred tools already added to the registry. Shared with `ToolSearch`
@@ -158,6 +162,8 @@ pub struct Agent {
     active_mcp_tools: Arc<Mutex<HashSet<String>>>,
     /// Whether this agent installed the `ToolSearch` entry.
     tool_search_installed: bool,
+    /// Whether this agent installed the `SkillSearch` entry.
+    skill_search_installed: bool,
     tool_context: Arc<ToolContext>,
     /// Session ID for tracking
     session_id: uuid::Uuid,
@@ -225,9 +231,12 @@ impl Agent {
             tools,
             enabled_tool_names: None,
             deferred_mcp_tools: Vec::new(),
+            mcp_servers: Vec::new(),
+            mcp_tool_generations: HashMap::new(),
             pending_tool_activations: Arc::new(Mutex::new(Vec::new())),
             active_mcp_tools: Arc::new(Mutex::new(HashSet::new())),
             tool_search_installed: false,
+            skill_search_installed: false,
             tool_context: Arc::new(ToolContext::from_current_process()),
             session_id: uuid::Uuid::new_v4(),
             task_id: uuid::Uuid::new_v4(),
@@ -353,6 +362,14 @@ impl Agent {
         if self.tool_context.sandbox_policy() == SandboxPolicy::ReadOnly {
             return self;
         }
+        // Start from zero, not the server's current count: a notification
+        // that arrives between the startup listing and this builder call must
+        // still trigger one re-list before the first request.
+        self.mcp_tool_generations = servers
+            .iter()
+            .map(|server| (server.name.clone(), 0))
+            .collect();
+        self.mcp_servers.clone_from(&servers);
         let supports_images = self.config.model_config.supports_images;
         let enabled_tool_names = self.enabled_tool_names.clone();
         for server in servers {
@@ -465,13 +482,16 @@ impl Agent {
     }
 
     /// Add every permitted deferred tool directly, used when search is not
-    /// available. The catalog is consumed so a later refresh cannot duplicate
-    /// the registrations.
+    /// available. The catalog is kept so a later refresh can still diff it;
+    /// names already in the registry are skipped.
     fn register_deferred_tools_direct(&mut self) {
         let supports_images = self.config.model_config.supports_images;
-        let deferred = std::mem::take(&mut self.deferred_mcp_tools);
+        let deferred = self.deferred_mcp_tools.clone();
         for deferred in deferred {
             if !self.mcp_tool_enabled(&deferred.tool.registered_name) {
+                continue;
+            }
+            if self.tools.has(&deferred.tool.registered_name) {
                 continue;
             }
             self.register_mcp_tool(
@@ -479,6 +499,202 @@ impl Agent {
                 &deferred.tool,
                 Arc::clone(&deferred.client),
                 supports_images,
+            );
+        }
+    }
+
+    /// Re-list servers whose tool-change generation advanced since the last
+    /// provider request, then reconcile the registry and deferred catalog.
+    ///
+    /// Runs between turns so every provider request carries one coherent tool
+    /// set. A failed re-list keeps the previous surface: the server's tools
+    /// remain usable, and the next notification tries again.
+    pub(super) async fn refresh_changed_mcp_tools(&mut self) {
+        let changed_servers: Vec<String> = self
+            .mcp_servers
+            .iter()
+            .filter(|server| {
+                server.tools_generation()
+                    != self
+                        .mcp_tool_generations
+                        .get(&server.name)
+                        .copied()
+                        .unwrap_or_default()
+            })
+            .map(|server| server.name.clone())
+            .collect();
+
+        for name in changed_servers {
+            let Some(index) = self
+                .mcp_servers
+                .iter()
+                .position(|server| server.name == name)
+            else {
+                continue;
+            };
+            let mut server = self.mcp_servers[index].clone();
+            let observed = server.tools_generation();
+            let previous = server.tools.clone();
+            match server.reload_tools().await {
+                Ok(changed) => {
+                    if changed {
+                        self.reconcile_mcp_server_tools(&server, &previous);
+                    }
+                    self.mcp_servers[index] = server;
+                },
+                Err(error) => {
+                    tracing::warn!(
+                        target: "cake",
+                        "MCP server '{name}' could not refresh its tool list: {error}; keeping the previous tools"
+                    );
+                },
+            }
+            // Record the pre-request generation. A notification that arrives
+            // during the re-list makes the next loop run again rather than
+            // being swallowed by this pass.
+            self.mcp_tool_generations.insert(name, observed);
+        }
+    }
+
+    /// Apply one server's new tool snapshot to the registry and catalog.
+    ///
+    /// The diff is by registered name. Removed tools disappear from the
+    /// registry and the catalog, new tools join the surface appropriate to
+    /// the server's exposure, and a changed definition replaces the old entry
+    /// so the next request carries the new schema and description.
+    fn reconcile_mcp_server_tools(&mut self, server: &McpServer, previous: &[McpTool]) {
+        let advertised: HashSet<&str> = server
+            .tools
+            .iter()
+            .map(|tool| tool.registered_name.as_str())
+            .collect();
+        let previous_by_name: HashMap<&str, &McpTool> = previous
+            .iter()
+            .map(|tool| (tool.registered_name.as_str(), tool))
+            .collect();
+
+        let mut added = 0usize;
+        let mut removed = 0usize;
+        let mut updated = 0usize;
+
+        for old in previous {
+            if advertised.contains(old.registered_name.as_str()) {
+                continue;
+            }
+            removed += 1;
+            self.remove_mcp_tool(&server.name, old);
+        }
+
+        for tool in &server.tools {
+            match previous_by_name.get(tool.registered_name.as_str()) {
+                Some(old) if *old == tool => continue,
+                Some(_) => updated += 1,
+                None => added += 1,
+            }
+            self.reconcile_mcp_tool(server, tool);
+        }
+
+        self.refresh_tool_search();
+        Self::log_mcp_tool_change(&server.name, added, removed, updated);
+    }
+
+    /// Remove one tool from every model-visible surface.
+    fn remove_mcp_tool(&mut self, server: &str, tool: &McpTool) {
+        self.tools.remove_by_name(&tool.registered_name);
+        self.active_mcp_tools
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&tool.registered_name);
+        self.deferred_mcp_tools.retain(|deferred| {
+            deferred.server != server || deferred.tool.registered_name != tool.registered_name
+        });
+    }
+
+    /// Apply one added or changed tool according to the server's exposure.
+    fn reconcile_mcp_tool(&mut self, server: &McpServer, tool: &McpTool) {
+        let enabled = self.mcp_tool_enabled(&tool.registered_name);
+        match server.exposure {
+            crate::config::mcp::McpExposure::Direct => {
+                self.reconcile_direct_mcp_tool(server, tool, enabled);
+            },
+            crate::config::mcp::McpExposure::Deferred => {
+                self.reconcile_deferred_mcp_tool(server, tool, enabled);
+            },
+            crate::config::mcp::McpExposure::Hidden => {},
+        }
+    }
+
+    /// Replace a direct tool's registry entry.
+    fn reconcile_direct_mcp_tool(&mut self, server: &McpServer, tool: &McpTool, enabled: bool) {
+        self.tools.remove_by_name(&tool.registered_name);
+        if enabled {
+            self.register_mcp_tool(
+                &server.name,
+                tool,
+                Arc::clone(&server.client),
+                self.config.model_config.supports_images,
+            );
+        }
+    }
+
+    /// Replace a deferred tool's catalog entry and, when it was active, its
+    /// registry entry.
+    fn reconcile_deferred_mcp_tool(&mut self, server: &McpServer, tool: &McpTool, enabled: bool) {
+        let active = self
+            .active_mcp_tools
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&tool.registered_name);
+        self.deferred_mcp_tools.retain(|deferred| {
+            deferred.server != server.name || deferred.tool.registered_name != tool.registered_name
+        });
+        if !enabled {
+            if active {
+                self.remove_mcp_tool(&server.name, tool);
+            }
+            return;
+        }
+        self.deferred_mcp_tools.push(DeferredMcpTool {
+            server: server.name.clone(),
+            tool: tool.clone(),
+            client: Arc::clone(&server.client),
+        });
+        if active {
+            self.active_mcp_tools
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&tool.registered_name);
+            self.tools.remove_by_name(&tool.registered_name);
+            if self.register_mcp_tool(
+                &server.name,
+                tool,
+                Arc::clone(&server.client),
+                self.config.model_config.supports_images,
+            ) {
+                self.active_mcp_tools
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(tool.registered_name.clone());
+            }
+        } else if self.tools.has(&tool.registered_name) {
+            // The no-ToolSearch fallback registers deferred tools directly.
+            // Replace the entry so a changed definition reaches the model.
+            self.tools.remove_by_name(&tool.registered_name);
+            _ = self.register_mcp_tool(
+                &server.name,
+                tool,
+                Arc::clone(&server.client),
+                self.config.model_config.supports_images,
+            );
+        }
+    }
+
+    /// Report a reconciled tool change when anything differed.
+    fn log_mcp_tool_change(server: &str, added: usize, removed: usize, updated: usize) {
+        if added + removed + updated > 0 {
+            tracing::info!(
+                target: "cake",
+                "MCP server '{server}' changed its tools: {added} added, {removed} removed, {updated} updated"
             );
         }
     }
@@ -605,6 +821,7 @@ impl Agent {
             self.tools.retain_enabled_tools(enabled_tools);
         }
         self.refresh_tool_search();
+        self.install_skill_search();
         self
     }
 
@@ -843,7 +1060,42 @@ impl Agent {
     /// emitted once per skill per session.
     pub fn with_skill_locations(mut self, locations: HashMap<PathBuf, Skill>) -> Self {
         self.skill_locations = Arc::new(locations);
+        self.install_skill_search();
         self
+    }
+
+    /// Install `SkillSearch` when the catalog is visible and the run can read
+    /// a `SKILL.md`. The tool searches metadata only; it never opens a body.
+    fn install_skill_search(&mut self) {
+        if self.skill_search_installed {
+            self.tools.remove_by_name(SKILL_SEARCH_NAME);
+            self.skill_search_installed = false;
+        }
+        if self.skill_locations.is_empty()
+            || !skill_search_enabled(self.enabled_tool_names.as_deref())
+            || (!self.tools.has("Read") && !self.tools.has("Bash"))
+        {
+            return;
+        }
+        if self.tools.has(SKILL_SEARCH_NAME) {
+            tracing::warn!(
+                target: "cake",
+                "an existing tool already uses the registered name '{SKILL_SEARCH_NAME}'; \
+                 skill catalog omissions are disabled"
+            );
+            return;
+        }
+        let entries: Vec<SkillSearchEntry> = self
+            .skill_locations
+            .values()
+            .map(|skill| SkillSearchEntry {
+                name: skill.name.clone(),
+                description: skill.description.clone(),
+                location: skill.location.clone(),
+            })
+            .collect();
+        self.tools.push_entry(skill_search_entry(entries));
+        self.skill_search_installed = true;
     }
 
     /// Seeds the set of skill names already activated in this session.

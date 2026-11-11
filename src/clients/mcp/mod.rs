@@ -23,7 +23,7 @@ use std::sync::Arc;
 use serde_json::Value;
 use tracing::warn;
 
-pub use client::McpClient;
+pub use client::{McpClient, ToolListChangeMode};
 
 use crate::config::mcp::{McpExposure, McpServerConfig, registered_tool_name};
 
@@ -38,7 +38,7 @@ pub const LEGACY_PROTOCOL_VERSION: &str = "2025-11-25";
 const MAX_TOOL_PAGES: usize = 100;
 
 /// One MCP tool, ready for registration.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct McpTool {
     /// Tool name as the server advertises it.
     pub name: String,
@@ -53,7 +53,7 @@ pub struct McpTool {
     pub output_schema: Option<Value>,
 }
 
-/// One connected MCP server and the tools it advertised at startup.
+/// One connected MCP server and its current tool inventory.
 #[derive(Clone)]
 pub struct McpServer {
     /// Local instance name from configuration.
@@ -62,7 +62,7 @@ pub struct McpServer {
     pub description: Option<String>,
     /// How this server's tools reach the model.
     pub exposure: McpExposure,
-    /// Tools discovered at startup, in server order.
+    /// Current tools advertised by the server, in server order.
     pub tools: Vec<McpTool>,
     /// Live connection used by tool executors.
     pub client: Arc<McpClient>,
@@ -92,6 +92,34 @@ impl McpServer {
     pub async fn shutdown(&self) {
         self.client.shutdown().await;
     }
+
+    /// Re-read every `tools/list` page after a list-change notification.
+    ///
+    /// Returns whether the advertised set differs from the current snapshot.
+    /// On success the snapshot is replaced; on failure the caller keeps the
+    /// previous tools and can retry after the next notification.
+    ///
+    /// # Errors
+    ///
+    /// Returns the server's diagnostic when the list cannot be read.
+    pub async fn reload_tools(&mut self) -> Result<bool, String> {
+        let tools = list_tools(&self.client, &self.name).await?;
+        let changed = tools != self.tools;
+        self.tools = tools;
+        Ok(changed)
+    }
+
+    /// Count of accepted tool-list-change notifications for this server.
+    #[must_use]
+    pub fn tools_generation(&self) -> u64 {
+        self.client.tools_generation()
+    }
+
+    /// How this server delivers tool-list changes.
+    #[must_use]
+    pub fn tool_list_change_mode(&self) -> ToolListChangeMode {
+        self.client.tool_list_change_mode()
+    }
 }
 
 /// Start one configured server, negotiate the protocol, and list its tools.
@@ -110,23 +138,35 @@ pub async fn connect_server(
 ) -> Result<McpServer, String> {
     let client = McpClient::start(config, cwd)?;
     match client.handshake().await {
-        Ok(protocol) => match list_tools(&client, config).await {
-            Ok(tools) => {
-                let server_info = client.server_info();
-                Ok(McpServer {
-                    name: config.name.clone(),
-                    description: config.description.clone(),
-                    exposure: config.exposure,
-                    tools,
-                    client: Arc::new(client),
-                    protocol_version: protocol.version.clone(),
-                    server_info,
-                })
-            },
-            Err(error) => {
-                client.shutdown().await;
-                Err(error)
-            },
+        Ok(protocol) => {
+            // Subscribe before the initial listing: a change that lands during
+            // startup is then counted and refreshed instead of being lost
+            // between the listing and the subscription.
+            if let Err(error) = client.subscribe_tools_list_changed() {
+                warn!(
+                    target: "cake",
+                    "MCP server '{}' could not open a tool-list-change subscription: {error}",
+                    config.name
+                );
+            }
+            match list_tools(&client, &config.name).await {
+                Ok(tools) => {
+                    let server_info = client.server_info();
+                    Ok(McpServer {
+                        name: config.name.clone(),
+                        description: config.description.clone(),
+                        exposure: config.exposure,
+                        tools,
+                        client: Arc::new(client),
+                        protocol_version: protocol.version.clone(),
+                        server_info,
+                    })
+                },
+                Err(error) => {
+                    client.shutdown().await;
+                    Err(error)
+                },
+            }
         },
         Err(error) => {
             client.shutdown().await;
@@ -136,7 +176,7 @@ pub async fn connect_server(
 }
 
 /// Read every page of `tools/list`.
-async fn list_tools(client: &McpClient, config: &McpServerConfig) -> Result<Vec<McpTool>, String> {
+async fn list_tools(client: &McpClient, server: &str) -> Result<Vec<McpTool>, String> {
     let mut tools = Vec::new();
     let mut cursor: Option<String> = None;
     let mut seen = std::collections::HashSet::new();
@@ -148,23 +188,19 @@ async fn list_tools(client: &McpClient, config: &McpServerConfig) -> Result<Vec<
         let result = client
             .request("tools/list", params)
             .await
-            .map_err(|error| format!("MCP server '{}' tools/list failed: {error}", config.name))?;
+            .map_err(|error| format!("MCP server '{server}' tools/list failed: {error}"))?;
         let entries = result
             .get("tools")
             .and_then(Value::as_array)
             .ok_or_else(|| {
-                format!(
-                    "MCP server '{}' returned a tools/list result without a tools array",
-                    config.name
-                )
+                format!("MCP server '{server}' returned a tools/list result without a tools array")
             })?;
         for entry in entries {
-            match parse_tool(&config.name, entry) {
+            match parse_tool(server, entry) {
                 Some(tool) if seen.insert(tool.registered_name.clone()) => tools.push(tool),
                 Some(tool) => warn!(
                     target: "cake",
-                    "MCP server '{}' advertised duplicate registered tool '{}'",
-                    config.name,
+                    "MCP server '{server}' advertised duplicate registered tool '{}'",
                     tool.registered_name
                 ),
                 None => {},
@@ -181,8 +217,7 @@ async fn list_tools(client: &McpClient, config: &McpServerConfig) -> Result<Vec<
     }
 
     Err(format!(
-        "MCP server '{}' returned more than {MAX_TOOL_PAGES} pages of tools",
-        config.name
+        "MCP server '{server}' returned more than {MAX_TOOL_PAGES} pages of tools"
     ))
 }
 
@@ -227,6 +262,72 @@ fn parse_tool(server: &str, entry: &Value) -> Option<McpTool> {
         input_schema,
         output_schema: entry.get("outputSchema").cloned(),
     })
+}
+
+#[cfg(test)]
+pub mod test_support {
+    //! Shared fixture helpers for MCP client and agent tests.
+
+    use std::collections::BTreeMap;
+    use std::path::Path;
+
+    use crate::clients::mcp::{McpServer, connect_server};
+    use crate::config::mcp::{McpExposure, McpServerConfig};
+
+    pub const FIXTURE: &str = include_str!("fixtures/fake_mcp_server.py");
+
+    /// Write the fixture script into `directory` and describe it as a server.
+    pub fn fixture_config(
+        directory: &Path,
+        era: &str,
+        dynamic: bool,
+        exposure: McpExposure,
+        timeout_secs: u64,
+    ) -> McpServerConfig {
+        let script = directory.join("fake_mcp_server.py");
+        std::fs::write(&script, FIXTURE).unwrap();
+        let mut env = BTreeMap::from([("FAKE_MCP_ERA".to_string(), era.to_string())]);
+        if dynamic {
+            env.insert("FAKE_MCP_DYNAMIC".to_string(), "1".to_string());
+        }
+        McpServerConfig {
+            name: "fake".to_string(),
+            command: "python3".to_string(),
+            args: vec![script.display().to_string()],
+            env,
+            timeout_secs,
+            description: Some("Fixture server".to_string()),
+            exposure,
+            source: directory.join("mcp.json"),
+        }
+    }
+
+    /// Start the Python fixture in `era`, optionally in dynamic mode.
+    pub async fn connect_fixture(
+        era: &str,
+        dynamic: bool,
+        exposure: McpExposure,
+        timeout_secs: u64,
+    ) -> (tempfile::TempDir, McpServer) {
+        let directory = tempfile::tempdir().unwrap();
+        let config = fixture_config(directory.path(), era, dynamic, exposure, timeout_secs);
+        let server = connect_server(&config, directory.path())
+            .await
+            .unwrap_or_else(|error| panic!("{era} fixture failed to connect: {error}"));
+        (directory, server)
+    }
+
+    /// Wait until a server's accepted tool-change counter advances.
+    pub async fn wait_for_tools_generation(server: &McpServer, previous: u64) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while server.tools_generation() == previous {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the fixture's tool-change notification did not arrive"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
 }
 
 #[cfg(test)]

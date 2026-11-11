@@ -28,9 +28,12 @@ mod tools;
 pub use agent::Agent;
 #[doc(inline)]
 pub use tools::ToolContext;
-pub use tools::effective_builtin_tool_names;
-pub use tools::format_tool_list_section_with_mcp;
+pub use tools::format_tool_list_section_with_mcp_and_skill_search;
+pub use tools::skill_search_enabled;
 pub use tools::tool_search_enabled;
+pub use tools::{
+    BuiltinToolFilterReason, BuiltinToolInventoryEntry, TOOL_SEARCH_NAME, builtin_tool_inventory,
+};
 pub use tools::{ExternalServerInfo, ExternalToolInfo};
 pub use tools::{
     GrantReport, GrantReportInputs, compute_temp_directories, resolve_sandbox_policy_with_source,

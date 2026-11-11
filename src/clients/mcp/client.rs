@@ -1,6 +1,6 @@
 //! Process and JSON-RPC transport for one MCP server.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -37,6 +37,29 @@ pub(super) struct Protocol {
     pub(super) version: String,
     /// True for per-request metadata; false for the initialize handshake.
     pub(super) modern: bool,
+}
+
+/// How a connected server delivers tool-list changes to this client.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolListChangeMode {
+    /// The handshake has not completed, so no watch is known yet.
+    None,
+    /// The legacy era sends the notification without a subscription.
+    Notifications,
+    /// The modern era delivers it on a `subscriptions/listen` stream.
+    Subscription,
+}
+
+impl ToolListChangeMode {
+    /// Short label for diagnostics.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Notifications => "notifications",
+            Self::Subscription => "subscription",
+        }
+    }
 }
 
 /// One JSON-RPC error returned by the server.
@@ -83,6 +106,13 @@ struct Transport {
     pending: Mutex<HashMap<u64, oneshot::Sender<Result<Value, RequestError>>>>,
     writer: mpsc::UnboundedSender<String>,
     closed: AtomicBool,
+    /// Accepted `notifications/tools/list_changed` messages. The agent keeps
+    /// its own last-observed value, so a notification that arrives during a
+    /// re-list triggers one more pass instead of being lost.
+    tools_changed: AtomicU64,
+    /// Open `subscriptions/listen` request ids. Their responses mean graceful
+    /// closure, not a normal request result, so they never enter `pending`.
+    subscriptions: std::sync::Mutex<HashSet<u64>>,
 }
 
 impl Transport {
@@ -121,6 +151,43 @@ impl Transport {
                 })
             },
         }
+    }
+
+    /// Send one request whose response may never arrive, returning its id.
+    fn send_open_request(&self, method: &str, params: Option<Value>) -> Result<u64, RequestError> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(RequestError::Closed(self.server.clone()));
+        }
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let frame = request_frame(id, method, params);
+        if self.writer.send(frame).is_err() {
+            return Err(RequestError::Closed(self.server.clone()));
+        }
+        Ok(id)
+    }
+
+    /// Remember an open subscription id.
+    fn add_subscription(&self, id: u64) {
+        self.subscriptions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id);
+    }
+
+    /// Whether `id` names a subscription this client opened.
+    fn has_subscription(&self, id: u64) -> bool {
+        self.subscriptions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&id)
+    }
+
+    /// Forget a subscription id, returning whether it was present.
+    fn remove_subscription(&self, id: u64) -> bool {
+        self.subscriptions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&id)
     }
 
     /// Send one notification. Write failures are ignored: the next request
@@ -235,6 +302,8 @@ impl McpClient {
             pending: Mutex::new(HashMap::new()),
             writer,
             closed: AtomicBool::new(false),
+            tools_changed: AtomicU64::new(0),
+            subscriptions: std::sync::Mutex::new(HashSet::new()),
         });
 
         let tasks = vec![
@@ -286,6 +355,58 @@ impl McpClient {
             .request(method, params, self.transport.timeout)
             .await
             .map_err(|error| error.to_string())
+    }
+
+    /// Open the modern tool-list-change subscription.
+    ///
+    /// The response to `subscriptions/listen` is a graceful-closure signal, so
+    /// this does not wait for one. A legacy server needs no subscription and
+    /// this is a no-op there.
+    pub(super) fn subscribe_tools_list_changed(&self) -> Result<(), String> {
+        let modern = self
+            .protocol
+            .read()
+            .ok()
+            .and_then(|protocol| protocol.as_ref().map(|protocol| protocol.modern))
+            .unwrap_or(false);
+        if !modern {
+            return Ok(());
+        }
+        let params = self.with_meta(Some(json!({
+            "notifications": { "toolsListChanged": true },
+        })));
+        let id = self
+            .transport
+            .send_open_request("subscriptions/listen", params)
+            .map_err(|error| error.to_string())?;
+        self.transport.add_subscription(id);
+        debug!(
+            target: "cake",
+            "MCP server '{}' opened tool-list-change subscription {id}",
+            self.server
+        );
+        Ok(())
+    }
+
+    /// Count of accepted tool-list-change notifications.
+    #[must_use]
+    pub fn tools_generation(&self) -> u64 {
+        self.transport.tools_changed.load(Ordering::SeqCst)
+    }
+
+    /// How this server delivers tool-list changes.
+    #[must_use]
+    pub fn tool_list_change_mode(&self) -> ToolListChangeMode {
+        match self
+            .protocol
+            .read()
+            .ok()
+            .and_then(|protocol| protocol.clone())
+        {
+            Some(protocol) if protocol.modern => ToolListChangeMode::Subscription,
+            Some(_) => ToolListChangeMode::Notifications,
+            None => ToolListChangeMode::None,
+        }
     }
 
     /// Invoke one tool and return its raw `tools/call` result.
@@ -648,14 +769,40 @@ fn handle_server_request(transport: &Arc<Transport>, message: &Value) {
     _ = transport.send_value(&response);
 }
 
-/// Log a server notification. The tool list is fixed for the invocation.
+/// Log a server notification and count tool-list changes.
 fn handle_notification(transport: &Arc<Transport>, message: &Value) {
     match message.get("method").and_then(Value::as_str) {
         Some("notifications/tools/list_changed") => {
+            // Modern notifications name the subscription they arrived on. A
+            // notification for a subscription this client did not open cannot
+            // be trusted as belonging to this connection's tool stream.
+            if let Some(id) = subscription_id(message)
+                && !transport.has_subscription(id)
+            {
+                debug!(
+                    target: "cake",
+                    "MCP server '{}' sent a tool-list change for unknown subscription {id}; ignoring it",
+                    transport.server
+                );
+                return;
+            }
+            transport.tools_changed.fetch_add(1, Ordering::SeqCst);
             debug!(
                 target: "cake",
-                "MCP server '{}' reported a tool-list change; restart cake to pick it up",
+                "MCP server '{}' reported a tool-list change; the agent will re-list it before the next request",
                 transport.server
+            );
+        },
+        Some("notifications/subscriptions/acknowledged") => {
+            let accepted = message
+                .pointer("/params/notifications/toolsListChanged")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            debug!(
+                target: "cake",
+                "MCP server '{}' {} the tool-list-change subscription",
+                transport.server,
+                if accepted { "acknowledged" } else { "did not accept" }
             );
         },
         Some(method) => {
@@ -669,21 +816,16 @@ fn handle_notification(transport: &Arc<Transport>, message: &Value) {
     }
 }
 
-/// Resolve one response frame against the pending request table.
-async fn handle_response(transport: &Arc<Transport>, message: &Value) {
-    let Some(id) = message.get("id").and_then(Value::as_u64) else {
-        debug!(
-            target: "cake",
-            "MCP server '{}' returned an unrecognized response id",
-            transport.server
-        );
-        return;
-    };
-    let Some(sender) = transport.pending.lock().await.remove(&id) else {
-        // A response that arrives after its request timed out is harmless.
-        return;
-    };
-    let outcome = message.get("result").map_or_else(
+/// The modern subscription id carried by a notification.
+fn subscription_id(message: &Value) -> Option<u64> {
+    message
+        .pointer("/params/_meta/io.modelcontextprotocol/subscriptionId")
+        .and_then(Value::as_u64)
+}
+
+/// Interpret one response frame as a result or an error.
+fn response_outcome(transport: &Transport, message: &Value) -> Result<Value, RequestError> {
+    message.get("result").map_or_else(
         || {
             message.get("error").map_or_else(
                 || {
@@ -706,6 +848,39 @@ async fn handle_response(transport: &Arc<Transport>, message: &Value) {
             )
         },
         |result| Ok(result.clone()),
-    );
-    _ = sender.send(outcome);
+    )
+}
+
+/// Resolve one response frame against the pending request table.
+async fn handle_response(transport: &Arc<Transport>, message: &Value) {
+    let Some(id) = message.get("id").and_then(Value::as_u64) else {
+        debug!(
+            target: "cake",
+            "MCP server '{}' returned an unrecognized response id",
+            transport.server
+        );
+        return;
+    };
+    // A `subscriptions/listen` response reports graceful closure, not a
+    // request result. It never has a pending sender.
+    if transport.remove_subscription(id) {
+        match response_outcome(transport, message) {
+            Ok(_) => debug!(
+                target: "cake",
+                "MCP server '{}' closed subscription {id}",
+                transport.server
+            ),
+            Err(error) => warn!(
+                target: "cake",
+                "MCP server '{}' subscription {id} failed: {error}",
+                transport.server
+            ),
+        }
+        return;
+    }
+    let Some(sender) = transport.pending.lock().await.remove(&id) else {
+        // A response that arrives after its request timed out is harmless.
+        return;
+    };
+    _ = sender.send(response_outcome(transport, message));
 }

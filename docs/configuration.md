@@ -14,7 +14,7 @@ For model and behavior settings, project values overlay global values. When a pr
 4. project top-level settings
 5. global top-level settings
 
-Keys in a settings file that Cake does not recognize are ignored and reported as a warning on stderr, so a misspelled key (for example `temparature` instead of `temperature`) is surfaced instead of silently dropped. The warning names the file and the section, for example `unknown key 'temparature' in [[models]] entry 'zen'; ignored`.
+Keys in a settings file that Cake does not recognize are ignored and reported as a warning on stderr, so a misspelled key (for example `temparature` instead of `temperature`) is surfaced instead of silently dropped. The warning names the file and the section, for example `unknown key 'temparature' in [[models]] entry 'zen'; ignored`. `cake doctor` reports the same warnings in its health report.
 
 Model definitions are global-only. A project settings file may select a global `[[models]]` entry by name but may not define one; a project `[[models]]` entry is a settings error even after `cake trust`. Additional `directories` are merged. Profiles may select a model and overlay behavior but may not define model providers.
 
@@ -40,7 +40,21 @@ One-run modes never write a record:
 - `--trust-project` or `CAKE_TRUST_PROJECT=1` accepts the current snapshot for one invocation. Use it in CI after reviewing the checkout.
 - `--no-project-config` or `CAKE_PROJECT_CONFIG=off` ignores project `.cake/` settings, hooks, toolbox tools, MCP servers, and the automatic project prompt for one invocation. Repository content such as `AGENTS.md` and default-root skills remains untrusted model input.
 
-The two modes conflict and fail closed. When authority-bearing configuration is present and untrusted, Cake exits `3` before resolving a provider credential, running a hook, describing a toolbox tool, starting an MCP server or gate, creating a writable grant, registering a tool, or opening a session. Read-only inspection commands (`cake trust --status`, `cake debug config`, `cake debug session`, `cake debug models`, `cake debug skills`, `cake debug grants`, `cake debug mcp`, `cake mcp list`, `cake mcp get`, `cake gates list`) report the state without applying authority; `cake gates doctor` and `cake bash check` enforce the trust check.
+The two modes conflict and fail closed. When authority-bearing configuration is present and untrusted, Cake exits `3` before resolving a provider credential, running a hook, describing a toolbox tool, starting an MCP server or gate, creating a writable grant, registering a tool, or opening a session. Read-only inspection commands (`cake trust --status`, `cake doctor`, `cake debug config`, `cake debug session`, `cake debug models`, `cake debug skills`, `cake debug grants`, `cake debug tools`, `cake debug mcp`, `cake mcp list`, `cake mcp get`, `cake gates list`) report the state without applying authority; `cake gates doctor` and `cake bash check` enforce the trust check.
+
+## Settings health with `cake doctor`
+
+`cake doctor` validates the global and project settings files and the selected profile without starting a session. It uses the ordinary settings loader and its round-trip diff, so unknown keys, parse failures, invalid profile names or selections, and invalid `default_model` or judge model references are reported with their source file.
+
+```bash
+cake doctor
+cake doctor --json | jq '.checks'
+cake --profile review doctor --json | jq '.data.grants'
+```
+
+The report lists each settings source with its path and whether it is present, the selected profile and default model, and the merged `directories`, `[sandbox].writable`, and `[sandbox].read_only` grants with resolved paths, their source setting, and a `granted`, `would-create`, `missing`, `not-a-directory`, or `excluded` status. A missing writable path is `would-create`, and doctor never creates it. These are the configured grant settings, not the complete OS-level sandbox policy; `cake debug grants` reports the full effective grant value and every source behind it.
+
+Unknown keys and grant path problems are warnings: they appear in `checks` and exit `0`. An unreadable, unparsable, or self-contradictory settings file is an error document and exits `3`. Doctor resolves no credential value, calls no provider or gate, runs no hook or toolbox `describe`, connects no MCP server, and opens no session. Untrusted project authority is reported but not applied; `--trust-project` accepts it for one report, and `--no-project-config` omits it.
 
 ## Effective configuration
 
@@ -58,6 +72,24 @@ The report covers the settings sources and whether project authority was applied
 Inspection never resolves a provider credential, calls a provider, runs a hook, gate, MCP server, or toolbox executable, creates a configured writable directory or the user skill root, or opens a session. Untrusted project authority is reported but not applied; `--trust-project` accepts it for one report, and `--no-project-config` omits it. Local `--sandbox`, `--add-dir`, `--skills`, `--no-skills`, `--tools`, `--no-tools`, and `--toolbox` flags describe a one-run choice without changing defaults.
 
 `--json` emits one versioned diagnostic document. Settings findings, project-trust findings, skill diagnostics, grant path problems, hook parse failures, and an unavailable `--model` choice appear in `checks`; `data.project_trust` carries `state`, `mode`, `one_run`, `authority`, and `changes`; and `data.grants` is the same effective grant payload `debug grants` reports. Warnings exit `0`. A settings file that cannot be loaded is an error document and exits `3`, like the other settings-reading inspection commands.
+
+## Tool inventory
+
+Inspect the effective tool surface without starting an agent, provider, hook, gate, toolbox process, or MCP server:
+
+```bash
+cake debug tools
+cake debug tools --json | jq '.data.builtins[] | select(.status == "filtered")'
+cake debug tools --tools Read
+cake debug tools --no-tools
+cake debug tools --sandbox read-only
+```
+
+The report resolves the same inputs as a run: the selected model and its image capability, the sandbox policy and its source, the exact-name selection from `--tools`/`--no-tools` or `[tools].enabled`, toolbox directories, and MCP configuration. It lists `Bash`, `BashSession`, `Read`, `ReadImage`, `Edit`, and `Write` as `enabled` or `filtered` with the first filter that removed each one (`model has no image support`, `read-only policy`, `not in --tools`, or `--no-tools`). It reports `ToolSearch` as `conditional` when a configured deferred MCP server could install it, or `absent` with the reason. When a non-empty exact-name selection excludes `ToolSearch`, `data.tool_search.fallback` is `direct`, because permitted deferred tools are registered directly. `--no-tools` reports `ToolSearch` as absent with no fallback.
+
+Toolbox directories and executable candidates come from the same discovery helpers a run uses, with the source directory, executable path, and `unprobed` status; MCP servers are listed with source, command, exposure, and `unprobed` status. The command never runs toolbox `describe`, connects to an MCP server, or prints MCP environment values. Under `read-only`, both external source kinds are reported as unavailable without being started. Selected names that match no known built-in, toolbox, or MCP source appear as `tools.unknown_selection` warnings and never as enabled tools.
+
+`--json` emits one diagnostic document with `command: "debug tools"`; settings, project-trust, and MCP discovery findings appear in `checks`. Gate readiness is not probed: a run-time gate startup failure can additionally remove `Bash` and `BashSession`. Run `cake debug mcp` for the connected MCP tool inventory.
 
 ## Project scaffolding with `cake init`
 
@@ -385,13 +417,19 @@ Default roots are `<working-directory>/.agents/skills/` for project skills and `
 disabled = false
 only = ["debugging-cake", "review"]
 path = "~/my-skills:/shared/team-skills"
+catalog_budget = 16000
+description_budget = 400
 ```
 
 `path` uses the platform path separator. An empty `only` list permits all discovered skills. `--no-skills` disables them for one run; `--skills name1,name2` selects a one-run allowlist.
 
+`catalog_budget` caps the rendered `<available_skills>` XML in Unicode characters. When it is absent, Cake reserves roughly 2% of the resolved model's context window in tokens, converted at four characters per token and clamped between 1,000 and 64 MiB; a run whose model has no configured `context_window` uses 8,000. `description_budget` caps each routing description and defaults to 400. Both values must be positive integers; they accept no `"unlimited"` sentinel.
+
+Cake shortens over-budget descriptions at a word boundary before it removes any skill. If the catalog still exceeds `catalog_budget` and `SkillSearch` is available to the run, Cake omits entries from the end of discovery order (user skills before configured skills before project skills) and adds a bounded `<omitted_skills>` notice. A non-empty catalog always retains its first discovered skill; if the budget cannot fit even that entry, the catalog is reported over budget instead of being emptied, and the prompt can exceed the configured budget. `SkillSearch` searches the complete discovered catalog by name and description and returns the `SKILL.md` location; it never reads the body. The tool defaults to five matches and returns at most twenty. If `SkillSearch` is excluded from the tool selection, Cake keeps the complete catalog and logs an over-budget warning instead of making a skill unreachable.
+
 A run receives the catalog only when it can read a `SKILL.md`: the `Read` tool when it is selected, otherwise a shell-capable tool such as `Bash`, whose instructions load a skill with `cat <location>`. A run with neither, such as `--no-tools`, receives no catalog. `SkillActivated` session records remain `Read`-only, so a skill loaded through `Bash` is not recorded.
 
-Profiles may overlay `disabled`, `only`, and `path` under `[profiles.<name>.skills]`.
+Profiles may overlay `disabled`, `only`, `path`, `catalog_budget`, and `description_budget` under `[profiles.<name>.skills]`.
 
 Inspect the selected catalog without calling a model:
 
@@ -403,9 +441,10 @@ cake debug skills --no-skills
 cake debug skills --catalog-budget 8000 --description-budget 400
 ```
 
-The report lists every selected skill in name order, with location breaking duplicate names, and shows its scope (`project`, `configured`, or `user`), `SKILL.md` location, description character count, and `ok` or `over` description-budget marker. The summary counts the rendered XML, including escaping and locations, in UTF-8 bytes and Unicode characters. Its token estimate is characters divided by four, rounded up; it is not a provider token count. It warns above the advisory defaults of 8,000 catalog characters and 400 description characters. Discovery and selection diagnostics appear under `Diagnostics`; an empty selection prints `No skills selected.` These are configurable review thresholds, not model limits or measurements of instruction quality. Warnings exit successfully and never truncate descriptions or remove skills. Select fewer skills with `skills.only`, a profile, or `--no-skills` when appropriate.
+The report uses the same budget resolver as a run. It lists every selected skill in name order, with location breaking duplicate names, and shows its scope (`project`, `configured`, or `user`), `SKILL.md` location, description character count, `ok` or `over` description-budget marker, and whether the skill appears in the bounded prompt catalog. The summary counts the rendered XML, including escaping, locations, and any omission notice, in UTF-8 bytes and Unicode characters. Its token estimate is characters divided by four, rounded up; it is not a provider token count. It reports the effective catalog and description budgets, how many descriptions were shortened, how many skills were omitted, and whether the rendered catalog still exceeds its budget. Because `debug skills` resolves no model, an unset `catalog_budget` uses the 8,000-character fallback; `--catalog-budget` and `--description-budget` override settings for the inspection. Omissions assume `SkillSearch` is available.
+Discovery and selection diagnostics appear under `Diagnostics`; an empty selection prints `No skills selected.` Select fewer skills with `skills.only`, a profile, or `--no-skills` when appropriate.
 
-`--json` emits the same selection as one versioned diagnostic document. `summary` carries the skill count, advisory budgets, rendered size, and over-budget counts; each `data.skills` entry carries the name, description, scope, location, base directory, description character count, and over-budget flag; `data.project_trust` reports the trust decision. Settings, project-trust, discovery, and selection findings appear in `checks`, so machine mode writes no diagnostics to stderr.
+`--json` emits the same selection as one versioned diagnostic document. `summary` carries the skill count, effective budgets, rendered size, shortened and omitted counts, and over-budget state; each `data.skills` entry carries the name, description, scope, location, base directory, description character count, over-budget flag, and prompt membership; `data.project_trust` reports the trust decision. Settings, project-trust, discovery, and selection findings appear in `checks`, so machine mode writes no diagnostics to stderr.
 
 The report measures the selected catalog, not the complete prompt; an agent run includes the catalog only when the run can read a `SKILL.md` (see above). Discovery precedence and profile filtering match an agent run. Place `--skills` and `--no-skills` after `debug skills` for this report.
 
@@ -476,7 +515,7 @@ Toolbox directories are scanned in this order: entries from `CAKE_TOOLBOX`, the 
 
 Each executable implements a describe and execute protocol. Valid tools are registered for the model with a `tb__` prefix. Project-local `.cake/tools` executables are trusted project configuration, are discovered automatically only after the project trust record matches, and are filtered out by `--no-project-config`; inspect or remove them before running a trusted checkout with a writable sandbox. Broken tools are skipped with a warning rather than blocking startup.
 
-Toolbox executables are trusted and unsandboxed. Under `read-only`, Cake skips toolbox discovery entirely so even the describe action cannot mutate the workspace. See [Integrations](integrations.md) for the protocol and [Security](security.md) for the trust boundary.
+Toolbox executables are trusted and unsandboxed. Under `read-only`, Cake skips toolbox discovery entirely so even the describe action cannot mutate the workspace. `cake debug tools` lists discovered directories and candidates, and their status, without running `describe`. See [Integrations](integrations.md) for the protocol and [Security](security.md) for the trust boundary.
 
 ## MCP servers
 
@@ -528,7 +567,7 @@ Project `.cake/mcp.json` is authority-bearing because it names an executable; it
 
 Discovered tools are registered as `mcp__<server>__<tool>`; characters a provider function name rejects become `_`, and a name beyond the 64-character provider limit is truncated with a stable hash suffix. A `deferred` server contributes a compact `## MCP servers` prompt section and a searchable catalog instead of tool definitions. `ToolSearch` ranks each catalog entry's registered name, description, and argument-schema text, returns up to five matches by default, and activates the selected definitions for the next model turn. Each successful activation batch is appended to the session as an `mcp_tools_activated` record, so `--resume` and `--fork` restore the still-present, allowlisted tools before the first request. A name removed from the server, hidden, or excluded by the allowlist is ignored. A later search reports already-active tools as active instead of claiming they were just loaded.
 
-`[tools].enabled` and `--tools` select MCP tools by registered name. When the exact-name allowlist excludes `ToolSearch`, Cake registers the permitted deferred tools directly so an explicit selection still works. If another tool already owns the `ToolSearch` name, Cake also falls back to direct registration with a warning. `notifications/tools/list_changed` is logged but does not change a live run; restart Cake to pick up a new tool list.
+`[tools].enabled` and `--tools` select MCP tools by registered name. When the exact-name allowlist excludes `ToolSearch`, Cake registers the permitted deferred tools directly so an explicit selection still works. If another tool already owns the `ToolSearch` name, Cake also falls back to direct registration with a warning. A server that reports `notifications/tools/list_changed` is re-listed before the next model request, and its added, removed, and changed tools replace the previous surface; a modern server is sent one `subscriptions/listen` request with `toolsListChanged: true` after the handshake. A failed re-list keeps the previous tools. The prompt's server summary remains the startup snapshot even when the request's tool set is newer.
 
 Supported protocol eras are legacy `initialize` (`2025-11-25`) and modern per-request metadata (`2026-07-28`), selected with the `server/discover` probe. Resources, prompts, sampling, elicitation, roots, tasks, extensions, HTTP transports, and OAuth are not implemented.
 
@@ -538,7 +577,7 @@ cake debug mcp --json           # diagnostic document
 cake debug mcp --mcp-config ./mcp.json
 ```
 
-`cake debug mcp` reports a `hidden` server without connecting, and reports `description` and `exposure` for every entry.
+`cake debug mcp` reports a `hidden` server without connecting, and reports `description` and `exposure` for every entry. `cake debug tools` lists the configured MCP sources and their exposure without connecting either; see [Tool inventory](#tool-inventory).
 
 Safari 27 exposes its developer automation this way. Enable Develop settings and "Allow remote automation and external agents", add the `safari-mcp` entry above, and run `cake debug mcp` to confirm the connection.
 

@@ -1,19 +1,21 @@
-# Install required development tools and git hooks
+# Install required development tools and git hooks.
+# Pinned tools are verified after installation and the hook wrappers are
+# checked by `doctor --scope setup`; every missing or mismatched item is
+# reported with its recovery, and setup exits nonzero.
 setup:
-    @echo "Checking Rust installation..."
+    @echo "Checking Rust and Python installations..."
     @which rustc > /dev/null || { echo "ERROR: Rust not installed. Install from https://rustup.rs"; exit 1; }
-    @echo "Installing required cargo tools..."
-    cargo install cargo-edit --version 0.13.13 --locked --quiet 2>/dev/null || true
-    cargo install cargo-deny --version 0.20.2 --locked --quiet 2>/dev/null || true
-    cargo install cargo-insta --version 1.48.0 --locked --quiet 2>/dev/null || true
-    cargo install cargo-llvm-cov --version 0.9.0 --locked --quiet 2>/dev/null || true
-    cargo install cargo-crap --version 0.2.2 --locked --quiet 2>/dev/null || true
-    cargo install panache --version 3.0.0 --locked --quiet 2>/dev/null || true
-    cargo install prek --version 0.4.13 --locked --quiet 2>/dev/null || true
-    cargo install cocogitto --version 7.0.0 --locked --quiet 2>/dev/null || true
+    @command -v python3 > /dev/null || { echo "ERROR: Python 3 not installed. Install Python 3; the repository scripts use only the standard library."; exit 1; }
+    @scripts/dev-tools.sh --install
     @echo "Installing git hooks declared in prek.toml..."
     prek install --hook-type pre-commit --hook-type pre-push --hook-type commit-msg
+    @python3 scripts/doctor.py --scope setup --quiet
     @echo "Setup complete! Run 'just --list' to see available commands."
+
+# Report whether this checkout can run its documented gates and hooks. Read-only:
+# pass --json for a machine-readable report. Exit 1 names every required failure.
+doctor flag="":
+    @if [ -z {{ quote(flag) }} ]; then python3 scripts/doctor.py; else python3 scripts/doctor.py {{ quote(flag) }}; fi
 
 # Run the primary Samply profile; pass --profiler instruments for the optional macOS path
 profile *args:
@@ -192,6 +194,14 @@ pre-push-classify:
 test-classify-changes:
     @scripts/test-classify-changes.sh
 
+# Run the pinned development-tool checker fixture tests (also wired into CI's `changes` job)
+test-dev-tools:
+    @scripts/test-dev-tools.sh
+
+# Run the developer-readiness fixture tests (controlled PATH; no installation or network)
+test-doctor:
+    @python3 scripts/test-doctor.py -v
+
 # Run the `just pr` recipe fixture tests against a stubbed gh (also wired into CI's `changes` job)
 test-just-pr:
     @scripts/test-just-pr.sh
@@ -268,7 +278,7 @@ ahm-import-check:
 
 # Run the Python script fixture suites: the same suites the `changes` job in CI runs.
 # Stdlib only and no credentials; nothing here calls a model provider or the network.
-check-scripts: ahm-import-check dependency-sweep-check profile-check binary-size-baseline-check test-classify-changes test-just-pr eval-check session-metrics-check coverage-guard-check docs-corpus-check fixture-isolation-check cc-check-fixture check-crap-fixture hermetic-coverage-check
+check-scripts: ahm-import-check dependency-sweep-check profile-check binary-size-baseline-check test-classify-changes test-dev-tools test-doctor test-just-pr eval-check session-metrics-check coverage-guard-check docs-corpus-check fixture-isolation-check cc-check-fixture check-crap-fixture hermetic-coverage-check
     echo "Script fixture suites passed!"
 
 # Run the Linux compatibility check corresponding to GitHub Actions

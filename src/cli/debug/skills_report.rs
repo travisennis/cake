@@ -4,7 +4,9 @@ use crate::cli::{
     CHECK_SKILLS_DISCOVERY, CHECK_SKILLS_PROJECT_TRUST, DiagnosticCheck, DiagnosticDocument,
     settings_warnings,
 };
-use crate::config::skills::{SkillCatalog, SkillDiagnostic};
+use crate::config::skills::{
+    SkillCatalog, SkillCatalogBudget, SkillCatalogRender, SkillDiagnostic,
+};
 use crate::config::trust::ProjectTrustReport;
 use serde::Serialize;
 use serde_json::json;
@@ -20,10 +22,13 @@ struct SkillReportRow {
     base_directory: String,
     description_characters: usize,
     description_over_budget: bool,
+    in_prompt: bool,
 }
 
 /// Build the selected skill rows in name order, with location breaking ties.
-fn skill_rows(catalog: &SkillCatalog, description_budget: usize) -> Vec<SkillReportRow> {
+fn skill_rows(catalog: &SkillCatalog, render: &SkillCatalogRender) -> Vec<SkillReportRow> {
+    let omitted: std::collections::HashSet<&str> =
+        render.omitted_skills.iter().map(String::as_str).collect();
     let mut rows: Vec<SkillReportRow> = catalog
         .skills
         .iter()
@@ -36,7 +41,9 @@ fn skill_rows(catalog: &SkillCatalog, description_budget: usize) -> Vec<SkillRep
                 location: skill.location.display().to_string(),
                 base_directory: skill.base_directory.display().to_string(),
                 description_characters,
-                description_over_budget: description_characters > description_budget,
+                description_over_budget: description_characters
+                    > render.budget.description_characters,
+                in_prompt: !omitted.contains(skill.name.as_str()),
             }
         })
         .collect();
@@ -85,13 +92,10 @@ fn skill_diagnostic_checks(catalog: &SkillCatalog) -> Vec<DiagnosticCheck> {
 }
 
 /// Render the human-readable selected catalog report.
-pub(super) fn format_text(
-    catalog: &SkillCatalog,
-    catalog_budget: usize,
-    description_budget: usize,
-) -> String {
-    let rows = skill_rows(catalog, description_budget);
-    let metrics = catalog.metrics();
+pub(super) fn format_text(catalog: &SkillCatalog, budget: SkillCatalogBudget) -> String {
+    let render = catalog.to_prompt_xml_with_budget(budget, true);
+    let rows = skill_rows(catalog, &render);
+    let metrics = render.metrics();
     let descriptions_over_budget = rows
         .iter()
         .filter(|row| row.description_over_budget)
@@ -112,13 +116,14 @@ pub(super) fn format_text(
     );
     _ = writeln!(
         output,
-        "Advisory budgets: {catalog_budget} catalog characters; {description_budget} description characters."
+        "Effective budgets: {} catalog characters; {} description characters.",
+        budget.catalog_characters, budget.description_characters
     );
-    if metrics.catalog_over_budget(catalog_budget) {
+    if render.over_budget {
         _ = writeln!(
             output,
-            "Catalog budget: WARNING: rendered catalog exceeds the advisory budget by {} characters.",
-            metrics.catalog_over_budget_by(catalog_budget)
+            "Catalog budget: WARNING: rendered catalog still exceeds the budget by {} characters.",
+            metrics.catalog_over_budget_by(budget.catalog_characters)
         );
     } else {
         output.push_str("Catalog budget: within budget\n");
@@ -127,6 +132,28 @@ pub(super) fn format_text(
         output,
         "Descriptions over budget: {descriptions_over_budget}"
     );
+    _ = writeln!(
+        output,
+        "Descriptions shortened: {}",
+        render.shortened_descriptions
+    );
+    _ = writeln!(output, "Skills omitted: {}", render.omitted_skills.len());
+    if !render.omitted_skills.is_empty() {
+        let names = render
+            .omitted_skills
+            .iter()
+            .take(8)
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let remaining = render.omitted_skills.len().saturating_sub(8);
+        if remaining > 0 {
+            _ = writeln!(output, "Omitted: {names} (+{remaining} more)");
+        } else {
+            _ = writeln!(output, "Omitted: {names}");
+        }
+        output.push_str("Omissions assume SkillSearch is available.\n");
+    }
 
     if !rows.is_empty() {
         output.push('\n');
@@ -140,7 +167,14 @@ pub(super) fn format_text(
 
 /// Append the fixed-width skill inventory table.
 fn append_skill_table(output: &mut String, rows: &[SkillReportRow]) {
-    let headers = ["Name", "Scope", "Desc chars", "Budget", "Location"];
+    let headers = [
+        "Name",
+        "Scope",
+        "Desc chars",
+        "Budget",
+        "Prompt",
+        "Location",
+    ];
     let widths = skill_column_widths(&headers, rows);
     output.push_str(format_skill_row(&headers, &widths).trim_end());
     output.push('\n');
@@ -153,12 +187,14 @@ fn append_skill_table(output: &mut String, rows: &[SkillReportRow]) {
         } else {
             "ok"
         };
+        let prompt = if row.in_prompt { "yes" } else { "omitted" };
         let line = format_skill_row(
             &[
                 row.name.as_str(),
                 row.scope,
                 characters.as_str(),
                 budget,
+                prompt,
                 row.location.as_str(),
             ],
             &widths,
@@ -168,42 +204,46 @@ fn append_skill_table(output: &mut String, rows: &[SkillReportRow]) {
     }
 }
 
-fn skill_column_widths(headers: &[&str; 5], rows: &[SkillReportRow]) -> [usize; 5] {
+fn skill_column_widths(headers: &[&str; 6], rows: &[SkillReportRow]) -> [usize; 6] {
     let mut widths = headers.map(str::len);
     for row in rows {
         widths[0] = widths[0].max(row.name.len());
         widths[1] = widths[1].max(row.scope.len());
         widths[2] = widths[2].max(row.description_characters.to_string().len());
         widths[3] = widths[3].max(if row.description_over_budget { 4 } else { 2 });
-        widths[4] = widths[4].max(row.location.len());
+        widths[4] = widths[4].max(if row.in_prompt { 3 } else { 7 });
+        widths[5] = widths[5].max(row.location.len());
     }
     widths
 }
 
-fn format_skill_row(values: &[&str; 5], widths: &[usize; 5]) -> String {
+fn format_skill_row(values: &[&str; 6], widths: &[usize; 6]) -> String {
     format!(
-        "{:<name_width$}  {:<scope_width$}  {:<characters_width$}  {:<budget_width$}  {:<location_width$}",
+        "{:<name_width$}  {:<scope_width$}  {:<characters_width$}  {:<budget_width$}  {:<prompt_width$}  {:<location_width$}",
         values[0],
         values[1],
         values[2],
         values[3],
         values[4],
+        values[5],
         name_width = widths[0],
         scope_width = widths[1],
         characters_width = widths[2],
         budget_width = widths[3],
-        location_width = widths[4],
+        prompt_width = widths[4],
+        location_width = widths[5],
     )
 }
 
-fn separator(widths: &[usize; 5]) -> String {
+fn separator(widths: &[usize; 6]) -> String {
     format!(
-        "{}  {}  {}  {}  {}",
+        "{}  {}  {}  {}  {}  {}",
         "-".repeat(widths[0]),
         "-".repeat(widths[1]),
         "-".repeat(widths[2]),
         "-".repeat(widths[3]),
         "-".repeat(widths[4]),
+        "-".repeat(widths[5]),
     )
 }
 
@@ -226,11 +266,11 @@ pub(super) fn render_json(
     catalog: &SkillCatalog,
     warnings: &[String],
     trust: &ProjectTrustReport,
-    catalog_budget: usize,
-    description_budget: usize,
+    budget: SkillCatalogBudget,
 ) -> anyhow::Result<String> {
-    let rows = skill_rows(catalog, description_budget);
-    let metrics = catalog.metrics();
+    let render = catalog.to_prompt_xml_with_budget(budget, true);
+    let rows = skill_rows(catalog, &render);
+    let metrics = render.metrics();
     let count = rows.len();
     let descriptions_over_budget = rows
         .iter()
@@ -250,14 +290,17 @@ pub(super) fn render_json(
         "debug skills",
         json!({
             "count": count,
-            "catalog_budget": catalog_budget,
-            "description_budget": description_budget,
+            "catalog_budget": budget.catalog_characters,
+            "description_budget": budget.description_characters,
             "rendered_bytes": metrics.bytes,
             "rendered_characters": metrics.characters,
             "estimated_tokens": metrics.estimated_tokens,
-            "catalog_over_budget": metrics.catalog_over_budget(catalog_budget),
-            "catalog_over_budget_characters": metrics.catalog_over_budget_by(catalog_budget),
+            "catalog_over_budget": render.over_budget,
+            "catalog_over_budget_characters": metrics.catalog_over_budget_by(budget.catalog_characters),
             "descriptions_over_budget": descriptions_over_budget,
+            "descriptions_shortened": render.shortened_descriptions,
+            "omitted_count": render.omitted_skills.len(),
+            "omitted_skills": render.omitted_skills,
         }),
         checks,
         json!({

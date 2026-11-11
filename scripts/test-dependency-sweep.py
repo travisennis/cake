@@ -55,7 +55,11 @@ class DependencySweepTests(unittest.TestCase):
             'version = 4\n\n[[package]]\nname = "cake"\nversion = "0.1.0"\n',
             encoding="utf-8",
         )
-        (root / "justfile").write_text("setup:\n    cargo install cargo-deny --version 0.20.2 --locked\n", encoding="utf-8")
+        (root / "scripts").mkdir(parents=True)
+        (root / "justfile").write_text("setup:\n    scripts/dev-tools.sh --install\n", encoding="utf-8")
+        (root / "scripts" / "dev-tools.sh").write_text(
+            "pins='cargo install cargo-deny --version 0.20.2 --locked\n'\n", encoding="utf-8"
+        )
         (root / ".github" / "workflows" / "ci.yml").write_text(
             "jobs:\n  test:\n    steps:\n      - uses: actions/checkout@v7\n      - uses: dtolnay/rust-toolchain@stable\n        with:\n          toolchain: 1.97.1\n      - uses: taiki-e/install-action@v2\n        with:\n          tool: cargo-deny@0.20.2\n",
             encoding="utf-8",
@@ -73,7 +77,7 @@ class DependencySweepTests(unittest.TestCase):
         self.assertIn("cargo:dependencies:anyhow", ids)
         self.assertIn("cargo:target.cfg(target_os = \"linux\").dependencies:landlock", ids)
         self.assertIn("mise:rust", ids)
-        self.assertTrue(any(record["name"] == "cargo-deny" and record["path"] == "justfile" for record in report["inventory"]))
+        self.assertTrue(any(record["name"] == "cargo-deny" and record["path"] == "scripts/dev-tools.sh" for record in report["inventory"]))
         self.assertTrue(any(record["name"] == "cargo-udeps" and record["path"] == ".github/workflows/scheduled.yml" for record in report["inventory"]))
         self.assertTrue(any(record["name"] == "actions/checkout" and record["path"] == ".github/workflows/ci.yml" for record in report["inventory"]))
         mapping_actions = {
@@ -141,7 +145,9 @@ class DependencySweepTests(unittest.TestCase):
             '[tools]\nrust = { version = "1.96.0" }\njust = "1.58.0"\nsccache = "0.17.0"\n',
             encoding="utf-8",
         )
-        (root / "justfile").write_text("setup:\n    cargo install cargo-deny --version 0.20.1 --locked\n", encoding="utf-8")
+        (root / "scripts" / "dev-tools.sh").write_text(
+            "pins='cargo install cargo-deny --version 0.20.1 --locked\n'\n", encoding="utf-8"
+        )
 
         result, report = self.run_report(root=root)
 

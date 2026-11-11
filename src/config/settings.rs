@@ -28,6 +28,14 @@ pub struct SkillSettings {
     /// Additional skill directories, separated by the platform path separator.
     #[serde(default)]
     pub path: Option<String>,
+    /// Maximum rendered skill catalog characters. Absent uses the
+    /// context-relative default; the value must be positive.
+    #[serde(default)]
+    pub catalog_budget: Option<PositiveLimit>,
+    /// Maximum characters in each skill routing description. Absent uses the
+    /// compiled default of 400.
+    #[serde(default)]
+    pub description_budget: Option<PositiveLimit>,
 }
 
 /// Partial skill settings used by profiles.
@@ -42,6 +50,12 @@ pub struct SkillSettingsOverlay {
     /// If set, overrides additional skill directories.
     #[serde(default)]
     pub path: Option<String>,
+    /// If set, overrides the rendered catalog budget.
+    #[serde(default)]
+    pub catalog_budget: Option<PositiveLimit>,
+    /// If set, overrides the per-description budget.
+    #[serde(default)]
+    pub description_budget: Option<PositiveLimit>,
 }
 
 impl SkillSettings {
@@ -55,6 +69,26 @@ impl SkillSettings {
         if overlay.path.is_some() {
             self.path = overlay.path;
         }
+        if overlay.catalog_budget.is_some() {
+            self.catalog_budget = overlay.catalog_budget;
+        }
+        if overlay.description_budget.is_some() {
+            self.description_budget = overlay.description_budget;
+        }
+    }
+
+    /// Resolved catalog character budget, when configured.
+    #[must_use]
+    pub fn catalog_budget(&self) -> Option<usize> {
+        self.catalog_budget
+            .map(|limit| usize::try_from(limit.value()).unwrap_or(usize::MAX))
+    }
+
+    /// Resolved per-description character budget, when configured.
+    #[must_use]
+    pub fn description_budget(&self) -> Option<usize> {
+        self.description_budget
+            .map(|limit| usize::try_from(limit.value()).unwrap_or(usize::MAX))
     }
 }
 
@@ -602,7 +636,8 @@ impl<'de> Deserialize<'de> for Limit {
     }
 }
 
-/// A mandatory positive bound. Session safety limits cannot be unlimited.
+/// A mandatory positive bound. Session safety limits and skill budgets cannot
+/// be unlimited.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(try_from = "u32")]
 pub struct PositiveLimit(u32);
@@ -612,10 +647,18 @@ impl TryFrom<u32> for PositiveLimit {
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         if value == 0 {
-            Err("session limit must be a positive integer")
+            Err("limit must be a positive integer")
         } else {
             Ok(Self(value))
         }
+    }
+}
+
+impl PositiveLimit {
+    /// Return the configured positive value.
+    #[must_use]
+    pub const fn value(self) -> u32 {
+        self.0
     }
 }
 

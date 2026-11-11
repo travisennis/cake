@@ -330,6 +330,7 @@ mod read_tracker;
 mod scheduling;
 mod script_evidence;
 mod secure_temp_dir;
+mod skill_search;
 mod tool_search;
 mod toolbox;
 mod write;
@@ -340,6 +341,9 @@ pub use json_repair::repair_json_args;
 pub(super) use mcp::mcp_tool_entry;
 pub use read::extract_path as read_extract_path;
 pub(super) use scheduling::{ScheduledToolCall, schedule_tool_calls};
+pub use skill_search::{
+    SKILL_SEARCH_NAME, SkillSearchEntry, skill_search_enabled, skill_search_entry,
+};
 pub use tool_search::{TOOL_SEARCH_NAME, ToolSearchEntry, tool_search_enabled, tool_search_entry};
 pub(super) use toolbox::toolbox_tool_entry;
 
@@ -1718,6 +1722,7 @@ pub struct ExternalServerInfo {
 /// `mcp_tools` is empty under the read-only policy, matching the registry's
 /// filtering of external tools. `mcp_servers` carries one summary row per
 /// non-hidden, model-accessible server.
+#[cfg(test)]
 pub fn format_tool_list_section_with_mcp(
     sandbox_policy: SandboxPolicy,
     toolbox_tools: &[crate::config::toolbox::ToolboxTool],
@@ -1725,6 +1730,27 @@ pub fn format_tool_list_section_with_mcp(
     mcp_tools: &[ExternalToolInfo],
     enabled_tools: Option<&[String]>,
     supports_images: bool,
+) -> String {
+    format_tool_list_section_with_mcp_and_skill_search(
+        sandbox_policy,
+        toolbox_tools,
+        mcp_servers,
+        mcp_tools,
+        enabled_tools,
+        supports_images,
+        false,
+    )
+}
+
+/// Format the tool list with the optional `SkillSearch` built-in.
+pub fn format_tool_list_section_with_mcp_and_skill_search(
+    sandbox_policy: SandboxPolicy,
+    toolbox_tools: &[crate::config::toolbox::ToolboxTool],
+    mcp_servers: &[ExternalServerInfo],
+    mcp_tools: &[ExternalToolInfo],
+    enabled_tools: Option<&[String]>,
+    supports_images: bool,
+    has_skill_search: bool,
 ) -> String {
     let mut registry = default_tool_registry();
     registry.retain_model_supported_tools(supports_images);
@@ -1752,12 +1778,51 @@ pub fn format_tool_list_section_with_mcp(
         && summarized_servers
             .iter()
             .any(|server| server.exposure == McpExposure::Deferred);
+    append_tool_lines(&mut s, &registry, toolbox_lines, mcp_tools, enabled_tools);
+    if has_deferred_tools {
+        s.push_str(
+            "- **ToolSearch**: Search MCP tools that are not loaded yet and make matching \
+             tools available on the next turn.\n",
+        );
+    }
+    if has_skill_search {
+        s.push_str(
+            "- **SkillSearch**: Search the full skill catalog by name and description, \
+             including skills omitted from the prompt. Returns the SKILL.md location to read.\n",
+        );
+    }
+    append_mcp_server_summary(&mut s, &summarized_servers);
+    let has_tools = has_any_enabled_tools(
+        &registry,
+        has_toolbox_tools,
+        has_mcp_tools || !summarized_servers.is_empty(),
+    ) || has_deferred_tools
+        || has_skill_search;
+    if has_tools {
+        s.push_str(
+            "\nEvery tool call may include an optional `intent` string: one short, \
+             present-progressive sentence describing what the call does, written for the user. \
+             Include it on every call when you can.\n",
+        );
+    }
+    append_tool_availability_footer(&mut s, has_tools, has_deferred_tools);
+    s
+}
+
+/// Append one model-visible line for each enabled built-in, toolbox, or MCP tool.
+fn append_tool_lines(
+    output: &mut String,
+    registry: &ToolRegistry,
+    toolbox_tools: &[crate::config::toolbox::ToolboxTool],
+    mcp_tools: &[ExternalToolInfo],
+    enabled_tools: Option<&[String]>,
+) {
     for (name, desc) in registry
         .definitions()
         .iter()
         .map(|def| (&def.name, &def.description))
         .chain(
-            toolbox_lines
+            toolbox_tools
                 .iter()
                 .filter(|tool| is_enabled_tool(&tool.registered_name, enabled_tools))
                 .map(|tool| (&tool.registered_name, &tool.description)),
@@ -1775,29 +1840,8 @@ pub fn format_tool_list_section_with_mcp(
             .unwrap_or(desc)
             .trim()
             .trim_end_matches('.');
-        _ = writeln!(s, "- **{name}**: {first_sentence}.");
+        _ = writeln!(output, "- **{name}**: {first_sentence}.");
     }
-    if has_deferred_tools {
-        s.push_str(
-            "- **ToolSearch**: Search MCP tools that are not loaded yet and make matching \
-             tools available on the next turn.\n",
-        );
-    }
-    append_mcp_server_summary(&mut s, &summarized_servers);
-    let has_tools = has_any_enabled_tools(
-        &registry,
-        has_toolbox_tools,
-        has_mcp_tools || !summarized_servers.is_empty(),
-    );
-    if has_tools {
-        s.push_str(
-            "\nEvery tool call may include an optional `intent` string: one short, \
-             present-progressive sentence describing what the call does, written for the user. \
-             Include it on every call when you can.\n",
-        );
-    }
-    append_tool_availability_footer(&mut s, has_tools, has_deferred_tools);
-    s
 }
 
 /// Bound on one server description in the prompt summary.
@@ -1928,25 +1972,125 @@ fn is_enabled_tool(name: &str, enabled_tools: Option<&[String]>) -> bool {
     enabled_tools.is_none_or(|names| names.iter().any(|enabled| enabled == name))
 }
 
-/// Return the built-in tool names a run would expose before external tools are
-/// registered.
+/// Why a built-in tool is absent from the effective registry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BuiltinToolFilterReason {
+    /// The read-only sandbox policy removes every tool that can mutate.
+    ReadOnlyPolicy,
+    /// The resolved model cannot accept image input.
+    ModelLacksImageSupport,
+    /// The exact-name selection does not include the tool.
+    NotSelected,
+    /// `--no-tools` selected no tools.
+    NoTools,
+}
+
+impl BuiltinToolFilterReason {
+    /// Human- and machine-readable label for the filter.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ReadOnlyPolicy => "read-only policy",
+            Self::ModelLacksImageSupport => "model has no image support",
+            Self::NotSelected => "not in --tools",
+            Self::NoTools => "--no-tools",
+        }
+    }
+}
+
+/// One built-in tool's effective status for a read-only inventory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BuiltinToolInventoryEntry {
+    /// Built-in tool name.
+    pub name: &'static str,
+    /// Whether a run would expose the tool.
+    pub enabled: bool,
+    /// The first filter that removed the tool, when it is disabled.
+    pub reason: Option<BuiltinToolFilterReason>,
+}
+
+/// Report every built-in tool after the same filters a run applies.
 ///
-/// Applies the same model-capability, sandbox-policy, and exact-name filters as
-/// [`Agent::new`] and [`Agent::with_tool_context`]. Toolbox and MCP tools are
-/// not included: their names require a `describe` or server handshake, which a
-/// read-only configuration report must not execute.
-pub fn effective_builtin_tool_names(
+/// This keeps the filtered tools so a read-only diagnostic can explain why
+/// each one is unavailable. The filters run in the same order as an agent:
+/// model capability, read-only sandbox policy, then exact-name selection.
+pub fn builtin_tool_inventory(
     sandbox_policy: SandboxPolicy,
     supports_images: bool,
     enabled_tools: Option<&[String]>,
-) -> Vec<String> {
+) -> Vec<BuiltinToolInventoryEntry> {
     let mut registry = default_tool_registry();
+    let mut filtered = Vec::new();
+
+    let before = registry.names();
     registry.retain_model_supported_tools(supports_images);
+    record_removed_builtins(
+        &mut filtered,
+        &before,
+        &registry.names(),
+        BuiltinToolFilterReason::ModelLacksImageSupport,
+    );
+
     if sandbox_policy == SandboxPolicy::ReadOnly {
+        let before = registry.names();
         registry.retain_read_safe_tools();
+        record_removed_builtins(
+            &mut filtered,
+            &before,
+            &registry.names(),
+            BuiltinToolFilterReason::ReadOnlyPolicy,
+        );
     }
-    apply_enabled_tool_selection(&mut registry, enabled_tools);
-    registry.names()
+
+    if let Some(enabled_tools) = enabled_tools {
+        let before = registry.names();
+        apply_enabled_tool_selection(&mut registry, Some(enabled_tools));
+        let reason = if enabled_tools.is_empty() {
+            BuiltinToolFilterReason::NoTools
+        } else {
+            BuiltinToolFilterReason::NotSelected
+        };
+        record_removed_builtins(&mut filtered, &before, &registry.names(), reason);
+    }
+
+    let enabled_names = registry.names();
+    BUILTIN_TOOL_NAMES
+        .iter()
+        .map(|name| {
+            let enabled = enabled_names
+                .iter()
+                .any(|enabled_name| enabled_name.as_str() == *name);
+            let reason = if enabled {
+                None
+            } else {
+                filtered.iter().find_map(|(filtered_name, reason)| {
+                    (*filtered_name == *name).then_some(*reason)
+                })
+            };
+            BuiltinToolInventoryEntry {
+                name,
+                enabled,
+                reason,
+            }
+        })
+        .collect()
+}
+
+/// Record the built-ins one registry filter removed, preserving the first
+/// reason when a later filter would have removed the same tool again.
+fn record_removed_builtins(
+    filtered: &mut Vec<(&'static str, BuiltinToolFilterReason)>,
+    before: &[String],
+    after: &[String],
+    reason: BuiltinToolFilterReason,
+) {
+    for name in BUILTIN_TOOL_NAMES {
+        let was_present = before.iter().any(|present| present.as_str() == *name);
+        let is_present = after.iter().any(|present| present.as_str() == *name);
+        if was_present && !is_present {
+            filtered.push((name, reason));
+        }
+    }
 }
 
 /// Returns the default tool registry.
@@ -2522,6 +2666,31 @@ mod tests {
         assert!(result.contains("- **Write**:"));
         assert!(result.contains("Only these tools are available."));
         assert!(result.contains("no Glob, Grep, or LS tool"));
+    }
+
+    #[test]
+    fn format_tool_list_section_advertises_skill_search_when_requested() {
+        let result = format_tool_list_section_with_mcp_and_skill_search(
+            SandboxPolicy::WorkspaceWrite,
+            &[],
+            &[],
+            &[],
+            None,
+            true,
+            true,
+        );
+        assert!(result.contains("- **SkillSearch**:"));
+
+        let without = format_tool_list_section_with_mcp_and_skill_search(
+            SandboxPolicy::WorkspaceWrite,
+            &[],
+            &[],
+            &[],
+            None,
+            true,
+            false,
+        );
+        assert!(!without.contains("- **SkillSearch**:"));
     }
 
     #[test]
@@ -3182,5 +3351,90 @@ mod tests {
         let no_tools =
             format_tool_list_section(SandboxPolicy::WorkspaceWrite, &[], Some(&[]), true);
         assert!(!no_tools.contains("optional `intent` string"));
+    }
+
+    fn inventory_entry<'a>(
+        inventory: &'a [BuiltinToolInventoryEntry],
+        name: &str,
+    ) -> &'a BuiltinToolInventoryEntry {
+        inventory
+            .iter()
+            .find(|entry| entry.name == name)
+            .expect("built-in inventory must list every built-in")
+    }
+
+    #[test]
+    fn builtin_inventory_lists_all_tools_in_stable_order() {
+        let inventory = builtin_tool_inventory(SandboxPolicy::WorkspaceWrite, true, None);
+        let names: Vec<&str> = inventory.iter().map(|entry| entry.name).collect();
+
+        assert_eq!(
+            names,
+            vec!["Bash", "BashSession", "Read", "ReadImage", "Edit", "Write"]
+        );
+        assert!(inventory.iter().all(|entry| entry.enabled));
+        assert!(inventory.iter().all(|entry| entry.reason.is_none()));
+    }
+
+    #[test]
+    fn builtin_inventory_reports_read_only_filters() {
+        let inventory = builtin_tool_inventory(SandboxPolicy::ReadOnly, true, None);
+
+        for name in ["Bash", "BashSession", "Edit", "Write"] {
+            let entry = inventory_entry(&inventory, name);
+            assert!(!entry.enabled, "{name} must be filtered under read-only");
+            assert_eq!(entry.reason, Some(BuiltinToolFilterReason::ReadOnlyPolicy));
+        }
+        assert!(inventory_entry(&inventory, "Read").enabled);
+        assert!(inventory_entry(&inventory, "ReadImage").enabled);
+    }
+
+    #[test]
+    fn builtin_inventory_reports_model_image_support() {
+        let inventory = builtin_tool_inventory(SandboxPolicy::WorkspaceWrite, false, None);
+        let read_image = inventory_entry(&inventory, "ReadImage");
+
+        assert!(!read_image.enabled);
+        assert_eq!(
+            read_image.reason,
+            Some(BuiltinToolFilterReason::ModelLacksImageSupport)
+        );
+        assert!(inventory_entry(&inventory, "Read").enabled);
+    }
+
+    #[test]
+    fn builtin_inventory_reports_exact_name_selection() {
+        let selected = vec!["Read".to_string()];
+        let inventory =
+            builtin_tool_inventory(SandboxPolicy::WorkspaceWrite, true, Some(&selected));
+
+        assert!(inventory_entry(&inventory, "Read").enabled);
+        for name in ["Bash", "BashSession", "ReadImage", "Edit", "Write"] {
+            let entry = inventory_entry(&inventory, name);
+            assert!(!entry.enabled, "{name} must not survive --tools Read");
+            assert_eq!(entry.reason, Some(BuiltinToolFilterReason::NotSelected));
+        }
+    }
+
+    #[test]
+    fn builtin_inventory_keeps_bash_session_with_bash_selection() {
+        let selected = vec!["Bash".to_string()];
+        let inventory =
+            builtin_tool_inventory(SandboxPolicy::WorkspaceWrite, true, Some(&selected));
+
+        assert!(inventory_entry(&inventory, "Bash").enabled);
+        assert!(inventory_entry(&inventory, "BashSession").enabled);
+    }
+
+    #[test]
+    fn builtin_inventory_reports_no_tools() {
+        let inventory = builtin_tool_inventory(SandboxPolicy::WorkspaceWrite, true, Some(&[]));
+
+        assert!(inventory.iter().all(|entry| !entry.enabled));
+        assert!(
+            inventory
+                .iter()
+                .all(|entry| entry.reason == Some(BuiltinToolFilterReason::NoTools))
+        );
     }
 }

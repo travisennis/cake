@@ -20,7 +20,7 @@ use crate::cli::{
     CHECK_SKILLS_DISCOVERY, CommandRunOptions, DiagnosticCheck, DiagnosticDocument,
     settings_warnings,
 };
-use crate::clients::{GrantReport, SandboxPolicy, effective_builtin_tool_names};
+use crate::clients::{GrantReport, SandboxPolicy, builtin_tool_inventory};
 use crate::config::hooks::{HookGroup, HookMatcher, HooksLoader};
 use crate::config::settings::{JudgeSettings, LoadedSettings, ResolvedLimits};
 use crate::config::skills::{
@@ -208,6 +208,8 @@ struct SkillSettingsSnapshot {
     disabled: bool,
     only: Vec<String>,
     path: Option<String>,
+    catalog_budget: Option<usize>,
+    description_budget: Option<usize>,
     resolved_paths: Vec<String>,
 }
 
@@ -287,6 +289,8 @@ impl SettingsSnapshot {
                 disabled: loaded.skills.disabled,
                 only: loaded.skills.only.clone(),
                 path: loaded.skills.path.clone(),
+                catalog_budget: loaded.skills.catalog_budget(),
+                description_budget: loaded.skills.description_budget(),
                 resolved_paths: path_strings(roots),
             },
             tools_enabled: loaded.tools_enabled.clone(),
@@ -326,6 +330,11 @@ impl PromptReport {
     }
 }
 
+/// The pre-existing `debug config` built-in order. Membership comes from the
+/// shared inventory; this only preserves the command's established JSON order.
+const CONFIG_BUILTIN_ORDER: &[&str] =
+    &["Bash", "BashSession", "Edit", "Read", "ReadImage", "Write"];
+
 /// The effective tool selection and the built-in registry subset.
 #[derive(Debug, Serialize)]
 struct ToolsReport {
@@ -358,8 +367,18 @@ impl ToolsReport {
         } else {
             "default"
         };
-        let builtin =
-            effective_builtin_tool_names(policy, model.supports_images, selected.as_deref());
+        let mut builtin: Vec<String> =
+            builtin_tool_inventory(policy, model.supports_images, selected.as_deref())
+                .into_iter()
+                .filter(|entry| entry.enabled)
+                .map(|entry| entry.name.to_string())
+                .collect();
+        builtin.sort_by_key(|name| {
+            CONFIG_BUILTIN_ORDER
+                .iter()
+                .position(|candidate| candidate == name)
+                .unwrap_or(usize::MAX)
+        });
         Self {
             source,
             selected,
@@ -1040,8 +1059,12 @@ impl ConfigReport {
         append_string_list(output, "sandbox.writable", &self.settings.sandbox.writable);
         _ = writeln!(
             output,
-            "  skills: disabled={}, only={:?}, path={:?}",
-            self.settings.skills.disabled, self.settings.skills.only, self.settings.skills.path
+            "  skills: disabled={}, only={:?}, path={:?}, catalog_budget={:?}, description_budget={:?}",
+            self.settings.skills.disabled,
+            self.settings.skills.only,
+            self.settings.skills.path,
+            self.settings.skills.catalog_budget,
+            self.settings.skills.description_budget
         );
         match &self.settings.tools_enabled {
             Some(names) => _ = writeln!(output, "  tools.enabled: {names:?}"),

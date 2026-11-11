@@ -72,7 +72,7 @@ pub(super) fn run_grants(
 ///
 /// Both `debug grants` and `debug config` call this function so their grants
 /// section reports one resolved value rather than two near-copies.
-pub(super) fn build_report(
+pub fn build_report(
     sandbox: Option<SandboxPolicy>,
     add_dir: &[String],
     loaded: &LoadedSettings,

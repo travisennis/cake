@@ -1,34 +1,12 @@
 use std::collections::BTreeMap;
-use std::path::Path;
 
 use super::*;
 use crate::clients::mcp::client::choose_protocol;
+use crate::clients::mcp::test_support::{connect_fixture, wait_for_tools_generation};
 use crate::config::mcp::{McpExposure, McpServerConfig};
 
-const FIXTURE: &str = include_str!("fixtures/fake_mcp_server.py");
-
-fn fixture_config(directory: &Path, era: &str, timeout_secs: u64) -> McpServerConfig {
-    let script = directory.join("fake_mcp_server.py");
-    std::fs::write(&script, FIXTURE).unwrap();
-    McpServerConfig {
-        name: "fake".to_string(),
-        command: "python3".to_string(),
-        args: vec![script.display().to_string()],
-        env: BTreeMap::from([("FAKE_MCP_ERA".to_string(), era.to_string())]),
-        timeout_secs,
-        description: Some("Fixture server".to_string()),
-        exposure: McpExposure::Deferred,
-        source: directory.join("mcp.json"),
-    }
-}
-
 async fn connect(era: &str, timeout_secs: u64) -> (tempfile::TempDir, McpServer) {
-    let directory = tempfile::tempdir().unwrap();
-    let config = fixture_config(directory.path(), era, timeout_secs);
-    let server = connect_server(&config, directory.path())
-        .await
-        .unwrap_or_else(|error| panic!("{era} server failed to connect: {error}"));
-    (directory, server)
+    connect_fixture(era, false, McpExposure::Deferred, timeout_secs).await
 }
 
 #[tokio::test]
@@ -152,6 +130,77 @@ async fn a_process_that_exits_before_handshake_is_reported() {
 
     let error = connect_server(&config, directory.path()).await.unwrap_err();
     assert!(error.contains("closed the connection"), "{error}");
+}
+
+#[tokio::test]
+async fn legacy_list_change_refreshes_tools() {
+    let (_directory, mut server) = connect_fixture("legacy", true, McpExposure::Deferred, 10).await;
+
+    assert_eq!(
+        server.tool_list_change_mode(),
+        ToolListChangeMode::Notifications
+    );
+    let initial: Vec<&str> = server.tools.iter().map(|tool| tool.name.as_str()).collect();
+    assert_eq!(initial, ["echo", "get.page", "slow", "fail", "mutate"]);
+    assert_eq!(server.tools_generation(), 0);
+
+    server
+        .client
+        .call_tool("mutate", serde_json::json!({}))
+        .await
+        .unwrap();
+    wait_for_tools_generation(&server, 0).await;
+
+    let changed = server.reload_tools().await.unwrap();
+    assert!(changed, "the fixture should report a different tool list");
+    let names: Vec<&str> = server.tools.iter().map(|tool| tool.name.as_str()).collect();
+    assert_eq!(names, ["echo", "get.page", "slow", "added"]);
+    assert!(!server.reload_tools().await.unwrap());
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn modern_list_change_subscribes_and_refreshes_tools() {
+    let (_directory, mut server) = connect_fixture("modern", true, McpExposure::Deferred, 10).await;
+
+    assert_eq!(
+        server.tool_list_change_mode(),
+        ToolListChangeMode::Subscription
+    );
+    assert_eq!(server.tools_generation(), 0);
+
+    server
+        .client
+        .call_tool("mutate", serde_json::json!({}))
+        .await
+        .unwrap();
+    wait_for_tools_generation(&server, 0).await;
+
+    let changed = server.reload_tools().await.unwrap();
+    assert!(changed, "the modern subscription should report the change");
+    let names: Vec<&str> = server.tools.iter().map(|tool| tool.name.as_str()).collect();
+    assert_eq!(names, ["echo", "get.page", "slow", "added"]);
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_server_without_a_change_is_not_relisted() {
+    let (_directory, mut server) = connect_fixture("legacy", true, McpExposure::Deferred, 10).await;
+
+    assert_eq!(server.tools_generation(), 0);
+    assert!(!server.reload_tools().await.unwrap());
+    assert_eq!(server.tools_generation(), 0);
+
+    server.shutdown().await;
+}
+
+#[test]
+fn tool_list_change_mode_labels_are_stable() {
+    assert_eq!(ToolListChangeMode::None.as_str(), "none");
+    assert_eq!(ToolListChangeMode::Notifications.as_str(), "notifications");
+    assert_eq!(ToolListChangeMode::Subscription.as_str(), "subscription");
 }
 
 #[test]

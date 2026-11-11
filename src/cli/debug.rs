@@ -8,7 +8,9 @@ use crate::clients::mcp::connect_server;
 use crate::config::mcp::discover_mcp_servers;
 use crate::config::model::ApiType;
 use crate::config::settings::LoadedSettings;
-use crate::config::skills::{discover_skills_with_paths, parse_skill_path_list};
+use crate::config::skills::{
+    SkillCatalogBudget, discover_skills_with_paths, parse_skill_path_list,
+};
 use crate::config::trust::{ProjectTrustReport, TrustState};
 use crate::config::{DataDir, ModelDefinition, SettingsLoader};
 use clap::{Parser, Subcommand};
@@ -18,9 +20,10 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 mod config_report;
-mod grants;
+pub mod grants;
 mod session_report;
 mod skills_report;
+mod tools_report;
 
 pub use session_report::SessionDiagnosticError;
 
@@ -34,7 +37,8 @@ Examples:
   cake debug skills --catalog-budget 4000
   cake debug skills --json | jq '.data.skills[].name'
   cake debug grants --json | jq '.data.read_write[]'
-  cake debug models --json | jq '.data.models[].name'")]
+  cake debug models --json | jq '.data.models[].name'
+  cake debug tools --json | jq '.data.builtins[] | select(.status == \"filtered\")'")]
 pub struct DebugCommand {
     #[command(subcommand)]
     command: DebugSubcommand,
@@ -100,12 +104,12 @@ Examples:
   cake debug skills
   cake debug skills --json | jq '.data.skills[].name'")]
     Skills {
-        /// Advisory rendered XML budget in Unicode characters
-        #[arg(long, default_value_t = 8000)]
-        catalog_budget: usize,
-        /// Advisory routing-description budget in Unicode characters
-        #[arg(long, default_value_t = 400)]
-        description_budget: usize,
+        /// Override the rendered XML budget in Unicode characters
+        #[arg(long, value_name = "CHARS")]
+        catalog_budget: Option<usize>,
+        /// Override the routing-description budget in Unicode characters
+        #[arg(long, value_name = "CHARS")]
+        description_budget: Option<usize>,
         /// Report an empty catalog, as for a run with --no-skills
         #[arg(long)]
         no_skills: bool,
@@ -136,6 +140,28 @@ Examples:
         #[arg(long, value_name = "NAMES")]
         skills: Option<String>,
         /// Output the grant report as one diagnostic JSON document
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Report the effective tool surface without starting external processes
+    #[command(after_help = "\
+Examples:
+  cake debug tools
+  cake debug tools --json | jq '.data.builtins[] | select(.status == \"filtered\")'
+  cake debug tools --tools Read
+  cake debug tools --no-tools
+  cake debug tools --sandbox read-only")]
+    Tools {
+        /// Select the sandbox policy to report
+        #[arg(long, value_enum)]
+        sandbox: Option<SandboxPolicy>,
+        /// Report no model-visible tools, as for a run with --no-tools
+        #[arg(long)]
+        no_tools: bool,
+        /// Only report these comma-separated tool names
+        #[arg(long, value_name = "NAMES")]
+        tools: Option<String>,
+        /// Output the tool inventory as one diagnostic JSON document
         #[arg(long, default_value_t = false)]
         json: bool,
     },
@@ -222,6 +248,12 @@ impl CmdRunner for DebugCommand {
                 options,
             ),
             DebugSubcommand::Models { json } => run_models(*json, options),
+            DebugSubcommand::Tools {
+                sandbox,
+                no_tools,
+                tools,
+                json,
+            } => tools_report::run_tools(*sandbox, *no_tools, tools.as_deref(), *json, options),
             DebugSubcommand::Grants {
                 sandbox,
                 add_dir,
@@ -257,7 +289,7 @@ fn project_trust_warning_message(trust: &ProjectTrustReport) -> Option<String> {
 }
 
 /// Tell a human that authority-bearing project configuration was ignored.
-fn print_project_trust_warning(trust: &ProjectTrustReport) {
+pub fn print_project_trust_warning(trust: &ProjectTrustReport) {
     if let Some(message) = project_trust_warning_message(trust) {
         eprintln!("warning: {message}");
     }
@@ -292,13 +324,16 @@ fn render_models(
 
 /// Inspect the selected skill catalog without setting up an agent session.
 fn run_skills(
-    catalog_budget: usize,
-    description_budget: usize,
+    catalog_budget: Option<usize>,
+    description_budget: Option<usize>,
     no_skills: bool,
     skills: Option<&str>,
     json: bool,
     options: &CommandRunOptions<'_>,
 ) -> anyhow::Result<()> {
+    if catalog_budget == Some(0) || description_budget == Some(0) {
+        return Err(anyhow::anyhow!("skill budgets must be positive integers"));
+    }
     let load = load_settings("debug skills", json, options)?;
     let loaded = load.settings;
     let roots = loaded
@@ -311,25 +346,21 @@ fn run_skills(
         .map_err(|error| anyhow::anyhow!("Failed to get current directory: {error}"))?;
     let config = SettingsLoader::resolve_skill_config(no_skills, skills, &loaded.skills);
     let catalog = config.apply(discover_skills_with_paths(&current_dir, &roots));
+    let budget = SkillCatalogBudget::resolve(
+        None,
+        catalog_budget.or_else(|| loaded.skills.catalog_budget()),
+        description_budget.or_else(|| loaded.skills.description_budget()),
+    );
 
     if json {
         print!(
             "{}",
-            skills_report::render_json(
-                &catalog,
-                &loaded.warnings,
-                &load.trust,
-                catalog_budget,
-                description_budget,
-            )?
+            skills_report::render_json(&catalog, &loaded.warnings, &load.trust, budget)?
         );
     } else {
         loaded.print_warnings();
         print_project_trust_warning(&load.trust);
-        print!(
-            "{}",
-            skills_report::format_text(&catalog, catalog_budget, description_budget)
-        );
+        print!("{}", skills_report::format_text(&catalog, budget));
     }
     Ok(())
 }
@@ -349,6 +380,11 @@ struct McpServerReport {
     status: &'static str,
     protocol_version: Option<String>,
     server_info: Option<String>,
+    /// How the client watches for a tool-list change: `subscription` for a
+    /// modern server, `notifications` for a legacy one. Absent when the
+    /// server never connected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_updates: Option<String>,
     error: Option<String>,
     tools: Vec<McpToolReport>,
 }
@@ -489,6 +525,7 @@ async fn report_server(
         status: "failed",
         protocol_version: None,
         server_info: None,
+        tool_updates: None,
         error: None,
         tools: Vec::new(),
     };
@@ -501,6 +538,7 @@ async fn report_server(
             report.status = "ready";
             report.protocol_version = Some(server.protocol_version.clone());
             report.server_info = server.server_info.clone();
+            report.tool_updates = Some(server.tool_list_change_mode().as_str().to_string());
             report.tools = server
                 .tools
                 .iter()
@@ -525,39 +563,47 @@ fn format_mcp_report(reports: &[McpServerReport]) -> String {
     }
     let mut output = String::from("MCP servers\n");
     for report in reports {
-        output.push('\n');
-        _ = writeln!(output, "{} ({})", report.name, report.status);
-        _ = writeln!(output, "  source: {}", report.source);
-        let command = std::iter::once(report.command.as_str())
-            .chain(report.args.iter().map(String::as_str))
-            .collect::<Vec<_>>()
-            .join(" ");
-        _ = writeln!(output, "  command: {command}");
-        _ = writeln!(output, "  timeout: {}s", report.timeout_secs);
-        _ = writeln!(output, "  exposure: {}", report.exposure.as_str());
-        if let Some(description) = &report.description {
-            _ = writeln!(output, "  description: {description}");
-        }
-        if !report.env.is_empty() {
-            _ = writeln!(output, "  env: {}", report.env.join(", "));
-        }
-        if let Some(version) = &report.protocol_version {
-            _ = writeln!(output, "  protocol: {version}");
-        }
-        if let Some(info) = &report.server_info {
-            _ = writeln!(output, "  server: {info}");
-        }
-        if let Some(error) = &report.error {
-            _ = writeln!(output, "  error: {error}");
-        }
-        if !report.tools.is_empty() {
-            _ = writeln!(output, "  tools ({}):", report.tools.len());
-            for tool in &report.tools {
-                _ = writeln!(output, "    - {} -> {}", tool.name, tool.registered_name);
-            }
-        }
+        format_mcp_server(report, &mut output);
     }
     output
+}
+
+/// Append one server row to the `debug mcp` text report.
+fn format_mcp_server(report: &McpServerReport, output: &mut String) {
+    output.push('\n');
+    _ = writeln!(output, "{} ({})", report.name, report.status);
+    _ = writeln!(output, "  source: {}", report.source);
+    let command = std::iter::once(report.command.as_str())
+        .chain(report.args.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join(" ");
+    _ = writeln!(output, "  command: {command}");
+    _ = writeln!(output, "  timeout: {}s", report.timeout_secs);
+    _ = writeln!(output, "  exposure: {}", report.exposure.as_str());
+    if let Some(tool_updates) = &report.tool_updates {
+        _ = writeln!(output, "  tool updates: {tool_updates}");
+    }
+    if let Some(description) = &report.description {
+        _ = writeln!(output, "  description: {description}");
+    }
+    if !report.env.is_empty() {
+        _ = writeln!(output, "  env: {}", report.env.join(", "));
+    }
+    if let Some(version) = &report.protocol_version {
+        _ = writeln!(output, "  protocol: {version}");
+    }
+    if let Some(info) = &report.server_info {
+        _ = writeln!(output, "  server: {info}");
+    }
+    if let Some(error) = &report.error {
+        _ = writeln!(output, "  error: {error}");
+    }
+    if !report.tools.is_empty() {
+        _ = writeln!(output, "  tools ({}):", report.tools.len());
+        for tool in &report.tools {
+            _ = writeln!(output, "    - {} -> {}", tool.name, tool.registered_name);
+        }
+    }
 }
 
 fn format_models(models: &std::collections::HashMap<String, ModelDefinition>) -> String {
@@ -807,7 +853,7 @@ mod tests {
             Vec::new(),
         );
 
-        let output = skills_report::format_text(&catalog, 8000, 400);
+        let output = skills_report::format_text(&catalog, SkillCatalogBudget::new(8000, 400));
 
         assert!(output.contains("Selected: 2 skills"));
         assert!(output.contains("Name"));
@@ -837,14 +883,21 @@ mod tests {
             Vec::new(),
         );
 
-        let over = skills_report::format_text(&catalog, 1, 1);
+        let over = skills_report::format_text(&catalog, SkillCatalogBudget::new(1, 1));
         assert!(over.contains("Selected: 1 skill"));
         assert!(over.contains("configured"));
         assert!(over.contains("Descriptions over budget: 1"));
         assert!(over.contains("over"));
-        assert!(over.contains("Catalog budget: WARNING: rendered catalog exceeds"));
+        assert!(over.contains("Catalog budget: WARNING: rendered catalog still exceeds"));
+        assert!(over.contains("Skills omitted: 0"));
+        assert!(!over.contains("Omitted: verbose"));
+        assert!(!over.contains("Omissions assume SkillSearch is available."));
+        assert!(
+            over.lines()
+                .any(|line| line.starts_with("verbose") && line.contains("yes"))
+        );
 
-        let within = skills_report::format_text(&catalog, 10_000, 400);
+        let within = skills_report::format_text(&catalog, SkillCatalogBudget::new(10_000, 400));
         assert!(within.contains("Catalog budget: within budget"));
         assert!(within.contains("Descriptions over budget: 0"));
         assert!(within.contains(" ok "));
@@ -852,7 +905,8 @@ mod tests {
 
     #[test]
     fn format_skills_report_empty_state_is_explicit() {
-        let output = skills_report::format_text(&SkillCatalog::empty(), 8000, 400);
+        let output =
+            skills_report::format_text(&SkillCatalog::empty(), SkillCatalogBudget::new(8000, 400));
 
         assert!(output.starts_with("Skill catalog\nNo skills selected.\n"));
         assert!(!output.contains("Name"));
@@ -876,7 +930,7 @@ mod tests {
             ],
         );
 
-        let output = skills_report::format_text(&catalog, 8000, 400);
+        let output = skills_report::format_text(&catalog, SkillCatalogBudget::new(8000, 400));
 
         assert!(output.contains("Diagnostics\n"));
         assert!(output.contains("warning: Requested skill 'absent' was not found"));
@@ -905,7 +959,7 @@ mod tests {
             Vec::new(),
         );
 
-        let output = skills_report::format_text(&catalog, 8000, 400);
+        let output = skills_report::format_text(&catalog, SkillCatalogBudget::new(8000, 400));
 
         assert!(
             output.find("/a/SKILL.md").expect("first duplicate")
@@ -920,8 +974,10 @@ mod tests {
         assert_eq!(skills[0]["scope"], "project");
         assert_eq!(skills[0]["description"], "a project skill");
         assert_eq!(skills[0]["description_over_budget"], true);
+        assert_eq!(skills[0]["in_prompt"], false);
         assert_eq!(skills[1]["name"], "zeta");
         assert_eq!(skills[1]["scope"], "user");
+        assert_eq!(skills[1]["in_prompt"], true);
     }
 
     #[test]
@@ -945,8 +1001,13 @@ mod tests {
         );
         let loaded = loaded_settings(std::collections::HashMap::default(), None, Vec::new());
 
-        let output =
-            skills_report::render_json(&catalog, &loaded.warnings, &trust_report(), 1, 1).unwrap();
+        let output = skills_report::render_json(
+            &catalog,
+            &loaded.warnings,
+            &trust_report(),
+            SkillCatalogBudget::new(1, 1),
+        )
+        .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
 
         assert_eq!(parsed["schema_version"], 1);
@@ -957,6 +1018,10 @@ mod tests {
         assert_eq!(parsed["summary"]["description_budget"], 1);
         assert_eq!(parsed["summary"]["catalog_over_budget"], true);
         assert_eq!(parsed["summary"]["descriptions_over_budget"], 2);
+        assert_eq!(parsed["summary"]["omitted_count"], 1);
+        let omitted = parsed["summary"]["omitted_skills"].as_array().unwrap();
+        assert_eq!(omitted.len(), 1);
+        assert_eq!(omitted[0], "alpha");
         assert_skill_json_rows(&parsed);
         assert_eq!(parsed["data"]["project_trust"]["state"], "not_required");
     }
@@ -980,8 +1045,13 @@ mod tests {
             vec!["unknown key 'temparature' in .cake/settings.toml".to_string()],
         );
 
-        let output =
-            skills_report::render_json(&catalog, &loaded.warnings, &trust_report(), 1, 1).unwrap();
+        let output = skills_report::render_json(
+            &catalog,
+            &loaded.warnings,
+            &trust_report(),
+            SkillCatalogBudget::new(1, 1),
+        )
+        .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
 
         assert_eq!(parsed["status"], "warning");
@@ -1001,9 +1071,13 @@ mod tests {
         let mut trust = trust_report();
         trust.state = TrustState::Untrusted;
 
-        let output =
-            skills_report::render_json(&SkillCatalog::empty(), &loaded.warnings, &trust, 8000, 400)
-                .unwrap();
+        let output = skills_report::render_json(
+            &SkillCatalog::empty(),
+            &loaded.warnings,
+            &trust,
+            SkillCatalogBudget::new(8000, 400),
+        )
+        .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
 
         assert_eq!(parsed["status"], "warning");
@@ -1171,6 +1245,7 @@ mod tests {
             status,
             protocol_version: (status == "ready").then(|| "2026-07-28".to_string()),
             server_info: (status == "ready").then(|| "Safari".to_string()),
+            tool_updates: (status == "ready").then(|| "subscription".to_string()),
             error: (status == "failed").then(|| "connection closed".to_string()),
             tools: if status == "ready" {
                 vec![McpToolReport {
@@ -1192,6 +1267,7 @@ mod tests {
         assert!(ready.contains("/usr/bin/safaridriver --mcp"));
         assert!(ready.contains("env: SAFARI_TOKEN"));
         assert!(ready.contains("exposure: direct"));
+        assert!(ready.contains("tool updates: subscription"));
         assert!(ready.contains("description: Browser automation"));
         assert!(ready.contains("list_tabs -> mcp__safari-mcp__list_tabs"));
 
@@ -1206,6 +1282,7 @@ mod tests {
         assert!(hidden.contains("safari-mcp (hidden)"));
         assert!(hidden.contains("exposure: hidden"));
         assert!(!hidden.contains("protocol:"));
+        assert!(!hidden.contains("tool updates:"));
     }
 
     #[test]

@@ -43,14 +43,26 @@ fn write_fixture_server(env: &TestEnv) -> PathBuf {
 }
 
 fn write_global_mcp_config(env: &TestEnv, script: &Path, era: &str, exposure: &str) {
+    write_mcp_config(env, script, era, exposure, false);
+}
+
+fn write_dynamic_mcp_config(env: &TestEnv, script: &Path, era: &str, exposure: &str) {
+    write_mcp_config(env, script, era, exposure, true);
+}
+
+fn write_mcp_config(env: &TestEnv, script: &Path, era: &str, exposure: &str, dynamic: bool) {
     let config_dir = env.home_dir.join(".config").join("cake");
     fs::create_dir_all(&config_dir).expect("failed to create global config directory");
+    let mut environment = serde_json::json!({ "FAKE_MCP_ERA": era });
+    if dynamic {
+        environment["FAKE_MCP_DYNAMIC"] = serde_json::json!("1");
+    }
     let config = serde_json::json!({
         "mcpServers": {
             "fixture": {
                 "command": "python3",
                 "args": [script.display().to_string()],
-                "env": { "FAKE_MCP_ERA": era },
+                "env": environment,
                 "exposure": exposure
             }
         }
@@ -72,6 +84,22 @@ fn tool_call_response() -> serde_json::Value {
                 "call_id": "call-1",
                 "name": "mcp__fixture__echo",
                 "arguments": "{\"message\": \"hello\"}"
+            }
+        ],
+        "usage": { "input_tokens": 10, "output_tokens": 5, "total_tokens": 15 }
+    })
+}
+
+fn mutate_call_response() -> serde_json::Value {
+    serde_json::json!({
+        "id": "resp-mutate",
+        "output": [
+            {
+                "type": "function_call",
+                "id": "fc-mutate",
+                "call_id": "call-mutate",
+                "name": "mcp__fixture__mutate",
+                "arguments": "{}"
             }
         ],
         "usage": { "input_tokens": 10, "output_tokens": 5, "total_tokens": 15 }
@@ -672,5 +700,103 @@ async fn a_missing_explicit_mcp_config_is_an_input_error() {
         String::from_utf8_lossy(&output.stderr).contains("does not exist"),
         "the diagnostic should say the file is missing: {}",
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn request_tool_names(request: &serde_json::Value) -> Vec<String> {
+    request["tools"]
+        .as_array()
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(|tool| tool["name"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn tool_list_change_reaches_the_next_provider_request() {
+    let env = TestEnv::new("cake-mcp-list-change-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+    let script = write_fixture_server(&env);
+    write_dynamic_mcp_config(&env, &script, "modern", "direct");
+
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(mutate_call_response()))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(final_response()))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let output = env
+        .command()
+        .arg("change the tool list")
+        .env(TEST_KEY, "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+
+    assert!(
+        output.status.success(),
+        "cake should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let requests = mock_server
+        .received_requests()
+        .await
+        .expect("recorded requests");
+    assert_eq!(requests.len(), 2, "one mutation turn and one final turn");
+    let first: serde_json::Value =
+        serde_json::from_slice(&requests[0].body).expect("first request body is JSON");
+    let second: serde_json::Value =
+        serde_json::from_slice(&requests[1].body).expect("second request body is JSON");
+
+    let first_tools = request_tool_names(&first);
+    assert!(
+        first_tools.contains(&"mcp__fixture__mutate".to_string()),
+        "{first_tools:?}"
+    );
+    assert!(
+        first_tools.contains(&"mcp__fixture__fail".to_string()),
+        "{first_tools:?}"
+    );
+
+    let second_tools = request_tool_names(&second);
+    assert!(
+        second_tools.contains(&"mcp__fixture__added".to_string()),
+        "the added tool should reach the next request: {second_tools:?}"
+    );
+    assert!(
+        !second_tools.contains(&"mcp__fixture__fail".to_string()),
+        "the removed tool should disappear from the next request: {second_tools:?}"
+    );
+    assert!(
+        !second_tools.contains(&"mcp__fixture__mutate".to_string()),
+        "the mutation tool should disappear from the next request: {second_tools:?}"
+    );
+    let echo = second["tools"]
+        .as_array()
+        .and_then(|tools| {
+            tools
+                .iter()
+                .find(|tool| tool["name"] == "mcp__fixture__echo")
+        })
+        .expect("echo should remain in the request");
+    assert!(
+        echo["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("after the change")),
+        "the changed definition should reach the request: {echo}"
     );
 }

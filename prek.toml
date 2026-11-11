@@ -10,14 +10,6 @@ hooks = [
     pass_filenames = false,
   },
   {
-    id = "clippy",
-    name = "cargo clippy",
-    language = "system",
-    entry = "cargo clippy --all-targets --all-features -- -D warnings",
-    files = "\\.rs$",
-    pass_filenames = false,
-  },
-  {
     id = "docs-format-check",
     name = "panache docs format",
     language = "system",

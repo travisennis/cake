@@ -653,6 +653,58 @@ api_key_env = "GLOBAL_KEY"
 }
 
 #[test]
+fn test_skills_budget_loads_and_resolves() {
+    let settings: SkillSettings = toml::from_str(
+        r"
+catalog_budget = 12000
+description_budget = 250
+",
+    )
+    .unwrap();
+
+    assert_eq!(settings.catalog_budget(), Some(12_000));
+    assert_eq!(settings.description_budget(), Some(250));
+}
+
+#[test]
+fn test_skills_budget_rejects_zero_and_unlimited() {
+    assert!(toml::from_str::<SkillSettings>("catalog_budget = 0").is_err());
+    assert!(toml::from_str::<SkillSettings>("catalog_budget = \"unlimited\"").is_err());
+    assert!(toml::from_str::<SkillSettings>("description_budget = 0").is_err());
+}
+
+#[test]
+fn test_profile_skills_budget_overrides_top_level() {
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"
+[skills]
+catalog_budget = 9000
+description_budget = 300
+
+[[models]]
+name = "base"
+model = "base/model"
+base_url = "https://example.com"
+api_key_env = "KEY"
+
+[profiles.compact.skills]
+catalog_budget = 4000
+description_budget = 120
+"#,
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load_with_profile(None, Some("compact"))
+    })
+    .unwrap();
+
+    assert_eq!(loaded.skills.catalog_budget(), Some(4_000));
+    assert_eq!(loaded.skills.description_budget(), Some(120));
+}
+
+#[test]
 fn test_skills_path_loads_from_settings() {
     let dir = create_project_settings(
         r#"

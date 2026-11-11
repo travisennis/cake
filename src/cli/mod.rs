@@ -11,6 +11,7 @@ mod checkpoint;
 mod cmd_runner;
 mod debug;
 mod diagnostic;
+mod doctor;
 mod gates;
 mod init;
 mod mcp;
@@ -39,9 +40,10 @@ pub use diagnostic::{
     CHECK_SESSION_TELEMETRY_UNREADABLE, CHECK_SESSION_TRANSCRIPT_CORRUPT,
     CHECK_SESSION_TRANSCRIPT_UNREADABLE, CHECK_SESSIONS_CHECKPOINT, CHECK_SESSIONS_DIRECTORY,
     CHECK_SESSIONS_DISCOVERY, CHECK_SETTINGS_LOAD_FAILED, CHECK_SKILLS_DISCOVERY,
-    CHECK_SKILLS_PROJECT_TRUST, DiagnosticCheck, DiagnosticDocument, report_failure,
-    settings_warnings,
+    CHECK_SKILLS_PROJECT_TRUST, CHECK_TOOLS_SELECTION, DiagnosticCheck, DiagnosticDocument,
+    report_failure, settings_warnings,
 };
+pub use doctor::DoctorCommand;
 pub use gates::GatesCommand;
 pub use init::{InitCommand, InitError};
 #[doc(inline)]
@@ -78,6 +80,8 @@ impl InvalidSubcommandOptions {
 /// Top-level CLI subcommands.
 #[derive(Clone, Debug, clap::Subcommand)]
 pub enum Commands {
+    /// Validate configured settings and report configured grants
+    Doctor(DoctorCommand),
     /// Debug and introspection commands
     Debug(DebugCommand),
     /// Session browsing commands
@@ -110,6 +114,7 @@ impl Commands {
     /// Return the command name used in user-facing validation errors.
     pub(crate) const fn name(&self) -> &'static str {
         match self {
+            Self::Doctor(_) => "doctor",
             Self::Debug(_) => "debug",
             Self::Sessions(_) => "sessions",
             Self::Bash(_) => "bash",
@@ -125,7 +130,7 @@ impl Commands {
     pub(crate) const fn project_config_use(&self) -> crate::config::trust::ProjectConfigUse {
         use crate::config::trust::ProjectConfigUse;
         match self {
-            Self::Debug(_) | Self::Mcp(_) => ProjectConfigUse::Inspect,
+            Self::Doctor(_) | Self::Debug(_) | Self::Mcp(_) => ProjectConfigUse::Inspect,
             Self::Bash(_) => ProjectConfigUse::Enforce,
             Self::Gates(command) => command.project_config_use(),
             Self::Sessions(_) | Self::Init(_) | Self::Replay(_) | Self::Trust(_) => {
@@ -152,6 +157,7 @@ impl Commands {
         options: &CommandRunOptions<'_>,
     ) -> anyhow::Result<()> {
         match self {
+            Self::Doctor(command) => command.run(data_dir, options).await,
             Self::Debug(command) => command.run(data_dir, options).await,
             Self::Sessions(command) => command.run(data_dir, options).await,
             Self::Bash(command) => command.run(data_dir, options).await,
