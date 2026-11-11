@@ -79,9 +79,14 @@ fn debug_skills_respects_profiles_and_cli_filters_without_a_model() {
     assert!(report.contains("project"));
     assert!(report.contains("Descriptions over budget: 1"));
     assert!(report.contains("over"));
-    assert!(report.contains("WARNING: rendered catalog still exceeds"));
-    assert!(report.contains("Skills omitted: 1"));
-    assert!(report.contains("Omissions assume SkillSearch is available."));
+    assert!(report.contains("Catalog budget: WARNING: rendered catalog still exceeds"));
+    assert!(report.contains("Skills omitted: 0"));
+    assert!(!report.contains("Omissions assume SkillSearch is available."));
+    assert!(
+        report
+            .lines()
+            .any(|line| line.starts_with("short") && line.contains("yes"))
+    );
     assert!(!report.contains("long"));
     assert_eq!(
         std::fs::read_dir(env.data_dir.join("sessions"))

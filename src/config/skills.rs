@@ -600,8 +600,10 @@ impl SkillCatalog {
     ///
     /// Descriptions are shortened first. When the catalog still exceeds the
     /// budget and `allow_omissions` is true, entries at the end of discovery
-    /// order are omitted and a bounded notice names them. Omission is disabled
-    /// when the run has no way to search the full catalog.
+    /// order are omitted and a bounded notice names them. A non-empty catalog
+    /// always retains its first entry; if the budget cannot fit one entry, the
+    /// render is marked over budget instead of being emptied. Omission is
+    /// disabled when the run has no way to search the full catalog.
     pub fn to_prompt_xml_with_budget(
         &self,
         budget: SkillCatalogBudget,
@@ -636,7 +638,7 @@ impl SkillCatalog {
                 &omitted_skills,
             );
             let over_budget = xml.chars().count() > budget.catalog_characters;
-            if !over_budget || !allow_omissions || keep == 0 {
+            if !over_budget || !allow_omissions || keep == 1 {
                 let shortened_descriptions = self.skills[..keep]
                     .iter()
                     .zip(descriptions[..keep].iter())

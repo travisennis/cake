@@ -473,7 +473,7 @@ fn budgeted_catalog_retains_discovery_prefix_when_omitting() {
 }
 
 #[test]
-fn budgeted_catalog_notice_is_bounded_and_never_empty_when_skills_exist() {
+fn budgeted_catalog_retains_first_skill_when_budget_cannot_fit_an_entry() {
     let mut catalog = SkillCatalog::empty();
     for index in 0..12 {
         let name = format!("skill-{index}");
@@ -486,13 +486,67 @@ fn budgeted_catalog_notice_is_bounded_and_never_empty_when_skills_exist() {
         });
     }
 
-    let render = catalog.to_prompt_xml_with_budget(SkillCatalogBudget::new(0, 10), true);
+    let render = catalog.to_prompt_xml_with_budget(SkillCatalogBudget::new(1, 10), true);
 
     assert!(render.over_budget);
-    assert_eq!(render.omitted_skills.len(), 12);
-    assert!(render.xml.contains("<omitted_skills count=\"12\">"));
-    assert!(render.xml.contains("<more count=\"4\"/>"));
+    assert_eq!(render.omitted_skills.len(), 11);
+    assert!(!render.omitted_skills.contains(&"skill-0".to_string()));
+    assert!(render.xml.contains("<name>skill-0</name>"));
+    assert!(render.xml.contains("<omitted_skills count=\"11\">"));
+    assert!(render.xml.contains("<more count=\"3\"/>"));
     assert!(render.xml.contains("<available_skills>"));
+}
+
+#[test]
+fn budgeted_catalog_retains_one_skill_when_budget_is_just_below_an_entry() {
+    let mut catalog = SkillCatalog::empty();
+    for name in ["one", "two"] {
+        catalog.skills.push(Skill {
+            name: name.to_string(),
+            description: "short description".to_string(),
+            location: PathBuf::from(format!("/skills/{name}/SKILL.md")),
+            base_directory: PathBuf::from(format!("/skills/{name}")),
+            scope: SkillScope::Project,
+        });
+    }
+    let mut solo = SkillCatalog::empty();
+    solo.skills.push(catalog.skills[0].clone());
+    let one_entry_characters = solo.to_prompt_xml().chars().count();
+
+    let render = catalog
+        .to_prompt_xml_with_budget(SkillCatalogBudget::new(one_entry_characters - 1, 100), true);
+
+    assert!(render.over_budget);
+    assert!(render.xml.contains("<name>one</name>"));
+    assert_eq!(render.omitted_skills, vec!["two".to_string()]);
+}
+
+#[test]
+fn budgeted_catalog_fits_one_entry_and_omits_the_rest() {
+    let mut catalog = SkillCatalog::empty();
+    for name in ["one", "two"] {
+        catalog.skills.push(Skill {
+            name: name.to_string(),
+            description: "short description".to_string(),
+            location: PathBuf::from(format!("/skills/{name}/SKILL.md")),
+            base_directory: PathBuf::from(format!("/skills/{name}")),
+            scope: SkillScope::Project,
+        });
+    }
+    let omitted = vec!["two".to_string()];
+    let expected = render_skill_catalog(
+        std::iter::once((&catalog.skills[0], catalog.skills[0].description.as_str())),
+        &omitted,
+    );
+
+    let render = catalog
+        .to_prompt_xml_with_budget(SkillCatalogBudget::new(expected.chars().count(), 100), true);
+
+    assert!(!render.over_budget);
+    assert_eq!(render.xml, expected);
+    assert_eq!(render.omitted_skills, omitted);
+    assert!(render.xml.contains("<name>one</name>"));
+    assert!(!render.xml.contains("<name>two</name>"));
 }
 
 #[test]

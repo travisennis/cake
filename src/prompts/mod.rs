@@ -1467,6 +1467,7 @@ mod tests {
         };
 
         let with_search = render_messages(&build(&["Read".to_string(), "SkillSearch".to_string()]));
+        assert!(with_search.contains("<name>one</name>"));
         assert!(with_search.contains("<omitted_skills"));
         assert!(with_search.contains("SkillSearch tool"));
         assert!(with_search.contains("- **SkillSearch**:"));

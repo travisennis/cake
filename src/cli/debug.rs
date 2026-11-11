@@ -874,10 +874,13 @@ mod tests {
         assert!(over.contains("Descriptions over budget: 1"));
         assert!(over.contains("over"));
         assert!(over.contains("Catalog budget: WARNING: rendered catalog still exceeds"));
-        assert!(over.contains("Skills omitted: 1"));
-        assert!(over.contains("Omitted: verbose"));
-        assert!(over.contains("Omissions assume SkillSearch is available."));
-        assert!(over.contains("omitted"));
+        assert!(over.contains("Skills omitted: 0"));
+        assert!(!over.contains("Omitted: verbose"));
+        assert!(!over.contains("Omissions assume SkillSearch is available."));
+        assert!(
+            over.lines()
+                .any(|line| line.starts_with("verbose") && line.contains("yes"))
+        );
 
         let within = skills_report::format_text(&catalog, SkillCatalogBudget::new(10_000, 400));
         assert!(within.contains("Catalog budget: within budget"));
@@ -956,8 +959,10 @@ mod tests {
         assert_eq!(skills[0]["scope"], "project");
         assert_eq!(skills[0]["description"], "a project skill");
         assert_eq!(skills[0]["description_over_budget"], true);
+        assert_eq!(skills[0]["in_prompt"], false);
         assert_eq!(skills[1]["name"], "zeta");
         assert_eq!(skills[1]["scope"], "user");
+        assert_eq!(skills[1]["in_prompt"], true);
     }
 
     #[test]
@@ -998,11 +1003,10 @@ mod tests {
         assert_eq!(parsed["summary"]["description_budget"], 1);
         assert_eq!(parsed["summary"]["catalog_over_budget"], true);
         assert_eq!(parsed["summary"]["descriptions_over_budget"], 2);
-        assert_eq!(parsed["summary"]["omitted_count"], 2);
+        assert_eq!(parsed["summary"]["omitted_count"], 1);
         let omitted = parsed["summary"]["omitted_skills"].as_array().unwrap();
-        assert!(omitted.iter().any(|name| name == "alpha"));
-        assert!(omitted.iter().any(|name| name == "zeta"));
-        assert_eq!(parsed["data"]["skills"][0]["in_prompt"], false);
+        assert_eq!(omitted.len(), 1);
+        assert_eq!(omitted[0], "alpha");
         assert_skill_json_rows(&parsed);
         assert_eq!(parsed["data"]["project_trust"]["state"], "not_required");
     }
