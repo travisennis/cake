@@ -14,6 +14,17 @@ pub enum ModelProvider {
     OpenCode,
 }
 
+impl ModelProvider {
+    /// Wire vocabulary shared by settings, identity snapshots, and telemetry.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenRouter => "openrouter",
+            Self::OpenCode => "opencode",
+        }
+    }
+}
+
 /// Structured provider-specific HTTP headers.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProviderHeaders {
@@ -44,6 +55,17 @@ pub enum ApiType {
     Responses,
 }
 
+impl ApiType {
+    /// Wire vocabulary shared by settings, identity snapshots, and telemetry.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ChatCompletions => "chat_completions",
+            Self::Responses => "responses",
+        }
+    }
+}
+
 /// Reasoning effort level requested for models that support configurable reasoning.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -60,6 +82,21 @@ pub enum ReasoningEffort {
     Xhigh,
     /// Use the maximum reasoning effort the provider exposes.
     Max,
+}
+
+impl ReasoningEffort {
+    /// Wire vocabulary shared by identity snapshots and diagnostics.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
 }
 
 /// Configuration for a model provider.
@@ -198,6 +235,53 @@ fn resolve_env_api_key(config: &ModelConfig) -> anyhow::Result<String> {
         config.api_key_env
     );
     Ok(api_key)
+}
+
+/// Canonicalize a configured provider endpoint for identity comparison.
+///
+/// The returned URL has any query, fragment, and userinfo removed and keeps
+/// its host and path as destination identity. A query or userinfo component
+/// can carry a credential, and a snapshot must persist none, so userinfo is
+/// rejected rather than silently stripped; move such a credential to
+/// `api_key_env`. The error never echoes the configured value.
+pub fn canonicalize_base_url(raw: &str) -> Result<String, String> {
+    let mut url = reqwest::Url::parse(raw)
+        .map_err(|error| format!("base_url is not a valid URL: {error}"))?;
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(
+            "base_url must not embed userinfo credentials; use api_key_env instead".to_string(),
+        );
+    }
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url.to_string())
+}
+
+/// (domain, provider) pairs for base-URL inference when `provider` is unset.
+/// A table keeps inference branch-free as providers are added.
+const INFERRED_PROVIDERS: &[(&str, ModelProvider)] = &[
+    ("openrouter.ai", ModelProvider::OpenRouter),
+    ("opencode.ai", ModelProvider::OpenCode),
+];
+
+/// Infer the provider strategy from a configured base URL.
+#[must_use]
+pub fn infer_provider(base_url: &str) -> Option<ModelProvider> {
+    let url = reqwest::Url::parse(base_url).ok()?;
+    let host = url.host_str()?;
+
+    INFERRED_PROVIDERS
+        .iter()
+        .find(|(domain, _)| host_matches_domain(host, domain))
+        .map(|(_, provider)| *provider)
+}
+
+/// Whether `host` is `domain` itself or a dot-subdomain of it.
+fn host_matches_domain(host: &str, domain: &str) -> bool {
+    host == domain
+        || host
+            .strip_suffix(domain)
+            .is_some_and(|rest| rest.ends_with('.'))
 }
 
 #[cfg(test)]

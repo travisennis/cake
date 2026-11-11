@@ -1132,6 +1132,7 @@ fn snapshot_session_json_session_meta() {
         working_directory: PathBuf::from("/workspace/cake"),
         model: Some("gpt-5.4".to_string()),
         model_config: Some("test".to_string()),
+        provider_identity: None,
         tools: vec!["bash".to_string(), "read".to_string(), "edit".to_string()],
         cake_version: Some("1.2.3-test".to_string()),
         build_commit: None,
@@ -1145,6 +1146,49 @@ fn snapshot_session_json_session_meta() {
     };
 
     insta::assert_json_snapshot!("session_json_session_meta", session_record_json(record));
+}
+
+#[test]
+fn snapshot_session_json_session_meta_with_provider_identity() {
+    let record = SessionRecord::SessionMeta {
+        format_version: CURRENT_FORMAT_VERSION,
+        session_id: fixed_session_id(),
+        timestamp: fixed_timestamp(),
+        working_directory: PathBuf::from("/workspace/cake"),
+        model: Some("glm-5.1".to_string()),
+        model_config: Some("zen".to_string()),
+        provider_identity: Some(Box::new(
+            crate::types::provider_identity::ProviderIdentity {
+                model_config: "zen".to_string(),
+                model: "glm-5.1".to_string(),
+                base_url: "https://opencode.ai/zen/go/v1/".to_string(),
+                api_type: "chat_completions".to_string(),
+                provider: Some("opencode".to_string()),
+                routing: vec!["openrouter".to_string()],
+                credential: crate::types::provider_identity::ProviderCredentialSource::Env {
+                    name: "OPENCODE_ZEN_API_TOKEN".to_string(),
+                },
+                request_shape: crate::types::provider_identity::ProviderRequestShape {
+                    temperature: Some(0.7),
+                    max_output_tokens: Some(8_000),
+                    reasoning_effort: Some("high".to_string()),
+                    provider_headers_digest: Some("a".repeat(64)),
+                    ..crate::types::provider_identity::ProviderRequestShape::default()
+                },
+            },
+        )),
+        tools: vec!["bash".to_string()],
+        cake_version: Some("1.2.3-test".to_string()),
+        build_commit: None,
+        build_dirty: None,
+        system_prompt: Some("You are cake.".to_string()),
+        git: GitState::default(),
+    };
+
+    insta::assert_json_snapshot!(
+        "session_json_session_meta_with_provider_identity",
+        session_record_json(record)
+    );
 }
 
 #[test]
@@ -1600,6 +1644,7 @@ fn snapshot_stream_record_json_session_meta() {
         working_directory: PathBuf::from("/workspace/cake"),
         model: Some("gpt-5.4".to_string()),
         model_config: Some("test".to_string()),
+        provider_identity: None,
         tools: vec!["bash".to_string(), "read".to_string(), "edit".to_string()],
         cake_version: Some("1.2.3-test".to_string()),
         build_commit: None,
@@ -1706,6 +1751,7 @@ fn session_record_to_stream_record_preserves_json() {
             working_directory: PathBuf::from("/workspace/cake"),
             model: Some("gpt-5.4".to_string()),
             model_config: Some("test".to_string()),
+            provider_identity: None,
             tools: vec!["bash".to_string()],
             cake_version: Some("1.2.3-test".to_string()),
             build_commit: None,

@@ -1138,6 +1138,9 @@ pub enum SettingsError {
     #[error("Invalid model name '{name}': {reason}")]
     InvalidModelName { name: String, reason: String },
 
+    #[error("Invalid model configuration '{name}': {reason}")]
+    InvalidModelBaseUrl { name: String, reason: String },
+
     #[error("Duplicate model name '{name}' in settings")]
     DuplicateModelName { name: String },
 
@@ -1857,6 +1860,16 @@ impl SettingsLoader {
                 return Err(SettingsError::InvalidModelName {
                     name: def.name.clone(),
                     reason: e.to_string(),
+                });
+            }
+
+            // A configured endpoint is part of provider identity and is
+            // persisted in session metadata, so it must be a real URL with no
+            // embedded userinfo credential.
+            if let Err(reason) = crate::config::model::canonicalize_base_url(&def.base_url) {
+                return Err(SettingsError::InvalidModelBaseUrl {
+                    name: def.name.clone(),
+                    reason,
                 });
             }
 

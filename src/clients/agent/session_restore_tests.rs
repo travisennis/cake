@@ -51,6 +51,7 @@ fn session_meta() -> SessionRecord {
         working_directory: PathBuf::from("/work"),
         model: Some("test-model".to_string()),
         model_config: Some("test".to_string()),
+        provider_identity: None,
         tools: vec![
             "Bash".to_string(),
             "Read".to_string(),
@@ -296,6 +297,11 @@ fn session_restore_model_config() -> ResolvedModelConfig {
     }
 }
 
+fn session_restore_provider_identity() -> crate::types::ProviderIdentity {
+    crate::config::provider_identity::build(&session_restore_model_config().model_config, "test")
+        .expect("test model should have a provider identity")
+}
+
 fn session_restore_tool_context() -> Arc<ToolContext> {
     Arc::new(ToolContext::new(
         PathBuf::from("/work"),
@@ -312,6 +318,8 @@ fn restored_agent(session: Session) -> Agent {
         session,
         session_restore_model_config(),
         "test".to_string(),
+        session_restore_provider_identity(),
+        false,
         &[(Role::System, "sys".to_string())],
         &HashMap::new(),
         session_restore_tool_context(),
@@ -501,6 +509,8 @@ fn restore_recomputation_from_the_file_matches_loaded_state() {
         &restored,
         session_restore_model_config(),
         "test".to_string(),
+        session_restore_provider_identity(),
+        false,
         PathBuf::from("/work"),
         &[(Role::System, "sys".to_string())],
         HashMap::new(),

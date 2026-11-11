@@ -81,6 +81,58 @@ api_key_env = "MY_KEY"
 }
 
 #[test]
+fn test_model_base_url_with_userinfo_is_rejected() {
+    let dir = create_project_settings("");
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
+name = "leaky"
+model = "test/model"
+base_url = "https://user:sk-secret@example.com"
+api_key_env = "MY_KEY"
+"#,
+    );
+
+    let error = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(dir.path()))
+    })
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        SettingsError::InvalidModelBaseUrl { ref name, .. } if name == "leaky"
+    ));
+    assert!(error.to_string().contains("userinfo"));
+    assert!(!error.to_string().contains("sk-secret"));
+}
+
+#[test]
+fn test_model_base_url_must_parse() {
+    let dir = create_project_settings("");
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
+name = "broken"
+model = "test/model"
+base_url = "not a url"
+api_key_env = "MY_KEY"
+"#,
+    );
+
+    let error = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(dir.path()))
+    })
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        SettingsError::InvalidModelBaseUrl { ref name, .. } if name == "broken"
+    ));
+}
+
+#[test]
 fn test_project_models_are_rejected() {
     let home = create_home_dir();
     let project_dir = create_project_settings(

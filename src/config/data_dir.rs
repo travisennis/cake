@@ -450,6 +450,7 @@ fn session_meta_record(session: &Session, tools: Vec<String>) -> SessionRecord {
         working_directory: session.working_dir.clone(),
         model: session.model.clone(),
         model_config: session.model_config.clone(),
+        provider_identity: session.provider_identity.clone().map(Box::new),
         tools,
         cake_version: Some(env!("CARGO_PKG_VERSION").to_string()),
         build_commit: crate::build_info::commit(),

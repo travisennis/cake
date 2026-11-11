@@ -95,6 +95,22 @@ fn minimal_records(env: &TestEnv) -> Vec<serde_json::Value> {
     ]
 }
 
+/// A session whose `session_meta` pins the given provider endpoint.
+fn records_with_identity(env: &TestEnv, base_url: &str) -> Vec<serde_json::Value> {
+    let mut records = minimal_records(env);
+    let base_url = reqwest::Url::parse(base_url)
+        .expect("test endpoint should parse")
+        .to_string();
+    records[0]["provider_identity"] = serde_json::json!({
+        "model_config": "test",
+        "model": "glm-5.1",
+        "base_url": base_url,
+        "api_type": "responses",
+        "credential": { "kind": "env", "name": TEST_KEY },
+    });
+    records
+}
+
 fn write_session_fixture(env: &TestEnv, records: &[serde_json::Value]) {
     let sessions_dir = env.data_dir.join("sessions");
     fs::create_dir_all(&sessions_dir).expect("failed to create sessions directory");
@@ -188,6 +204,135 @@ async fn resume_restores_named_session_and_reaches_provider() {
         body_text.contains("carry on"),
         "new prompt should reach the provider, got: {body_text}"
     );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no provider identity snapshot"),
+        "a legacy session should warn about its unknown provider baseline, got: {stderr}"
+    );
+}
+
+#[tokio::test]
+async fn resume_with_matching_provider_identity_succeeds() {
+    let env = TestEnv::new("cake-resume-matching-identity-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+    write_session_fixture(&env, &records_with_identity(&env, &mock_server.uri()));
+
+    let output = run_mode(&env, &mock_server, &["--resume", SESSION_ID, "carry on"]).await;
+    assert!(
+        output.status.success(),
+        "matching identity should resume. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("provider identity changed"),
+        "an unchanged identity should not warn, got: {stderr}"
+    );
+}
+
+#[tokio::test]
+async fn resume_with_changed_provider_identity_fails_before_a_provider_request() {
+    let env = TestEnv::new("cake-resume-changed-identity-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+    write_session_fixture(
+        &env,
+        &records_with_identity(&env, "https://old.example.invalid/v1"),
+    );
+
+    let output = env
+        .command()
+        .args(["--resume", SESSION_ID, "carry on"])
+        .env(TEST_KEY, "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "a session-model mismatch is an input error. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Session model mismatch"), "{stderr}");
+    assert!(stderr.contains("base_url:"), "{stderr}");
+    assert!(
+        stderr.contains("https://old.example.invalid/v1"),
+        "{stderr}"
+    );
+    assert!(stderr.contains(&mock_server.uri()), "{stderr}");
+    assert!(
+        mock_server
+            .received_requests()
+            .await
+            .expect("recorded requests")
+            .is_empty(),
+        "the mismatch must fail before any provider request"
+    );
+}
+
+#[tokio::test]
+async fn allow_session_model_change_accepts_a_changed_identity_for_one_run() {
+    let env = TestEnv::new("cake-resume-identity-override-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+    write_session_fixture(
+        &env,
+        &records_with_identity(&env, "https://old.example.invalid/v1"),
+    );
+
+    let output = run_mode(
+        &env,
+        &mock_server,
+        &[
+            "--allow-session-model-change",
+            "--resume",
+            SESSION_ID,
+            "carry on",
+        ],
+    )
+    .await;
+    assert!(
+        output.status.success(),
+        "the override should accept the changed identity. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--allow-session-model-change was given"),
+        "the override should warn, got: {stderr}"
+    );
+
+    let telemetry_file = env
+        .data_dir
+        .join("session-telemetry")
+        .join(format!("{SESSION_ID}.ndjson"));
+    let contents = fs::read_to_string(telemetry_file).expect("telemetry sidecar should exist");
+    let init: serde_json::Value = serde_json::from_str(
+        contents
+            .lines()
+            .next()
+            .expect("telemetry should start with an init record"),
+    )
+    .expect("init record should be valid JSON");
+    assert_eq!(init["type"], "telemetry_init");
+    assert_eq!(init["session_model_change_override"], true);
+    assert_eq!(init["provider_identity"]["credential_kind"], "env");
+    assert!(
+        !contents.contains(TEST_KEY),
+        "telemetry must not carry the credential variable name"
+    );
+    assert_eq!(
+        init["provider_identity"]["base_url"],
+        reqwest::Url::parse(&mock_server.uri())
+            .expect("mock endpoint should parse")
+            .to_string(),
+        "telemetry records the identity the invocation actually used"
+    );
 }
 
 #[tokio::test]
@@ -261,6 +406,47 @@ async fn fork_creates_new_session_and_reaches_provider() {
         2,
         "fork should persist a new session beside the seeded one"
     );
+}
+
+#[tokio::test]
+async fn fork_copies_the_parent_provider_identity_snapshot() {
+    let env = TestEnv::new("cake-fork-identity-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &mock_server.uri());
+    write_session_fixture(&env, &records_with_identity(&env, &mock_server.uri()));
+
+    let output = run_mode(&env, &mock_server, &["--fork", SESSION_ID, "branch off"]).await;
+    assert!(
+        output.status.success(),
+        "fork should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let new_session = fs::read_dir(env.data_dir.join("sessions"))
+        .expect("sessions directory should exist")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_stem().is_some_and(|stem| stem != SESSION_ID)
+                && path.extension().is_some_and(|ext| ext == "jsonl")
+        })
+        .expect("the fork should create a new session file");
+    let first_line = fs::read_to_string(&new_session)
+        .expect("forked session should be readable")
+        .lines()
+        .next()
+        .expect("forked session should have a meta record")
+        .to_string();
+    let meta: serde_json::Value = serde_json::from_str(&first_line).expect("valid session meta");
+    assert_eq!(meta["type"], "session_meta");
+    assert_eq!(meta["provider_identity"]["model_config"], "test");
+    assert_eq!(
+        meta["provider_identity"]["base_url"],
+        reqwest::Url::parse(&mock_server.uri())
+            .expect("mock endpoint should parse")
+            .to_string()
+    );
+    assert_eq!(meta["provider_identity"]["credential"]["name"], TEST_KEY);
 }
 
 /// The live stream's first record reports the model identity the run resolved,

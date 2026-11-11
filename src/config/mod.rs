@@ -21,6 +21,7 @@ pub mod mcp;
 pub mod model;
 pub mod output_schema;
 pub mod owner_only;
+pub mod provider_identity;
 pub mod session;
 pub mod session_jsonl;
 mod session_paths;

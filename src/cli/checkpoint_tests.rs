@@ -39,6 +39,7 @@ fn meta_record(session_id: &str, model: Option<&str>) -> SessionRecord {
         working_directory: PathBuf::from("/work"),
         model: model.map(ToString::to_string),
         model_config: model.map(|_| "test".to_string()),
+        provider_identity: None,
         tools: vec!["bash".to_string()],
         cake_version: None,
         build_commit: None,

@@ -17,6 +17,7 @@ use crate::config::{
 use anyhow::Context;
 use fs4::{FileExt, TryLockError};
 
+use crate::types::ProviderIdentity;
 use crate::types::{
     CompactionData, ContextSeed, ConversationItem, GitState, SessionRecord, TurnUsageData, Usage,
 };
@@ -242,6 +243,9 @@ pub struct Session {
     /// (e.g. `codex-luna-xhigh`). Preferred resume identity: the model
     /// ID alone is ambiguous when entries share one ID.
     pub model_config: Option<String>,
+    /// Sanitized provider destination pinned when the session was created.
+    /// Absent on sessions written before provider identity was recorded.
+    pub provider_identity: Option<ProviderIdentity>,
     /// Full system prompt used when the session was created.
     pub system_prompt: Option<String>,
     /// Git repository state captured when the session was created.
@@ -266,6 +270,7 @@ impl Session {
             working_dir,
             model: None,
             model_config: None,
+            provider_identity: None,
             system_prompt: None,
             git: None,
             records: Vec::new(),
@@ -405,6 +410,7 @@ impl Session {
             working_dir: header.working_dir,
             model: header.model,
             model_config: header.model_config,
+            provider_identity: header.provider_identity,
             system_prompt: header.system_prompt,
             git: header.git,
             records,
@@ -594,6 +600,7 @@ struct SessionHeader {
     working_dir: PathBuf,
     model: Option<String>,
     model_config: Option<String>,
+    provider_identity: Option<ProviderIdentity>,
     system_prompt: Option<String>,
     git: Option<GitState>,
     timestamp: chrono::DateTime<chrono::Utc>,
@@ -633,6 +640,7 @@ fn read_session_header<R: std::io::BufRead>(
             working_directory,
             model,
             model_config,
+            provider_identity,
             system_prompt,
             git,
             ..
@@ -651,6 +659,7 @@ fn read_session_header<R: std::io::BufRead>(
                 working_dir: working_directory.clone(),
                 model: model.clone(),
                 model_config: model_config.clone(),
+                provider_identity: provider_identity.as_deref().cloned(),
                 system_prompt: system_prompt.clone(),
                 git: Some(git.clone()),
                 timestamp: *timestamp,
@@ -849,6 +858,7 @@ mod tests {
             working_directory: session.working_dir.clone(),
             model: session.model.clone(),
             model_config: session.model_config.clone(),
+            provider_identity: session.provider_identity.clone().map(Box::new),
             tools: vec!["bash".to_string(), "read".to_string()],
             cake_version: Some("test".to_string()),
             build_commit: None,
@@ -1475,6 +1485,38 @@ mod tests {
         assert_eq!(loaded.model_config, session.model_config);
         assert_eq!(loaded.records.len(), 5);
         assert_eq!(loaded.messages().len(), 2);
+    }
+
+    #[test]
+    fn provider_identity_round_trips_and_stays_optional() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+
+        let mut session = make_test_session();
+        session.provider_identity = Some(ProviderIdentity {
+            model_config: "test-config".to_string(),
+            model: "test-model".to_string(),
+            base_url: "https://example.com/v1".to_string(),
+            api_type: "chat_completions".to_string(),
+            provider: None,
+            routing: Vec::new(),
+            credential: crate::types::provider_identity::ProviderCredentialSource::Env {
+                name: "TEST_KEY".to_string(),
+            },
+            request_shape: crate::types::provider_identity::ProviderRequestShape::default(),
+        });
+        let file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
+        drop(file);
+
+        let loaded = Session::load(&path).unwrap();
+        assert_eq!(loaded.provider_identity, session.provider_identity);
+
+        let legacy_path = dir.path().join("legacy.jsonl");
+        let legacy = make_test_session();
+        let file = Session::create_on_disk(&legacy_path, &meta_record(&legacy)).unwrap();
+        drop(file);
+        let loaded = Session::load(&legacy_path).unwrap();
+        assert!(loaded.provider_identity.is_none());
     }
 
     #[test]

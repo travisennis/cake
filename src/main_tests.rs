@@ -29,6 +29,11 @@ fn test_resolved_model_config() -> ResolvedModelConfig {
     }
 }
 
+fn test_provider_identity() -> crate::types::ProviderIdentity {
+    crate::config::provider_identity::build(&test_resolved_model_config().model_config, "test")
+        .expect("test model should have a provider identity")
+}
+
 fn session_with_skill_records() -> Session {
     let mut session = Session::new(
         uuid::uuid!("550e8400-e29b-41d4-a716-446655440000"),
@@ -171,6 +176,7 @@ fn test_cli_rejects_run_only_options_with_subcommand() {
         "100",
         "--output-schema",
         "result.json",
+        "--allow-session-model-change",
         "--no-session",
         "ignored prompt",
         "replay",
@@ -184,6 +190,7 @@ fn test_cli_rejects_run_only_options_with_subcommand() {
     assert!(message.contains("invalid usage"));
     assert!(message.contains("--max-tokens"));
     assert!(message.contains("--output-schema"));
+    assert!(message.contains("--allow-session-model-change"));
     assert!(message.contains("--no-session"));
     assert!(message.contains("prompt"));
     assert!(message.contains("replay"));
@@ -405,6 +412,31 @@ fn test_run_mode_restore_flags() {
     assert_eq!(
         RunMode::from_cli(&args).unwrap(),
         RunMode::Fork {
+            session_id: resume_id
+        }
+    );
+}
+
+#[test]
+fn test_run_mode_requires_restore_for_model_change_override() {
+    let args = CodingAssistant::parse_from(["cake", "--allow-session-model-change", "test prompt"]);
+    let error = RunMode::from_cli(&args).unwrap_err().to_string();
+    assert!(
+        error.contains("requires --resume or --fork"),
+        "unexpected error: {error}"
+    );
+
+    let resume_id = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+    let args = CodingAssistant::parse_from([
+        "cake",
+        "--allow-session-model-change",
+        "--resume",
+        "550e8400-e29b-41d4-a716-446655440000",
+        "test prompt",
+    ]);
+    assert_eq!(
+        RunMode::from_cli(&args).unwrap(),
+        RunMode::Resume {
             session_id: resume_id
         }
     );
@@ -834,6 +866,8 @@ fn forked_session_seeds_skills_from_structured_records() {
         &restored,
         test_resolved_model_config(),
         "test".to_string(),
+        test_provider_identity(),
+        false,
         PathBuf::from("/work"),
         &[(Role::System, "system".to_string())],
         HashMap::new(),

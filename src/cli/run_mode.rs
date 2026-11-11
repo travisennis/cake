@@ -25,6 +25,21 @@ pub enum RunMode {
 impl RunMode {
     /// Derive the run mode from parsed CLI arguments.
     pub(crate) fn from_cli(args: &crate::CodingAssistant) -> anyhow::Result<Self> {
+        let mode = Self::from_session_flags(args)?;
+        if args.allow_session_model_change
+            && !matches!(
+                mode,
+                Self::Resume { .. } | Self::ForkLatest | Self::Fork { .. }
+            )
+        {
+            anyhow::bail!(
+                "Invalid session model change override: --allow-session-model-change requires --resume or --fork"
+            );
+        }
+        Ok(mode)
+    }
+
+    fn from_session_flags(args: &crate::CodingAssistant) -> anyhow::Result<Self> {
         if args.no_session {
             return Ok(Self::Ephemeral);
         }

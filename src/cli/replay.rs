@@ -295,6 +295,7 @@ mod tests {
             working_directory: std::path::PathBuf::from("/work"),
             model: Some("test-model".to_string()),
             model_config: Some("test".to_string()),
+            provider_identity: None,
             tools: vec!["bash".to_string(), "read".to_string()],
             cake_version: None,
             build_commit: None,

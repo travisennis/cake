@@ -415,7 +415,12 @@ async fn resumed_session_rehydrates_deferred_mcp_tool_activation() {
 
     let resumed = env
         .command()
-        .args(["--resume", &session_id, "call the tool again"])
+        .args([
+            "--allow-session-model-change",
+            "--resume",
+            &session_id,
+            "call the tool again",
+        ])
         .env(TEST_KEY, "test-token")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -448,7 +453,12 @@ async fn resumed_session_rehydrates_deferred_mcp_tool_activation() {
 
     let resumed_again = env
         .command()
-        .args(["--resume", &session_id, "call the tool a third time"])
+        .args([
+            "--allow-session-model-change",
+            "--resume",
+            &session_id,
+            "call the tool a third time",
+        ])
         .env(TEST_KEY, "test-token")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

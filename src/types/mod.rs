@@ -7,6 +7,7 @@
 
 pub mod compaction;
 mod conversation;
+pub mod provider_identity;
 pub mod session;
 mod usage;
 
@@ -16,6 +17,8 @@ pub use compaction::{CompactionData, ContextSeed, project_context};
 pub use conversation::{
     ConversationItem, ImagePart, ReasoningContent, ReasoningContentKind, ReasoningSummary, Role,
 };
+#[doc(inline)]
+pub use provider_identity::ProviderIdentity;
 #[doc(inline)]
 pub use session::{
     ApiAttemptTerminalClass, CutOffError, GitState, HookEventData, LimitExceededError,

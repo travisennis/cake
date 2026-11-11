@@ -12,6 +12,8 @@ use sha2::{Digest, Sha256};
 use crate::OutputFormat;
 use crate::clients::retry::{RequestOverrides, RetryReason, RetryStatus};
 use crate::config::model::{ApiType, ModelProvider, ReasoningEffort};
+use crate::types::ProviderIdentity;
+use crate::types::provider_identity::ProviderRequestShape;
 use crate::types::{ApiAttemptTerminalClass, Usage, UsagePresence};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -80,6 +82,47 @@ pub struct SessionTelemetrySettings {
         serialize_with = "serialize_endpoint_optional"
     )]
     pub base_url: Option<String>,
+}
+
+/// Sanitized provider identity for one invocation.
+///
+/// The session snapshot stores the environment variable name or Codex account
+/// digest; telemetry intentionally drops both and keeps only the credential
+/// kind, so a sidecar can attribute provider drift without carrying a local
+/// variable name or subscription fingerprint.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderIdentityTelemetry {
+    pub model: String,
+    pub model_config: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_endpoint_optional"
+    )]
+    pub base_url: Option<String>,
+    pub api_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routing: Vec<String>,
+    pub credential_kind: String,
+    #[serde(default, skip_serializing_if = "ProviderRequestShape::is_empty")]
+    pub request_shape: ProviderRequestShape,
+}
+
+impl From<&ProviderIdentity> for ProviderIdentityTelemetry {
+    fn from(identity: &ProviderIdentity) -> Self {
+        Self {
+            model: identity.model.clone(),
+            model_config: identity.model_config.clone(),
+            base_url: Some(identity.base_url.clone()),
+            api_type: identity.api_type.clone(),
+            provider: identity.provider.clone(),
+            routing: identity.routing.clone(),
+            credential_kind: identity.credential.kind().to_string(),
+            request_shape: identity.request_shape.clone(),
+        }
+    }
 }
 
 /// Path-free project trust metadata for one invocation.
@@ -720,6 +763,15 @@ pub fn sanitize_endpoint(value: &str) -> Option<String> {
     Some(bound_metadata(url.as_str()))
 }
 
+/// Serialize a boolean only when it is true.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if contract passes &T"
+)]
+const fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Serialize an optional provider-supplied string through [`bound_metadata`].
 #[expect(
     clippy::ref_option,
@@ -846,6 +898,13 @@ pub enum SessionTelemetryRecord {
         build_dirty: Option<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project_trust: Option<ProjectTrustTelemetry>,
+        /// Sanitized provider identity resolved for this invocation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_identity: Option<ProviderIdentityTelemetry>,
+        /// Set when a resume or fork accepted a changed provider identity for
+        /// this invocation only.
+        #[serde(default, skip_serializing_if = "is_false")]
+        session_model_change_override: bool,
     },
     ApiAttemptInFlight {
         session_id: String,
@@ -2295,6 +2354,56 @@ mod tests {
         assert!(value.get("build_dirty").is_none());
     }
 
+    #[test]
+    fn telemetry_init_sanitizes_provider_identity_and_records_the_override() {
+        let identity = crate::types::ProviderIdentity {
+            model_config: "zen".to_string(),
+            model: "glm-5.1".to_string(),
+            base_url: "https://user:pass@api.example.com/v1?api_key=secret#frag".to_string(),
+            api_type: "chat_completions".to_string(),
+            provider: Some("opencode".to_string()),
+            routing: Vec::new(),
+            credential: crate::types::provider_identity::ProviderCredentialSource::Env {
+                name: "SECRET_ENV_NAME".to_string(),
+            },
+            request_shape: crate::types::provider_identity::ProviderRequestShape {
+                provider_headers_digest: Some("digest".to_string()),
+                ..crate::types::provider_identity::ProviderRequestShape::default()
+            },
+        };
+        let mut record = telemetry_init(None);
+        let SessionTelemetryRecord::TelemetryInit {
+            provider_identity,
+            session_model_change_override,
+            ..
+        } = &mut record
+        else {
+            panic!("expected a telemetry init record");
+        };
+        *provider_identity = Some(ProviderIdentityTelemetry::from(&identity));
+        *session_model_change_override = true;
+
+        let value = serde_json::to_value(record).unwrap();
+        assert_eq!(value["provider_identity"]["credential_kind"], "env");
+        assert!(
+            value["provider_identity"].get("credential").is_none(),
+            "credential source must not reach telemetry"
+        );
+        assert_eq!(
+            value["provider_identity"]["base_url"],
+            "https://api.example.com/v1"
+        );
+        assert_eq!(value["session_model_change_override"], true);
+        let serialized = value.to_string();
+        for forbidden in ["SECRET_ENV_NAME", "pass", "api_key=secret"] {
+            assert!(!serialized.contains(forbidden), "{forbidden}: {serialized}");
+        }
+
+        let default = serde_json::to_value(telemetry_init(None)).unwrap();
+        assert!(default.get("provider_identity").is_none());
+        assert!(default.get("session_model_change_override").is_none());
+    }
+
     fn telemetry_init(base_url: Option<String>) -> SessionTelemetryRecord {
         SessionTelemetryRecord::TelemetryInit {
             session_id: "session".to_string(),
@@ -2317,6 +2426,8 @@ mod tests {
             build_commit: None,
             build_dirty: None,
             project_trust: None,
+            provider_identity: None,
+            session_model_change_override: false,
         }
     }
 }

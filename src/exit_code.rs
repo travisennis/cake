@@ -209,6 +209,12 @@ fn classify_configuration_error(err: &anyhow::Error) -> Option<u8> {
     if let Some(mcp_err) = err.downcast_ref::<crate::config::mcp::McpManageError>() {
         return Some(mcp_err.exit_code());
     }
+    if err
+        .downcast_ref::<crate::config::provider_identity::ProviderIdentityError>()
+        .is_some()
+    {
+        return Some(code::INPUT_ERROR);
+    }
     let is_project_error = err
         .downcast_ref::<crate::config::trust::TrustError>()
         .is_some()
@@ -233,6 +239,7 @@ fn classify_configuration_error(err: &anyhow::Error) -> Option<u8> {
 const fn classify_settings_error(error: &SettingsError) -> u8 {
     match error {
         SettingsError::InvalidModelName { .. }
+        | SettingsError::InvalidModelBaseUrl { .. }
         | SettingsError::DuplicateModelName { .. }
         | SettingsError::InvalidProfileName { .. }
         | SettingsError::ProfileModelsUnsupported { .. }
@@ -323,6 +330,7 @@ const INPUT_ERROR_PATTERNS: &[&str] = &[
     "No input provided",
     "stdin input exceeds",
     "Invalid model name",
+    "Invalid model configuration",
     "Unknown model",
     "No model specified",
     "is not configured in settings.toml",
@@ -332,6 +340,7 @@ const INPUT_ERROR_PATTERNS: &[&str] = &[
     "Failed to open session file",
     "Working directory mismatch",
     "Session model mismatch",
+    "Invalid session model change override",
     "Failed to cd into worktree",
     "Failed to get current directory",
 ];
@@ -413,6 +422,10 @@ mod tests {
             ("missing stdin", "No input provided via stdin"),
             ("oversized stdin", "stdin input exceeds the maximum size"),
             ("invalid model", "Invalid model name 'BAD'"),
+            (
+                "invalid model configuration",
+                "Invalid model configuration 'leaky': base_url must not embed userinfo credentials",
+            ),
             ("unknown model", "Unknown model 'missing'"),
             ("missing model", "No model specified"),
             (
@@ -430,6 +443,10 @@ mod tests {
             ("invalid session file", "Failed to parse session file"),
             ("working directory mismatch", "Working directory mismatch"),
             ("session model mismatch", "Session model mismatch"),
+            (
+                "invalid session model change override",
+                "Invalid session model change override: --allow-session-model-change requires --resume or --fork",
+            ),
             (
                 "ambiguous session model",
                 "Session model 'gpt-5.6-luna' is ambiguous: matches 3 model configs",

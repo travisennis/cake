@@ -13,6 +13,7 @@ use tracing::info;
 use crate::cli::run_mode::{RunMode, SessionPersistencePlan};
 use crate::clients::mcp::McpServer;
 use crate::clients::{Agent, ToolContext};
+use crate::config::provider_identity::{self, SessionProviderIdentityCheck};
 use crate::config::settings::SkillSettings;
 use crate::config::skills::Skill;
 use crate::config::toolbox::ToolboxTool;
@@ -21,13 +22,19 @@ use crate::config::{
     SkillCatalogBudget,
 };
 use crate::prompts::build_initial_prompt_messages_with_mcp;
-use crate::types::SessionRecord;
+use crate::types::{ProviderIdentity, SessionRecord};
 
 /// A fully assembled agent, session, and persistence plan ready for execution.
 pub struct RunSession {
     pub(crate) agent: Agent,
     pub(crate) session: Session,
     pub(crate) persistence: Option<SessionPersistencePlan>,
+    /// Sanitized identity resolved for this invocation, including a legacy
+    /// session whose stored snapshot is absent.
+    pub(crate) effective_provider_identity: Option<ProviderIdentity>,
+    /// Whether a resume or fork accepted a changed provider identity for this
+    /// invocation only.
+    pub(crate) session_model_change_override: bool,
 }
 
 impl RunSession {
@@ -106,6 +113,8 @@ impl crate::CodingAssistant {
         restored: Session,
         resolved: ResolvedModelConfig,
         model_config_name: String,
+        effective_provider_identity: ProviderIdentity,
+        session_model_change_override: bool,
         initial_messages: &[(crate::types::Role, String)],
         skill_locations: &HashMap<PathBuf, Skill>,
         tool_context: Arc<ToolContext>,
@@ -140,10 +149,13 @@ impl crate::CodingAssistant {
         let mut session = Session::new(restored.id, restored.working_dir);
         session.model = Some(resolved.model_config.model);
         session.model_config = Some(model_config_name);
+        session.provider_identity = restored.provider_identity;
         Ok(RunSession {
             agent,
             session,
             persistence: Some(SessionPersistencePlan::Append),
+            effective_provider_identity: Some(effective_provider_identity),
+            session_model_change_override,
         })
     }
 
@@ -155,6 +167,7 @@ impl crate::CodingAssistant {
     pub(crate) fn new_client_and_session(
         resolved: ResolvedModelConfig,
         model_config_name: String,
+        provider_identity: ProviderIdentity,
         current_dir: PathBuf,
         initial_messages: &[(crate::types::Role, String)],
         skill_locations: HashMap<PathBuf, Skill>,
@@ -178,11 +191,14 @@ impl crate::CodingAssistant {
         let mut session = Session::new(new_id, current_dir);
         session.model = Some(resolved.model_config.model);
         session.model_config = Some(model_config_name);
+        session.provider_identity = Some(provider_identity.clone());
         session.system_prompt = initial_messages.first().map(|(_, content)| content.clone());
         RunSession {
             agent,
             session,
             persistence,
+            effective_provider_identity: Some(provider_identity),
+            session_model_change_override: false,
         }
     }
 
@@ -195,6 +211,8 @@ impl crate::CodingAssistant {
         restored: &Session,
         resolved: ResolvedModelConfig,
         model_config_name: String,
+        effective_provider_identity: ProviderIdentity,
+        session_model_change_override: bool,
         current_dir: PathBuf,
         initial_messages: &[(crate::types::Role, String)],
         skill_locations: HashMap<PathBuf, Skill>,
@@ -271,11 +289,19 @@ impl crate::CodingAssistant {
         let mut session = Session::new(new_id, current_dir);
         session.model = Some(resolved.model_config.model);
         session.model_config = Some(model_config_name);
+        // A fork copies the parent snapshot. `--allow-session-model-change`
+        // accepts the current resolution for this invocation without
+        // rebinding the fork to a new destination.
+        session
+            .provider_identity
+            .clone_from(&restored.provider_identity);
         session.system_prompt = initial_messages.first().map(|(_, content)| content.clone());
         Ok(RunSession {
             agent,
             session,
             persistence: Some(SessionPersistencePlan::Create { seed_records }),
+            effective_provider_identity: Some(effective_provider_identity),
+            session_model_change_override,
         })
     }
 
@@ -337,18 +363,27 @@ impl crate::CodingAssistant {
         }
     }
 
-    /// Resolve a restored session's model and rebuild the pair.
+    /// Resolve a restored session's model, verify its pinned provider
+    /// identity, and rebuild the pair.
     fn restored_run(
         &self,
         restored: Session,
         inputs: &RunInputs<'_>,
     ) -> anyhow::Result<RunSession> {
-        let (resolved, model_config_name) = self.resolve_model_for_session(
+        let (config, model_config_name) = self.resolve_model_selection(
             inputs.models,
             inputs.default_model,
             restored.model.as_deref(),
             restored.model_config.as_deref(),
         )?;
+        let provider_identity = provider_identity::build(&config, &model_config_name)?;
+        let session_model_change_override = verify_session_provider_identity(
+            restored.provider_identity.as_ref(),
+            &provider_identity,
+            self.allow_session_model_change,
+            restored.id,
+        )?;
+        let resolved = ResolvedModelConfig::resolve(self.apply_cli_overrides_to_config(config))?;
         let initial_messages = inputs.initial_messages(
             resolved.model_config.supports_images,
             resolved.model_config.context_window,
@@ -358,6 +393,8 @@ impl crate::CodingAssistant {
             restored,
             resolved,
             model_config_name,
+            provider_identity,
+            session_model_change_override,
             &initial_messages,
             &inputs.skill_locations,
             tool_context,
@@ -392,12 +429,20 @@ impl crate::CodingAssistant {
         info!(target: "cake", "Forking session");
         let restored = fork_source(run_mode, data_dir, &inputs.current_dir)?;
         info!(target: "cake", "Forking from session: {}", restored.id);
-        let (resolved, model_config_name) = self.resolve_model_for_session(
+        let (config, model_config_name) = self.resolve_model_selection(
             inputs.models,
             inputs.default_model,
             restored.model.as_deref(),
             restored.model_config.as_deref(),
         )?;
+        let provider_identity = provider_identity::build(&config, &model_config_name)?;
+        let session_model_change_override = verify_session_provider_identity(
+            restored.provider_identity.as_ref(),
+            &provider_identity,
+            self.allow_session_model_change,
+            restored.id,
+        )?;
+        let resolved = ResolvedModelConfig::resolve(self.apply_cli_overrides_to_config(config))?;
         let initial_messages = inputs.initial_messages(
             resolved.model_config.supports_images,
             resolved.model_config.context_window,
@@ -407,6 +452,8 @@ impl crate::CodingAssistant {
             &restored,
             resolved,
             model_config_name,
+            provider_identity,
+            session_model_change_override,
             inputs.current_dir.clone(),
             &initial_messages,
             inputs.skill_locations.clone(),
@@ -425,8 +472,9 @@ impl crate::CodingAssistant {
         persistence: Option<SessionPersistencePlan>,
     ) -> anyhow::Result<RunSession> {
         let (config, model_config_name) =
-            self.resolve_model_config(inputs.models, inputs.default_model)?;
-        let resolved = ResolvedModelConfig::resolve(config)?;
+            self.resolve_configured_model(inputs.models, inputs.default_model)?;
+        let provider_identity = provider_identity::build(&config, &model_config_name)?;
+        let resolved = ResolvedModelConfig::resolve(self.apply_cli_overrides_to_config(config))?;
         let initial_messages = inputs.initial_messages(
             resolved.model_config.supports_images,
             resolved.model_config.context_window,
@@ -434,6 +482,7 @@ impl crate::CodingAssistant {
         Ok(Self::new_client_and_session(
             resolved,
             model_config_name,
+            provider_identity,
             inputs.current_dir.clone(),
             &initial_messages,
             inputs.skill_locations.clone(),
@@ -444,6 +493,49 @@ impl crate::CodingAssistant {
             inputs.task_id,
             persistence,
         ))
+    }
+}
+
+/// Verify a restored or forked session against its pinned provider identity.
+///
+/// Returns whether `--allow-session-model-change` accepted a changed identity
+/// for this invocation. A legacy session without a snapshot is an unknown
+/// baseline: it warns once and resolves normally, preserving compatibility.
+fn verify_session_provider_identity(
+    stored: Option<&ProviderIdentity>,
+    current: &ProviderIdentity,
+    allow_change: bool,
+    session_id: uuid::Uuid,
+) -> anyhow::Result<bool> {
+    match provider_identity::check_session_identity(stored, current) {
+        SessionProviderIdentityCheck::Match => Ok(false),
+        SessionProviderIdentityCheck::UnknownBaseline => {
+            eprintln!(
+                "warning: session {session_id} has no provider identity snapshot; \
+                 skipping the provider identity check for this run"
+            );
+            Ok(false)
+        },
+        SessionProviderIdentityCheck::Changed(changes) => {
+            let detail = changes
+                .iter()
+                .map(crate::types::provider_identity::ProviderIdentityDifference::describe)
+                .collect::<Vec<_>>()
+                .join("\n  ");
+            if allow_change {
+                eprintln!(
+                    "warning: session {session_id} provider identity changed since it was created; \
+                     continuing because --allow-session-model-change was given:\n  {detail}"
+                );
+                Ok(true)
+            } else {
+                Err(anyhow::anyhow!(
+                    "Session model mismatch: provider identity for session {session_id} changed since it was created:\n  {detail}\n\
+                     Use --allow-session-model-change to continue this session against the current configuration for one run, \
+                     or start a new session."
+                ))
+            }
+        },
     }
 }
 
@@ -554,6 +646,11 @@ mod tests {
         }
     }
 
+    fn test_provider_identity() -> ProviderIdentity {
+        provider_identity::build(&test_models()["test"].to_model_config(), "test")
+            .expect("test model should have a provider identity")
+    }
+
     fn test_tool_context() -> Arc<ToolContext> {
         Arc::new(ToolContext::new(
             PathBuf::from("/work"),
@@ -626,6 +723,8 @@ mod tests {
             restored,
             test_resolved_model_config(),
             "test".to_string(),
+            test_provider_identity(),
+            false,
             &[(crate::types::Role::System, "test".to_string())],
             &HashMap::new(),
             test_tool_context(),
@@ -777,6 +876,8 @@ mod tests {
             restored,
             resolved,
             "test".to_string(),
+            test_provider_identity(),
+            false,
             &[(crate::types::Role::System, "test".to_string())],
             &HashMap::new(),
             tool_context,
@@ -804,6 +905,8 @@ mod tests {
             restored,
             test_resolved_model_config(),
             "test".to_string(),
+            test_provider_identity(),
+            false,
             &[(crate::types::Role::System, "test".to_string())],
             &HashMap::new(),
             test_tool_context(),
@@ -830,6 +933,8 @@ mod tests {
             &restored,
             test_resolved_model_config(),
             "test".to_string(),
+            test_provider_identity(),
+            false,
             PathBuf::from("/work"),
             &[(crate::types::Role::System, "test".to_string())],
             HashMap::new(),
@@ -865,6 +970,8 @@ mod tests {
             &restored,
             test_resolved_model_config(),
             "test".to_string(),
+            test_provider_identity(),
+            false,
             PathBuf::from("/work"),
             &[(crate::types::Role::System, "test".to_string())],
             HashMap::new(),
@@ -924,6 +1031,18 @@ mod tests {
     fn saved_session(data_dir: &DataDir, working_dir: &Path) -> Session {
         let mut session = Session::new(uuid::Uuid::new_v4(), working_dir.to_path_buf());
         session.model = Some("glm-5.1".to_string());
+        data_dir
+            .save_session(&session)
+            .expect("session fixture should save");
+        session
+    }
+
+    /// Persist a session pinned to the test model's current identity.
+    fn saved_session_with_identity(data_dir: &DataDir, working_dir: &Path) -> Session {
+        let mut session = Session::new(uuid::Uuid::new_v4(), working_dir.to_path_buf());
+        session.model = Some("glm-5.1".to_string());
+        session.model_config = Some("test".to_string());
+        session.provider_identity = Some(test_provider_identity());
         data_dir
             .save_session(&session)
             .expect("session fixture should save");
@@ -1098,6 +1217,195 @@ mod tests {
                 run.persistence,
                 Some(SessionPersistencePlan::Append)
             ));
+        });
+    }
+
+    #[test]
+    fn new_session_persists_the_current_provider_identity() {
+        temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
+            let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+            let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+            let working_dir = tempfile::tempdir().expect("temp working dir");
+
+            let run = build_for_mode(
+                &crate::CodingAssistant::parse_from(["cake"]),
+                &RunMode::NewSession,
+                &data_dir,
+                working_dir.path(),
+            )
+            .expect("new session construction should succeed");
+
+            let stored = run
+                .session
+                .provider_identity
+                .clone()
+                .expect("a new session pins provider identity");
+            assert_eq!(stored.model_config, "test");
+            assert_eq!(stored.base_url, "https://example.invalid/v1");
+            assert_eq!(
+                stored.credential,
+                crate::types::provider_identity::ProviderCredentialSource::Env {
+                    name: "SESSION_FACTORY_TEST_KEY".to_string()
+                }
+            );
+            assert_eq!(run.effective_provider_identity.as_ref(), Some(&stored));
+            assert!(!run.session_model_change_override);
+        });
+    }
+
+    #[test]
+    fn resume_with_matching_identity_proceeds_without_an_override() {
+        temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
+            let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+            let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+            let working_dir = tempfile::tempdir().expect("temp working dir");
+            let saved = saved_session_with_identity(&data_dir, working_dir.path());
+
+            let run = build_for_mode(
+                &crate::CodingAssistant::parse_from(["cake"]),
+                &RunMode::Resume {
+                    session_id: saved.id,
+                },
+                &data_dir,
+                working_dir.path(),
+            )
+            .expect("matching identity should resume");
+
+            assert!(!run.session_model_change_override);
+            assert_eq!(run.session.provider_identity, saved.provider_identity);
+        });
+    }
+
+    #[test]
+    fn resume_with_changed_endpoint_fails_before_credential_resolution() {
+        temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
+            let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+            let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+            let working_dir = tempfile::tempdir().expect("temp working dir");
+            let mut saved = Session::new(uuid::Uuid::new_v4(), working_dir.path().to_path_buf());
+            saved.model = Some("glm-5.1".to_string());
+            saved.model_config = Some("test".to_string());
+            saved.provider_identity = Some(crate::types::ProviderIdentity {
+                base_url: "https://old.example.invalid/v1".to_string(),
+                ..test_provider_identity()
+            });
+            data_dir
+                .save_session(&saved)
+                .expect("session fixture should save");
+
+            let error = build_for_mode(
+                &crate::CodingAssistant::parse_from(["cake"]),
+                &RunMode::Resume {
+                    session_id: saved.id,
+                },
+                &data_dir,
+                working_dir.path(),
+            )
+            .err()
+            .expect("changed endpoint should fail");
+            let message = error.to_string();
+            assert!(message.contains("Session model mismatch"), "{message}");
+            assert!(message.contains("base_url:"), "{message}");
+            assert!(
+                message.contains("https://old.example.invalid/v1"),
+                "{message}"
+            );
+            assert!(message.contains("https://example.invalid/v1"), "{message}");
+            assert!(!message.contains("test-key"), "{message}");
+        });
+    }
+
+    #[test]
+    fn allow_session_model_change_accepts_without_rewriting_the_snapshot() {
+        temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
+            let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+            let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+            let working_dir = tempfile::tempdir().expect("temp working dir");
+            let old_identity = crate::types::ProviderIdentity {
+                base_url: "https://old.example.invalid/v1".to_string(),
+                ..test_provider_identity()
+            };
+            let mut saved = Session::new(uuid::Uuid::new_v4(), working_dir.path().to_path_buf());
+            saved.model = Some("glm-5.1".to_string());
+            saved.model_config = Some("test".to_string());
+            saved.provider_identity = Some(old_identity.clone());
+            data_dir
+                .save_session(&saved)
+                .expect("session fixture should save");
+
+            let run = build_for_mode(
+                &crate::CodingAssistant::parse_from(["cake", "--allow-session-model-change"]),
+                &RunMode::Resume {
+                    session_id: saved.id,
+                },
+                &data_dir,
+                working_dir.path(),
+            )
+            .expect("the override should accept the changed identity");
+
+            assert!(run.session_model_change_override);
+            assert_eq!(
+                run.session.provider_identity, saved.provider_identity,
+                "the stored snapshot is not rewritten"
+            );
+            assert_eq!(
+                run.effective_provider_identity
+                    .as_ref()
+                    .map(|identity| identity.base_url.as_str()),
+                Some("https://example.invalid/v1")
+            );
+            assert_ne!(
+                Some(old_identity),
+                run.effective_provider_identity,
+                "the invocation runs against the current identity"
+            );
+        });
+    }
+
+    #[test]
+    fn legacy_session_without_identity_resolves_with_an_unknown_baseline() {
+        temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
+            let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+            let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+            let working_dir = tempfile::tempdir().expect("temp working dir");
+            let saved = saved_session(&data_dir, working_dir.path());
+
+            let run = build_for_mode(
+                &crate::CodingAssistant::parse_from(["cake"]),
+                &RunMode::Resume {
+                    session_id: saved.id,
+                },
+                &data_dir,
+                working_dir.path(),
+            )
+            .expect("a legacy session still resumes");
+
+            assert!(run.session.provider_identity.is_none());
+            assert!(run.effective_provider_identity.is_some());
+            assert!(!run.session_model_change_override);
+        });
+    }
+
+    #[test]
+    fn fork_copies_the_parent_identity_and_applies_the_check() {
+        temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
+            let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+            let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+            let working_dir = tempfile::tempdir().expect("temp working dir");
+            let saved = saved_session_with_identity(&data_dir, working_dir.path());
+
+            let run = build_for_mode(
+                &crate::CodingAssistant::parse_from(["cake"]),
+                &RunMode::Fork {
+                    session_id: saved.id,
+                },
+                &data_dir,
+                working_dir.path(),
+            )
+            .expect("matching parent identity should fork");
+
+            assert_eq!(run.session.provider_identity, saved.provider_identity);
+            assert!(!run.session_model_change_override);
         });
     }
 
@@ -1457,6 +1765,8 @@ mod tests {
             &source,
             test_resolved_model_config(),
             "test".to_string(),
+            test_provider_identity(),
+            false,
             PathBuf::from("/work"),
             &[(crate::types::Role::System, "fresh system".to_string())],
             HashMap::new(),
@@ -1534,6 +1844,8 @@ mod tests {
             &source,
             test_resolved_model_config(),
             "test".to_string(),
+            test_provider_identity(),
+            false,
             PathBuf::from("/work"),
             &[(crate::types::Role::System, "fresh system".to_string())],
             HashMap::new(),

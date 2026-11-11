@@ -1,0 +1,43 @@
+---
+source: src/types/session_tests.rs
+expression: session_record_json(record)
+---
+{
+  "cake_version": "1.2.3-test",
+  "format_version": 4,
+  "git": {
+    "branch": null,
+    "commit_hash": null,
+    "repository_url": null
+  },
+  "model": "glm-5.1",
+  "model_config": "zen",
+  "provider_identity": {
+    "api_type": "chat_completions",
+    "base_url": "https://opencode.ai/zen/go/v1/",
+    "credential": {
+      "kind": "env",
+      "name": "OPENCODE_ZEN_API_TOKEN"
+    },
+    "model": "glm-5.1",
+    "model_config": "zen",
+    "provider": "opencode",
+    "request_shape": {
+      "max_output_tokens": 8000,
+      "provider_headers_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "reasoning_effort": "high",
+      "temperature": 0.7
+    },
+    "routing": [
+      "openrouter"
+    ]
+  },
+  "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "system_prompt": "You are cake.",
+  "timestamp": "2026-05-10T12:34:56Z",
+  "tools": [
+    "bash"
+  ],
+  "type": "session_meta",
+  "working_directory": "/workspace/cake"
+}

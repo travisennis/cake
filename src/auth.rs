@@ -6,6 +6,7 @@ use anyhow::{Context, bail};
 use base64::Engine;
 use reqwest::RequestBuilder;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 use crate::config::ResolvedModelConfig;
 
@@ -82,6 +83,24 @@ pub fn is_chatgpt_codex_backend(base_url: &str) -> bool {
     url.scheme() == "https"
         && url.host_str() == Some("chatgpt.com")
         && url.path().trim_end_matches('/') == "/backend-api/codex"
+}
+
+/// Returns the one-way fingerprint of the Codex account the local auth file
+/// belongs to, without exposing the access token or the account ID.
+///
+/// Session provider identity records this fingerprint, so a changed
+/// subscription account is visible while a rotated token under the same
+/// account is not. The access token is parsed by the auth-file shape but is
+/// never returned or persisted by this function.
+pub fn codex_account_fingerprint() -> anyhow::Result<String> {
+    let auth = ChatGptAuth::load()?;
+    Ok(sha256_hex(&auth.account_id))
+}
+
+fn sha256_hex(value: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(value.as_bytes());
+    hex::encode(hasher.finalize())
 }
 
 pub fn codex_auth_path() -> anyhow::Result<PathBuf> {

@@ -33,6 +33,26 @@ fn extracts_account_id_from_id_token() {
 }
 
 #[test]
+fn account_fingerprint_is_stable_and_hides_the_account_id() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        directory.path().join("auth.json"),
+        r#"{"tokens":{"access_token":"access-123","account_id":"account-123"}}"#,
+    )
+    .expect("write auth file");
+
+    temp_env::with_var("CODEX_HOME", Some(directory.path()), || {
+        let fingerprint = codex_account_fingerprint().expect("fingerprint");
+        assert_eq!(fingerprint.len(), 64);
+        assert_ne!(fingerprint, "account-123");
+        assert_eq!(
+            fingerprint,
+            codex_account_fingerprint().expect("fingerprint")
+        );
+    });
+}
+
+#[test]
 fn loads_file_backed_auth() {
     let directory = tempfile::tempdir().expect("tempdir");
     let path = directory.path().join("auth.json");

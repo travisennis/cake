@@ -33,13 +33,15 @@ use crate::cli::{
 };
 use crate::clients::resolve_linked_worktree_dirs;
 use crate::clients::{Agent, SandboxPolicy, ToolContext, resolve_sandbox_policy};
+#[cfg(test)]
+use crate::config::ResolvedModelConfig;
 use crate::config::settings::LoadedSettings;
 use crate::config::trust::{
     HookFileSource, ProjectConfigMode, ProjectConfigUse, ProjectTrustReport,
 };
 use crate::config::{
     AgentsFile, DataDir, DiagnosticLevel, HookSource, HooksLoader, ModelConfig, ModelDefinition,
-    ReasoningEffort, ResolvedModelConfig, Session, SettingsLoader, SkillCatalog, discover_skills,
+    ReasoningEffort, Session, SettingsLoader, SkillCatalog, discover_skills,
     discover_skills_with_paths, parse_skill_path_list, read_agents_files, user_skills_dir,
     worktree,
 };
@@ -139,6 +141,14 @@ pub(crate) struct CodingAssistant {
     /// Use without a value to fork the latest session, or provide a UUID.
     #[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "UUID")]
     pub fork: Option<String>,
+
+    /// Accept a changed provider identity when resuming or forking.
+    ///
+    /// The stored session snapshot is not rewritten; this invocation only
+    /// proceeds against the current configuration and records the override in
+    /// telemetry. Start a new session for a permanent model change.
+    #[arg(long)]
+    pub allow_session_model_change: bool,
 
     /// Do not save the session to disk
     #[arg(long)]
@@ -351,12 +361,12 @@ impl CodingAssistant {
         }
     }
 
-    /// Resolve the effective `ModelConfig`, applying CLI overrides.
+    /// Resolve the configured `[[models]]` entry without CLI overrides.
     ///
-    /// Returns the config plus the selected `[[models]]` entry name so
-    /// callers can persist the exact entry (not just the provider model
-    /// ID, which several entries may share).
-    fn resolve_model_config(
+    /// Provider identity is a property of the settings entry, so the snapshot
+    /// and its comparison use this resolution. Per-invocation flags are applied
+    /// afterward and never rewrite the stored identity.
+    fn resolve_configured_model(
         &self,
         models: &HashMap<String, ModelDefinition>,
         default_model: Option<&str>,
@@ -388,10 +398,7 @@ impl CodingAssistant {
             );
         }
 
-        // Look up the model in settings
-        let mut config = if let Some(def) = models.get(model_name) {
-            def.to_model_config()
-        } else {
+        let Some(def) = models.get(model_name) else {
             let available: Vec<_> = models.keys().cloned().collect();
             let available_str = if available.is_empty() {
                 String::new()
@@ -402,27 +409,31 @@ impl CodingAssistant {
                 "Unknown model '{model_name}'{available_str}. Use a model name from settings.toml, or set default_model and omit --model."
             );
         };
+        Ok((def.to_model_config(), model_name.to_string()))
+    }
 
-        // Apply CLI overrides
-        if let Some(max_tokens) = self.max_tokens {
-            config.max_output_tokens = Some(max_tokens);
-        }
-        if let Some(effort) = self.reasoning_effort {
-            config.reasoning_effort = Some(effort);
-        }
-        if let Some(budget) = self.reasoning_budget {
-            config.reasoning_max_tokens = Some(budget);
-        }
-
-        Ok((config, model_name.to_string()))
+    /// Resolve the effective `ModelConfig`, applying CLI overrides.
+    ///
+    /// Returns the config plus the selected `[[models]]` entry name so
+    /// callers can persist the exact entry (not just the provider model
+    /// ID, which several entries may share).
+    #[cfg(test)]
+    fn resolve_model_config(
+        &self,
+        models: &HashMap<String, ModelDefinition>,
+        default_model: Option<&str>,
+    ) -> anyhow::Result<(ModelConfig, String)> {
+        let (config, name) = self.resolve_configured_model(models, default_model)?;
+        Ok((self.apply_cli_overrides_to_config(config), name))
     }
 
     /// Resolve the model for a session restore (--resume or --fork).
     ///
-    /// Returns the resolved config plus the selected `[[models]]` entry name.
-    /// Sessions persist both the provider model ID and the entry name; the
-    /// name is the preferred identity because the ID alone is ambiguous when
-    /// several entries share one ID with different backends or efforts.
+    /// Returns the configured resolution before CLI overrides and before any
+    /// credential is read, so the caller can compare the stored provider
+    /// identity first. Sessions persist both the provider model ID and the
+    /// entry name; the name is the preferred identity because the ID alone is
+    /// ambiguous when several entries share one ID.
     ///
     /// Policy:
     /// - Explicit `--model` naming a different stored entry errors, even when
@@ -431,13 +442,13 @@ impl CodingAssistant {
     /// - Legacy sessions with only a model ID resolve it when it matches
     ///   exactly one entry and error with candidates when it is ambiguous.
     /// - With neither, fall back to default model resolution.
-    fn resolve_model_for_session(
+    fn resolve_model_selection(
         &self,
         models: &HashMap<String, ModelDefinition>,
         default_model: Option<&str>,
         session_model: Option<&str>,
         session_config: Option<&str>,
-    ) -> anyhow::Result<(ResolvedModelConfig, String)> {
+    ) -> anyhow::Result<(ModelConfig, String)> {
         if self.model.is_some() {
             self.resolve_explicit_session_model(
                 models,
@@ -446,15 +457,30 @@ impl CodingAssistant {
                 session_config,
             )
         } else if let Some(stored_config) = session_config {
-            self.resolve_stored_config_model(models, stored_config)
+            Self::resolve_stored_config_model(models, stored_config)
         } else if let Some(model_id) = session_model {
-            self.resolve_legacy_session_model(models, model_id)
+            Self::resolve_legacy_session_model(models, model_id)
         } else {
-            // No --model, no session model. Fall back to default.
-            let (config, config_name) = self.resolve_model_config(models, default_model)?;
-            let resolved = ResolvedModelConfig::resolve(config)?;
-            Ok((resolved, config_name))
+            self.resolve_configured_model(models, default_model)
         }
+    }
+
+    /// Existing session-resolution entry point for tests.
+    ///
+    /// Production restore compares provider identity between
+    /// [`Self::resolve_model_selection`] and credential resolution.
+    #[cfg(test)]
+    fn resolve_model_for_session(
+        &self,
+        models: &HashMap<String, ModelDefinition>,
+        default_model: Option<&str>,
+        session_model: Option<&str>,
+        session_config: Option<&str>,
+    ) -> anyhow::Result<(ResolvedModelConfig, String)> {
+        let (config, name) =
+            self.resolve_model_selection(models, default_model, session_model, session_config)?;
+        let resolved = ResolvedModelConfig::resolve(self.apply_cli_overrides_to_config(config))?;
+        Ok((resolved, name))
     }
 
     /// Resolve a restore when `--model` names an entry explicitly.
@@ -468,8 +494,8 @@ impl CodingAssistant {
         default_model: Option<&str>,
         session_model: Option<&str>,
         session_config: Option<&str>,
-    ) -> anyhow::Result<(ResolvedModelConfig, String)> {
-        let (config, config_name) = self.resolve_model_config(models, default_model)?;
+    ) -> anyhow::Result<(ModelConfig, String)> {
+        let (config, config_name) = self.resolve_configured_model(models, default_model)?;
         // Check the stored entry before resolving credentials: resolving a
         // Codex-backend entry reads the local auth file, which must not mask
         // a mismatch (or be required to report one).
@@ -481,28 +507,26 @@ impl CodingAssistant {
                  Use --model {stored_config} to continue with the session's model, or start a new session."
             );
         }
-        let resolved = ResolvedModelConfig::resolve(config)?;
         if session_config.is_none()
             && let Some(stored_id) = session_model
-            && stored_id != resolved.model_config.model
+            && stored_id != config.model
         {
             anyhow::bail!(
                 "Session model mismatch: session uses '{stored_id}' but --model resolves to '{}'. \
                  Use --model {stored_id} to continue with the session's model, or start a new session.",
-                resolved.model_config.model
+                config.model
             );
         }
-        Ok((resolved, config_name))
+        Ok((config, config_name))
     }
 
     /// Resolve a restore when the session names its `[[models]]` entry.
     ///
     /// Deterministic by construction: the name indexes one entry.
     fn resolve_stored_config_model(
-        &self,
         models: &HashMap<String, ModelDefinition>,
         stored_config: &str,
-    ) -> anyhow::Result<(ResolvedModelConfig, String)> {
+    ) -> anyhow::Result<(ModelConfig, String)> {
         let Some(def) = models.get(stored_config) else {
             anyhow::bail!(
                 "Session model config '{stored_config}' is not configured in settings.toml. \
@@ -510,8 +534,7 @@ impl CodingAssistant {
                  or start a new session."
             );
         };
-        let resolved = ResolvedModelConfig::resolve(def.to_model_config())?;
-        Ok((self.apply_cli_overrides(resolved), def.name.clone()))
+        Ok((def.to_model_config(), def.name.clone()))
     }
 
     /// Resolve a legacy restore carrying only a provider model ID.
@@ -519,10 +542,9 @@ impl CodingAssistant {
     /// A unique ID resolves to its entry; a shared ID errors with the
     /// sorted candidate entry names instead of picking nondeterministically.
     fn resolve_legacy_session_model(
-        &self,
         models: &HashMap<String, ModelDefinition>,
         model_id: &str,
-    ) -> anyhow::Result<(ResolvedModelConfig, String)> {
+    ) -> anyhow::Result<(ModelConfig, String)> {
         let mut candidates: Vec<&ModelDefinition> = models
             .values()
             .filter(|def| def.model == model_id)
@@ -536,10 +558,7 @@ impl CodingAssistant {
                      or start a new session."
                 );
             },
-            [only] => {
-                let resolved = ResolvedModelConfig::resolve(only.to_model_config())?;
-                Ok((self.apply_cli_overrides(resolved), only.name.clone()))
-            },
+            [only] => Ok((only.to_model_config(), only.name.clone())),
             _ => {
                 let candidate_names = candidates
                     .iter()
@@ -558,18 +577,18 @@ impl CodingAssistant {
     }
 
     /// Apply CLI overrides (`max_tokens`, `reasoning_effort`, `reasoning_budget`) to a
-    /// resolved model config.
-    const fn apply_cli_overrides(&self, mut resolved: ResolvedModelConfig) -> ResolvedModelConfig {
+    /// configured model config.
+    const fn apply_cli_overrides_to_config(&self, mut config: ModelConfig) -> ModelConfig {
         if let Some(max_tokens) = self.max_tokens {
-            resolved.model_config.max_output_tokens = Some(max_tokens);
+            config.max_output_tokens = Some(max_tokens);
         }
         if let Some(effort) = self.reasoning_effort {
-            resolved.model_config.reasoning_effort = Some(effort);
+            config.reasoning_effort = Some(effort);
         }
         if let Some(budget) = self.reasoning_budget {
-            resolved.model_config.reasoning_max_tokens = Some(budget);
+            config.reasoning_max_tokens = Some(budget);
         }
-        resolved
+        config
     }
 
     /// Set up a worktree if `--worktree` was provided.
@@ -1050,6 +1069,10 @@ impl CodingAssistant {
         Ok((client, Some(writer)))
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "telemetry setup threads session identity, mode, and override state through one call"
+    )]
     fn attach_session_telemetry(
         client: Agent,
         data_dir: &DataDir,
@@ -1057,6 +1080,8 @@ impl CodingAssistant {
         run_mode: &RunMode,
         output_format: OutputFormat,
         project_trust: &ProjectTrustReport,
+        effective_provider_identity: Option<&crate::types::ProviderIdentity>,
+        session_model_change_override: bool,
     ) -> Agent {
         if !run_mode.persists_session() {
             return client;
@@ -1100,6 +1125,9 @@ impl CodingAssistant {
             build_commit: crate::build_info::commit(),
             build_dirty: crate::build_info::dirty(),
             project_trust: Some(project_trust),
+            provider_identity: effective_provider_identity
+                .map(crate::session_telemetry::ProviderIdentityTelemetry::from),
+            session_model_change_override,
         };
 
         if let Err(error) = writer.append(&record) {
@@ -1189,6 +1217,10 @@ impl CodingAssistant {
             (self.output_schema.is_some(), "--output-schema"),
             (self.resume.is_some(), "--resume"),
             (self.fork.is_some(), "--fork"),
+            (
+                self.allow_session_model_change,
+                "--allow-session-model-change",
+            ),
             (self.no_session, "--no-session"),
             (self.worktree.is_some(), "--worktree"),
             (self.reasoning_effort.is_some(), "--reasoning-effort"),
@@ -1649,6 +1681,8 @@ impl CmdRunner for CodingAssistant {
 
         let session_start_source =
             HookSource::SessionStart(run_mode.session_start_source().to_owned());
+        let effective_provider_identity = run_session.effective_provider_identity;
+        let session_model_change_override = run_session.session_model_change_override;
         let session = run_session.session;
         let (client, session_writer) = Self::attach_persistence(
             run_session.agent,
@@ -1663,6 +1697,8 @@ impl CmdRunner for CodingAssistant {
             &run_mode,
             self.output_format,
             &resources.trust,
+            effective_provider_identity.as_ref(),
+            session_model_change_override,
         );
         let hook_context = HookContext {
             session_id: session.id,

@@ -14,6 +14,7 @@ use crate::types::compaction::CompactionData;
 use crate::types::conversation::{
     ConversationItem, ImagePart, ReasoningContent, ReasoningSummary, Role,
 };
+use crate::types::provider_identity::ProviderIdentity;
 use crate::types::usage::{Usage, UsagePresence};
 
 /// Snapshot of git repository state captured when a session file is created.
@@ -579,6 +580,11 @@ pub enum SessionRecord {
         /// entries share one ID with different backends or efforts.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model_config: Option<String>,
+        /// The sanitized provider destination the session was created for.
+        /// Additive to format version 4; absent on sessions written before
+        /// provider identity was pinned. Boxed to keep the record enum small.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_identity: Option<Box<ProviderIdentity>>,
         tools: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cake_version: Option<String>,
@@ -689,6 +695,9 @@ pub enum StreamRecord {
         /// The `[[models]]` entry name the session was created with.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model_config: Option<String>,
+        /// The sanitized provider destination the session was created for.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_identity: Option<Box<ProviderIdentity>>,
         tools: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cake_version: Option<String>,
@@ -786,6 +795,7 @@ impl From<StreamRecord> for SessionRecord {
                 working_directory,
                 model,
                 model_config,
+                provider_identity,
                 tools,
                 cake_version,
                 build_commit,
@@ -799,6 +809,7 @@ impl From<StreamRecord> for SessionRecord {
                 working_directory,
                 model,
                 model_config,
+                provider_identity,
                 tools,
                 cake_version,
                 build_commit,
@@ -882,6 +893,7 @@ impl From<SessionRecord> for StreamRecord {
                 working_directory,
                 model,
                 model_config,
+                provider_identity,
                 tools,
                 cake_version,
                 build_commit,
@@ -895,6 +907,7 @@ impl From<SessionRecord> for StreamRecord {
                 working_directory,
                 model,
                 model_config,
+                provider_identity,
                 tools,
                 cake_version,
                 build_commit,
