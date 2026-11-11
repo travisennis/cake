@@ -1497,6 +1497,7 @@ mod tests {
             model_config: "test-config".to_string(),
             model: "test-model".to_string(),
             base_url: "https://example.com/v1".to_string(),
+            base_url_query_digest: None,
             api_type: "chat_completions".to_string(),
             provider: None,
             routing: Vec::new(),

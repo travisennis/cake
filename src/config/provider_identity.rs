@@ -8,7 +8,7 @@
 use sha2::{Digest, Sha256};
 
 use crate::config::model::{
-    ModelConfig, ModelProvider, ProviderHeaders, canonicalize_base_url, infer_provider,
+    BaseUrlIdentity, ModelConfig, ModelProvider, ProviderHeaders, base_url_identity, infer_provider,
 };
 use crate::types::provider_identity::{
     ProviderCredentialSource, ProviderIdentity, ProviderIdentityDifference, ProviderRequestShape,
@@ -44,7 +44,10 @@ pub enum SessionProviderIdentityCheck {
 /// Returns [`ProviderIdentityError`] when the endpoint is unparsable or embeds
 /// userinfo, or when a Codex-backed model's account fingerprint cannot be read.
 pub fn build(config: &ModelConfig, model_config: &str) -> anyhow::Result<ProviderIdentity> {
-    let base_url = canonicalize_base_url(&config.base_url).map_err(|reason| {
+    let BaseUrlIdentity {
+        base_url,
+        query_digest,
+    } = base_url_identity(&config.base_url).map_err(|reason| {
         ProviderIdentityError::InvalidEndpoint {
             name: model_config.to_string(),
             reason,
@@ -55,6 +58,7 @@ pub fn build(config: &ModelConfig, model_config: &str) -> anyhow::Result<Provide
         model_config: model_config.to_string(),
         model: config.model.clone(),
         base_url,
+        base_url_query_digest: query_digest,
         api_type: config.api_type.as_str().to_string(),
         provider: resolved_provider(config)
             .map(ModelProvider::as_str)
@@ -135,12 +139,17 @@ fn request_shape(config: &ModelConfig) -> ProviderRequestShape {
 /// One-way digest of the configured provider header values.
 ///
 /// The raw values never leave this function. Missing values hash as empty, so
-/// the digest changes when any configured header value changes.
+/// the digest changes when any configured header value changes. Destructuring
+/// without `..` keeps a new `ProviderHeaders` field from escaping the digest.
 fn provider_headers_digest(headers: &ProviderHeaders) -> String {
+    let ProviderHeaders {
+        http_referer,
+        x_title,
+    } = headers;
     let mut hasher = Sha256::new();
-    hasher.update(headers.http_referer.as_deref().unwrap_or("").as_bytes());
+    hasher.update(http_referer.as_deref().unwrap_or("").as_bytes());
     hasher.update(b"\0");
-    hasher.update(headers.x_title.as_deref().unwrap_or("").as_bytes());
+    hasher.update(x_title.as_deref().unwrap_or("").as_bytes());
     hex::encode(hasher.finalize())
 }
 

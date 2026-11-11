@@ -15,6 +15,7 @@ expression: session_record_json(record)
   "provider_identity": {
     "api_type": "chat_completions",
     "base_url": "https://opencode.ai/zen/go/v1/",
+    "base_url_query_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "credential": {
       "kind": "env",
       "name": "OPENCODE_ZEN_API_TOKEN"

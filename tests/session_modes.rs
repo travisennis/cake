@@ -15,6 +15,7 @@ use std::{
     process::Stdio,
 };
 
+use sha2::{Digest, Sha256};
 use support::TestEnv;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -105,6 +106,30 @@ fn records_with_identity(env: &TestEnv, base_url: &str) -> Vec<serde_json::Value
         "model_config": "test",
         "model": "glm-5.1",
         "base_url": base_url,
+        "api_type": "responses",
+        "credential": { "kind": "env", "name": TEST_KEY },
+    });
+    records
+}
+
+/// A session whose `session_meta` pins the given endpoint and query digest.
+fn records_with_identity_and_query(
+    env: &TestEnv,
+    base_url: &str,
+    query: &str,
+) -> Vec<serde_json::Value> {
+    let mut records = minimal_records(env);
+    let base_url = reqwest::Url::parse(base_url)
+        .expect("test endpoint should parse")
+        .to_string();
+    let mut hasher = Sha256::new();
+    hasher.update(b"cake-provider-identity-query\0");
+    hasher.update(query.as_bytes());
+    records[0]["provider_identity"] = serde_json::json!({
+        "model_config": "test",
+        "model": "glm-5.1",
+        "base_url": base_url,
+        "base_url_query_digest": hex::encode(hasher.finalize()),
         "api_type": "responses",
         "credential": { "kind": "env", "name": TEST_KEY },
     });
@@ -265,6 +290,46 @@ async fn resume_with_changed_provider_identity_fails_before_a_provider_request()
         "{stderr}"
     );
     assert!(stderr.contains(&mock_server.uri()), "{stderr}");
+    assert!(
+        mock_server
+            .received_requests()
+            .await
+            .expect("recorded requests")
+            .is_empty(),
+        "the mismatch must fail before any provider request"
+    );
+}
+
+#[tokio::test]
+async fn resume_with_changed_base_url_query_fails_before_a_provider_request() {
+    let env = TestEnv::new("cake-resume-query-drift-test");
+    let mock_server = MockServer::start().await;
+    write_responses_settings(&env, &format!("{}/?upstream=attacker", mock_server.uri()));
+    write_session_fixture(
+        &env,
+        &records_with_identity_and_query(&env, &mock_server.uri(), "upstream=prod"),
+    );
+
+    let output = env
+        .command()
+        .args(["--resume", SESSION_ID, "carry on"])
+        .env(TEST_KEY, "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "a query-only mismatch is an input error. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Session model mismatch"), "{stderr}");
+    assert!(stderr.contains("base_url_query_digest"), "{stderr}");
+    assert!(!stderr.contains("upstream=prod"), "{stderr}");
+    assert!(!stderr.contains("upstream=attacker"), "{stderr}");
     assert!(
         mock_server
             .received_requests()

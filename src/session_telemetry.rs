@@ -100,6 +100,8 @@ pub struct ProviderIdentityTelemetry {
         serialize_with = "serialize_endpoint_optional"
     )]
     pub base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url_query_digest: Option<String>,
     pub api_type: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
@@ -116,6 +118,7 @@ impl From<&ProviderIdentity> for ProviderIdentityTelemetry {
             model: identity.model.clone(),
             model_config: identity.model_config.clone(),
             base_url: Some(identity.base_url.clone()),
+            base_url_query_digest: identity.base_url_query_digest.clone(),
             api_type: identity.api_type.clone(),
             provider: identity.provider.clone(),
             routing: identity.routing.clone(),
@@ -2360,6 +2363,7 @@ mod tests {
             model_config: "zen".to_string(),
             model: "glm-5.1".to_string(),
             base_url: "https://user:pass@api.example.com/v1?api_key=secret#frag".to_string(),
+            base_url_query_digest: Some("query-digest".to_string()),
             api_type: "chat_completions".to_string(),
             provider: Some("opencode".to_string()),
             routing: Vec::new(),
@@ -2392,6 +2396,10 @@ mod tests {
         assert_eq!(
             value["provider_identity"]["base_url"],
             "https://api.example.com/v1"
+        );
+        assert_eq!(
+            value["provider_identity"]["base_url_query_digest"],
+            "query-digest"
         );
         assert_eq!(value["session_model_change_override"], true);
         let serialized = value.to_string();

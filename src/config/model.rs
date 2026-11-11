@@ -2,6 +2,7 @@ use std::fmt;
 
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// Provider-specific strategy selected for a model configuration.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -237,14 +238,39 @@ fn resolve_env_api_key(config: &ModelConfig) -> anyhow::Result<String> {
     Ok(api_key)
 }
 
+/// Canonical endpoint identity plus a one-way digest of its query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BaseUrlIdentity {
+    /// Credential-free endpoint with query, fragment, and userinfo removed.
+    pub base_url: String,
+    /// SHA-256 of the exact configured query, when it is non-empty.
+    pub query_digest: Option<String>,
+}
+
 /// Canonicalize a configured provider endpoint for identity comparison.
 ///
 /// The returned URL has any query, fragment, and userinfo removed and keeps
-/// its host and path as destination identity. A query or userinfo component
-/// can carry a credential, and a snapshot must persist none, so userinfo is
-/// rejected rather than silently stripped; move such a credential to
-/// `api_key_env`. The error never echoes the configured value.
+/// its host and path as destination identity. Use [`base_url_identity`] when
+/// the query must also be distinguishable without persisting its raw value.
+/// A query or userinfo component can carry a credential, and a snapshot must
+/// persist neither, so userinfo is rejected rather than silently stripped;
+/// move such a credential to `api_key_env`. The error never echoes the
+/// configured value.
 pub fn canonicalize_base_url(raw: &str) -> Result<String, String> {
+    Ok(base_url_identity(raw)?.base_url)
+}
+
+/// Parse a configured endpoint into its canonical identity and query digest.
+///
+/// The returned `base_url` has the query, fragment, and userinfo removed, so
+/// it never persists a raw query that could carry a credential or routing
+/// parameter. `query_digest` is a one-way SHA-256 of the exact query when one
+/// is present, which keeps query-only destination drift detectable.
+///
+/// # Errors
+///
+/// Returns an error when the URL does not parse or embeds userinfo.
+pub fn base_url_identity(raw: &str) -> Result<BaseUrlIdentity, String> {
     let mut url = reqwest::Url::parse(raw)
         .map_err(|error| format!("base_url is not a valid URL: {error}"))?;
     if !url.username().is_empty() || url.password().is_some() {
@@ -252,9 +278,18 @@ pub fn canonicalize_base_url(raw: &str) -> Result<String, String> {
             "base_url must not embed userinfo credentials; use api_key_env instead".to_string(),
         );
     }
+    let query_digest = url.query().filter(|query| !query.is_empty()).map(|query| {
+        let mut hasher = Sha256::new();
+        hasher.update(b"cake-provider-identity-query\0");
+        hasher.update(query.as_bytes());
+        hex::encode(hasher.finalize())
+    });
     url.set_query(None);
     url.set_fragment(None);
-    Ok(url.to_string())
+    Ok(BaseUrlIdentity {
+        base_url: url.to_string(),
+        query_digest,
+    })
 }
 
 /// (domain, provider) pairs for base-URL inference when `provider` is unset.

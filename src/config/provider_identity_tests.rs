@@ -79,6 +79,60 @@ fn endpoint_canonicalization_strips_query_fragment_and_normalizes_the_host() {
     )
     .unwrap();
     assert_eq!(identity.base_url, "https://api.example.com/v1/models");
+    assert_eq!(
+        identity.base_url_query_digest.as_deref().map(str::len),
+        Some(64)
+    );
+}
+
+#[test]
+fn query_only_destination_drift_is_a_mismatch_without_persisting_the_query() {
+    let stored = build(
+        &model_config("https://gateway.example/v1?upstream=prod&api_key=sk-secret-query"),
+        "zen",
+    )
+    .unwrap();
+    assert_eq!(stored.base_url, "https://gateway.example/v1");
+    assert_eq!(
+        stored.base_url_query_digest.as_deref().map(str::len),
+        Some(64)
+    );
+    let serialized = serde_json::to_string(&stored).unwrap();
+    for forbidden in ["upstream=prod", "sk-secret-query"] {
+        assert!(!serialized.contains(forbidden), "{forbidden}: {serialized}");
+    }
+
+    let same_query = build(
+        &model_config("https://gateway.example/v1?upstream=prod&api_key=sk-secret-query"),
+        "zen",
+    )
+    .unwrap();
+    assert_eq!(stored, same_query);
+    assert_eq!(
+        check_session_identity(Some(&stored), &same_query),
+        SessionProviderIdentityCheck::Match
+    );
+
+    let changed = build(
+        &model_config("https://gateway.example/v1?upstream=attacker"),
+        "zen",
+    )
+    .unwrap();
+    assert_eq!(stored.base_url, changed.base_url);
+    assert_ne!(stored.base_url_query_digest, changed.base_url_query_digest);
+    match check_session_identity(Some(&stored), &changed) {
+        SessionProviderIdentityCheck::Changed(differences) => {
+            assert_eq!(differences.len(), 1);
+            assert_eq!(differences[0].field, "base_url_query_digest");
+        },
+        other => panic!("expected a query digest mismatch, got {other:?}"),
+    }
+}
+
+#[test]
+fn endpoint_without_a_query_has_no_query_digest() {
+    let identity = build(&model_config("https://gateway.example/v1?"), "zen").unwrap();
+    assert!(identity.base_url_query_digest.is_none());
 }
 
 #[test]

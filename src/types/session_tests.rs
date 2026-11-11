@@ -1162,6 +1162,7 @@ fn snapshot_session_json_session_meta_with_provider_identity() {
                 model_config: "zen".to_string(),
                 model: "glm-5.1".to_string(),
                 base_url: "https://opencode.ai/zen/go/v1/".to_string(),
+                base_url_query_digest: Some("b".repeat(64)),
                 api_type: "chat_completions".to_string(),
                 provider: Some("opencode".to_string()),
                 routing: vec!["openrouter".to_string()],

@@ -240,6 +240,7 @@ const fn classify_settings_error(error: &SettingsError) -> u8 {
     match error {
         SettingsError::InvalidModelName { .. }
         | SettingsError::InvalidModelBaseUrl { .. }
+        | SettingsError::InvalidModelApiKeyEnv { .. }
         | SettingsError::DuplicateModelName { .. }
         | SettingsError::InvalidProfileName { .. }
         | SettingsError::ProfileModelsUnsupported { .. }

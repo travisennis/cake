@@ -133,6 +133,43 @@ api_key_env = "MY_KEY"
 }
 
 #[test]
+fn test_model_api_key_env_must_be_a_variable_name() {
+    let dir = create_project_settings("");
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
+name = "pasted"
+model = "test/model"
+base_url = "https://example.com"
+api_key_env = "sk-pasted-secret"
+"#,
+    );
+
+    let error = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(dir.path()))
+    })
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        SettingsError::InvalidModelApiKeyEnv { ref name, .. } if name == "pasted"
+    ));
+    assert!(error.to_string().contains("api_key_env"));
+    assert!(!error.to_string().contains("sk-pasted-secret"));
+}
+
+#[test]
+fn test_api_key_env_name_validation_accepts_conventional_names() {
+    for valid in ["KEY", "_KEY", "KEY_1", "CAKE_TEST_KEY"] {
+        assert!(is_valid_api_key_env(valid), "{valid}");
+    }
+    for invalid in ["", "1KEY", "KEY-NAME", "KEY NAME", "sk-pasted-secret"] {
+        assert!(!is_valid_api_key_env(invalid), "{invalid}");
+    }
+}
+
+#[test]
 fn test_project_models_are_rejected() {
     let home = create_home_dir();
     let project_dir = create_project_settings(

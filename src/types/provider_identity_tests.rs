@@ -5,6 +5,7 @@ fn env_identity() -> ProviderIdentity {
         model_config: "zen".to_string(),
         model: "glm-5.1".to_string(),
         base_url: "https://opencode.ai/zen/go/v1/".to_string(),
+        base_url_query_digest: None,
         api_type: "chat_completions".to_string(),
         provider: Some("opencode".to_string()),
         routing: Vec::new(),
@@ -22,6 +23,7 @@ fn identity_serializes_only_present_optional_fields() {
     assert_eq!(json["credential"]["name"], "OPENCODE_ZEN_API_TOKEN");
     assert!(json.get("routing").is_none());
     assert!(json.get("request_shape").is_none());
+    assert!(json.get("base_url_query_digest").is_none());
     assert_eq!(json["api_type"], "chat_completions");
     assert_eq!(json["provider"], "opencode");
 
@@ -48,6 +50,7 @@ fn codex_identity_serializes_account_digest_without_a_token_field() {
 #[test]
 fn differences_name_every_changed_non_secret_field() {
     let stored = ProviderIdentity {
+        base_url_query_digest: Some("query-a".to_string()),
         request_shape: ProviderRequestShape {
             temperature: Some(0.7),
             max_output_tokens: Some(8_000),
@@ -58,6 +61,7 @@ fn differences_name_every_changed_non_secret_field() {
     };
     let current = ProviderIdentity {
         base_url: "https://api.example.invalid/v1".to_string(),
+        base_url_query_digest: Some("query-b".to_string()),
         api_type: "responses".to_string(),
         provider: None,
         credential: ProviderCredentialSource::Env {
@@ -81,6 +85,7 @@ fn differences_name_every_changed_non_secret_field() {
         fields,
         vec![
             "base_url",
+            "base_url_query_digest",
             "api_type",
             "provider",
             "credential",

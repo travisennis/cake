@@ -3,9 +3,10 @@
 //! The snapshot distinguishes a credential destination without storing a
 //! credential. It records the configured `[[models]]` entry, endpoint, wire
 //! format, provider strategy, routing hints, credential kind, and the
-//! request-shape controls that affect cache and wire behavior. Credential
-//! values, bearer tokens, authorization headers, and raw provider-header
-//! values never appear here.
+//! request-shape controls that affect cache and wire behavior. A non-empty
+//! endpoint query is recorded only as a one-way digest. Credential values,
+//! bearer tokens, authorization headers, raw provider-header values, and raw
+//! queries never appear here.
 
 use std::fmt::{self, Display};
 
@@ -96,8 +97,14 @@ pub struct ProviderIdentity {
     pub model_config: String,
     /// The provider's model identifier.
     pub model: String,
-    /// Canonical endpoint with userinfo and fragment removed.
+    /// Canonical endpoint with query, fragment, and userinfo removed.
     pub base_url: String,
+    /// One-way SHA-256 digest of the exact configured query, when non-empty.
+    ///
+    /// The raw query can affect upstream routing or carry a credential, so it
+    /// is never persisted; the digest makes a query-only change a mismatch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url_query_digest: Option<String>,
     /// Wire format, using the same vocabulary as `[[models]].api_type`.
     pub api_type: String,
     /// Resolved provider strategy, when one applies.
@@ -151,6 +158,12 @@ impl ProviderIdentity {
             "base_url",
             &self.base_url,
             &current.base_url,
+        );
+        push_optional_difference(
+            &mut differences,
+            "base_url_query_digest",
+            self.base_url_query_digest.as_ref(),
+            current.base_url_query_digest.as_ref(),
         );
         push_difference(
             &mut differences,

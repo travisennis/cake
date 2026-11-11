@@ -1141,6 +1141,9 @@ pub enum SettingsError {
     #[error("Invalid model configuration '{name}': {reason}")]
     InvalidModelBaseUrl { name: String, reason: String },
 
+    #[error("Invalid model configuration '{name}': {reason}")]
+    InvalidModelApiKeyEnv { name: String, reason: String },
+
     #[error("Duplicate model name '{name}' in settings")]
     DuplicateModelName { name: String },
 
@@ -1873,6 +1876,18 @@ impl SettingsLoader {
                 });
             }
 
+            // `api_key_env` is persisted verbatim in the session provider
+            // identity, so reject a pasted value or other non-variable text
+            // before it can reach a snapshot or a mismatch diagnostic.
+            if !is_valid_api_key_env(&def.api_key_env) {
+                return Err(SettingsError::InvalidModelApiKeyEnv {
+                    name: def.name.clone(),
+                    reason: "api_key_env must name an environment variable (ASCII letters, \
+                             digits, and underscores, not starting with a digit)"
+                        .to_string(),
+                });
+            }
+
             // Check for duplicates within this file
             if !seen.insert(def.name.as_str()) {
                 return Err(SettingsError::DuplicateModelName {
@@ -1889,6 +1904,20 @@ impl SettingsLoader {
 
         Ok(())
     }
+}
+
+/// Whether `name` is a conventional environment variable name.
+///
+/// This rejects a pasted credential or arbitrary text without validating that
+/// the variable exists. The caller never includes the rejected value in the
+/// error.
+fn is_valid_api_key_env(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|character| character.is_ascii_alphanumeric() || character == '_')
 }
 
 /// One profile overlay plus the file and trust class it came from.
