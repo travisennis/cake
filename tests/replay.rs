@@ -17,6 +17,9 @@ use std::{
     process::Stdio,
 };
 
+use base64::Engine as _;
+use sha2::{Digest, Sha256};
+
 use support::TestEnv;
 
 const SESSION_ID: &str = "550e8400-e29b-41d4-a716-446655440000";
@@ -662,6 +665,66 @@ fn compaction_record() -> serde_json::Value {
             "basis": "content_class"
         }
     })
+}
+
+#[test]
+fn replay_hydrates_and_strips_a_checkpoint_retained_image() {
+    let env = cake_env();
+    let image_bytes = b"replay retained image";
+    let digest = hex::encode(Sha256::digest(image_bytes));
+    let blob_dir = env
+        .data_dir
+        .join("sessions")
+        .join(format!("{SESSION_ID}.blobs"));
+    fs::create_dir_all(&blob_dir).expect("failed to create blob directory");
+    fs::write(blob_dir.join(&digest), image_bytes).expect("failed to write blob");
+
+    let mut checkpoint = compaction_record();
+    checkpoint["retained"]
+        .as_array_mut()
+        .expect("retained array")
+        .push(serde_json::json!({
+            "type": "message",
+            "role": "user",
+            "content": "retained image",
+            "images": [{
+                "media_type": "image/png",
+                "content_id": digest,
+            }]
+        }));
+    let mut fixture = session_fixture();
+    fixture.insert(fixture.len() - 1, checkpoint);
+    let lines: Vec<String> = fixture.iter().map(ToString::to_string).collect();
+    fs::write(session_path(&env, SESSION_ID), lines.join("\n") + "\n")
+        .expect("failed to write checkpoint image fixture");
+
+    let output = env
+        .command()
+        .args(["--output-format", "stream-json", "replay", SESSION_ID])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute command");
+
+    assert!(
+        output.status.success(),
+        "replay should exit 0, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let records = parse_stream(&output.stdout);
+    let checkpoint = records
+        .iter()
+        .find(|record| record["type"] == "compaction")
+        .expect("replay emits the checkpoint");
+    let image = &checkpoint["retained"][3]["images"][0];
+    assert_eq!(
+        image["data_base64"],
+        base64::engine::general_purpose::STANDARD.encode(image_bytes)
+    );
+    assert!(
+        image.get("content_id").is_none(),
+        "stream output keeps the pre-blob shape: {image}"
+    );
 }
 
 #[test]

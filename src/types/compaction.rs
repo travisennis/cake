@@ -421,7 +421,9 @@ impl CompactionData {
     /// The returned bytes include the record envelope and trailing newline, so
     /// validation and a writer commit enforce the same ceiling on the same
     /// bytes. Serialization happens once: a writer can append these bytes
-    /// directly.
+    /// directly. Callers with retained images must externalize them first with
+    /// [`crate::config::BlobStore::externalize_checkpoint`]; this method
+    /// measures whatever image fields are present.
     ///
     /// # Errors
     ///

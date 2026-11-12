@@ -136,19 +136,21 @@ impl SessionWriter {
     ///
     /// Structural validation runs first and leaves the writer untouched on a
     /// caller error. The whole write then holds the shared mutex and the
-    /// advisory lock through serialization, the newline, the flush, and
-    /// `sync_data`; [`CompactionData::to_record_bytes`] is called inside that
-    /// critical section so a serialization or size failure is an append failure
-    /// that terminally fails every clone. The record ceiling therefore applies
-    /// to exactly the bytes written, and the original error is preserved.
+    /// advisory lock through externalization, serialization, the newline, the
+    /// flush, and `sync_data`. Retained images are cloned and externalized
+    /// before [`CompactionData::to_record_bytes`] measures the record, so the
+    /// ceiling applies to references rather than image bytes. A blob,
+    /// serialization, or size failure is an append failure that terminally
+    /// fails every clone.
     pub fn commit_checkpoint(&self, checkpoint: &CompactionData) -> anyhow::Result<()> {
         checkpoint.validate_structure()?;
         self.write(|buffer| {
+            let externalized = self.blobs.externalize_checkpoint(checkpoint)?;
             #[cfg(test)]
             self.inject_fault(WriterFault::Serialize)?;
             // Serialize while the mutex is held: the plan requires a failure
             // before serialization completion to fail the shared writer.
-            let bytes = checkpoint.to_record_bytes()?;
+            let bytes = externalized.to_record_bytes()?;
             buffer
                 .write_all(&bytes)
                 .context("Failed to write compaction checkpoint")?;
@@ -2168,6 +2170,166 @@ mod tests {
             hydrated.images[0].data_base64,
             base64::engine::general_purpose::STANDARD.encode(bytes)
         );
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one test proves the inline ceiling, externalized write, blob layout, and hydration restore together"
+    )]
+    #[test]
+    fn writer_externalizes_checkpoint_images_before_the_size_ceiling_and_hydration_restores_them() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let session = make_test_session();
+        let file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
+        let writer = test_writer(&dir, file);
+        let first_bytes =
+            vec![0x5a; crate::config::settings::DEFAULT_READ_IMAGE_MAX_BYTES as usize];
+        let second_bytes =
+            vec![0x3c; crate::config::settings::DEFAULT_READ_IMAGE_MAX_BYTES as usize];
+        let first_encoded = base64::engine::general_purpose::STANDARD.encode(&first_bytes);
+        let second_encoded = base64::engine::general_purpose::STANDARD.encode(&second_bytes);
+        let images = vec![
+            ImagePart {
+                media_type: "image/png".to_string(),
+                data_base64: first_encoded.clone(),
+                content_id: None,
+            },
+            ImagePart {
+                media_type: "image/png".to_string(),
+                data_base64: second_encoded.clone(),
+                content_id: None,
+            },
+        ];
+        let mut retained = test_support::message(Role::User, "two images");
+        let crate::types::compaction::RetainedConversationRecord::Message(data) =
+            &mut retained.record
+        else {
+            panic!("retained message shape");
+        };
+        data.images = images;
+        let mut checkpoint = test_support::checkpoint("checkpoint-1", "summary", vec![retained]);
+        checkpoint.session_id = session.id.to_string();
+
+        let inline_error = checkpoint
+            .to_record_bytes()
+            .expect_err("two inline maximum-size images must exceed the ceiling");
+        assert!(
+            inline_error
+                .to_string()
+                .contains("the limit is 8388608 bytes"),
+            "{inline_error}"
+        );
+        let store = BlobStore::new(dir.path().join("blobs"));
+        let externalized = store
+            .externalize_checkpoint(&checkpoint)
+            .expect("externalize two checkpoint images");
+        let externalized_bytes = externalized.to_record_bytes().expect("fits by reference");
+        assert!(externalized_bytes.len() <= crate::types::compaction::MAX_CHECKPOINT_RECORD_BYTES);
+        println!(
+            "inline checkpoint rejected: {inline_error}; externalized checkpoint: {} bytes",
+            externalized_bytes.len()
+        );
+
+        writer
+            .commit_checkpoint(&checkpoint)
+            .expect("commit externalizes before measuring");
+        drop(writer);
+
+        let raw = Session::load(&path).expect("raw session load");
+        let stored = raw
+            .latest_checkpoint_index()
+            .and_then(|index| match &raw.records[index] {
+                SessionRecord::Compaction(checkpoint) => Some(checkpoint.clone()),
+                _ => None,
+            })
+            .expect("stored checkpoint");
+        let mut stored_bytes =
+            serde_json::to_vec(&SessionRecord::Compaction(stored.clone())).expect("serialize");
+        stored_bytes.push(b'\n');
+        assert_eq!(stored_bytes, externalized_bytes, "write the measured bytes");
+        let crate::types::compaction::RetainedConversationRecord::Message(stored_image) =
+            &stored.retained[0].record
+        else {
+            panic!("stored retained message shape");
+        };
+        assert!(
+            stored_image
+                .images
+                .iter()
+                .all(|image| image.data_base64.is_empty())
+        );
+        assert!(
+            stored_image
+                .images
+                .iter()
+                .all(|image| image.content_id.is_some())
+        );
+        assert_eq!(fs::read_dir(dir.path().join("blobs")).unwrap().count(), 2);
+
+        let crate::types::compaction::RetainedConversationRecord::Message(original) =
+            &checkpoint.retained[0].record
+        else {
+            panic!("live retained message shape");
+        };
+        assert_eq!(original.images[0].data_base64, first_encoded);
+        assert_eq!(original.images[1].data_base64, second_encoded);
+
+        let mut hydrated = raw;
+        store
+            .hydrate_session(&session.id.to_string(), &mut hydrated.records)
+            .expect("hydrate stored checkpoint");
+        let stored = hydrated
+            .latest_checkpoint_index()
+            .and_then(|index| match &hydrated.records[index] {
+                SessionRecord::Compaction(checkpoint) => Some(checkpoint),
+                _ => None,
+            })
+            .expect("hydrated checkpoint");
+        let crate::types::compaction::RetainedConversationRecord::Message(stored_image) =
+            &stored.retained[0].record
+        else {
+            panic!("hydrated retained message shape");
+        };
+        assert_eq!(stored_image.images[0].data_base64, first_encoded);
+        assert_eq!(stored_image.images[1].data_base64, second_encoded);
+    }
+
+    #[test]
+    fn writer_fails_terminally_when_a_checkpoint_image_has_no_payload() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let session = make_test_session();
+        let file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
+        let writer = test_writer(&dir, file);
+        let before = fs::read(&path).unwrap();
+        let mut retained = test_support::message(Role::User, "look");
+        let crate::types::compaction::RetainedConversationRecord::Message(data) =
+            &mut retained.record
+        else {
+            panic!("retained message shape");
+        };
+        data.images.push(ImagePart {
+            media_type: "image/png".to_string(),
+            data_base64: String::new(),
+            content_id: None,
+        });
+        let mut checkpoint = test_support::checkpoint("checkpoint-1", "summary", vec![retained]);
+        checkpoint.session_id = session.id.to_string();
+
+        let error = writer
+            .commit_checkpoint(&checkpoint)
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            error.contains(
+                "checkpoint retained 0 message image 0 has neither inline bytes nor a content id"
+            ),
+            "{error}"
+        );
+        assert!(writer.is_failed());
+        assert_eq!(fs::read(&path).unwrap(), before);
     }
 
     #[test]

@@ -282,13 +282,18 @@ fn append_checkpoint(
         summary_time_ms: payload.summary_time_ms,
     };
 
-    // Validate before the writer is used, so a rejected checkpoint is an input
-    // error with the file untouched. `commit_checkpoint` repeats the same
-    // validation under its mutex as the M1 durability contract.
+    // Externalize before measuring: a checkpoint whose inline images would
+    // exceed the record ceiling is accepted when its references fit. The
+    // writer re-externalizes and re-verifies under its lock, and repeats the
+    // validation as the M1 durability contract.
+    let blobs = data_dir.session_blob_store(requested);
+    let checkpoint = blobs.externalize_checkpoint(&checkpoint).map_err(|error| {
+        CheckpointError::input(format!("checkpoint payload was rejected: {error:#}"))
+    })?;
     checkpoint.to_record_bytes().map_err(|error| {
         CheckpointError::input(format!("checkpoint payload was rejected: {error:#}"))
     })?;
-    SessionWriter::new(file, Arc::new(data_dir.session_blob_store(requested)))
+    SessionWriter::new(file, Arc::new(blobs))
         .commit_checkpoint(&checkpoint)
         .map_err(|error| CheckpointError::Append {
             session_id: session_id.clone(),

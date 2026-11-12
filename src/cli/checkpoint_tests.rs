@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use base64::Engine as _;
 use chrono::Utc;
 use clap::CommandFactory;
 use serde_json::{Value, json};
@@ -9,7 +10,7 @@ use tempfile::TempDir;
 
 use super::*;
 use crate::config::session::CURRENT_FORMAT_VERSION;
-use crate::types::compaction::{EstimateBasis, SummaryUsage};
+use crate::types::compaction::{EstimateBasis, RetainedConversationRecord, SummaryUsage};
 use crate::types::session::{FunctionCallData, FunctionCallOutputData, MessageData};
 use crate::types::{GitState, Role};
 
@@ -348,6 +349,19 @@ fn invalid_payloads_are_input_errors_that_write_nothing() {
             value
         }),
     ));
+    cases.push((
+        "retained image without a payload",
+        payload_bytes(&{
+            let mut value = payload();
+            value["retained"] = json!([{
+                "type": "message",
+                "role": "user",
+                "content": "look",
+                "images": [{"media_type": "image/png"}]
+            }]);
+            value
+        }),
+    ));
 
     for (name, input) in cases {
         let before = std::fs::read(&path).unwrap();
@@ -371,6 +385,99 @@ fn invalid_payloads_are_input_errors_that_write_nothing() {
 
     // A rejected payload leaves the session usable for a valid append.
     append(&dd, &payload()).unwrap();
+}
+
+#[test]
+fn stdin_payload_just_under_the_cap_is_accepted_after_externalization() {
+    let (dd, _tmp) = make_data_dir();
+    let path = session_path(&dd);
+    basic_session(&path, Some("gpt-test"));
+    let image_bytes = vec![0x42; 6 * 1024 * 1024 - 16 * 1024];
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&image_bytes);
+    let mut large = payload();
+    large["retained"] = json!([{
+        "type": "message",
+        "role": "user",
+        "content": "look",
+        "images": [{
+            "media_type": "image/png",
+            "data_base64": encoded
+        }]
+    }]);
+
+    let mut input = payload_bytes(&large);
+    let payload_cap = usize::try_from(MAX_PAYLOAD_BYTES).expect("payload cap fits usize");
+    assert!(input.len() < payload_cap);
+    let target = payload_cap - 1;
+    if input.len() < target {
+        let filler = target - input.len();
+        let summary = large["summary"]
+            .as_str()
+            .expect("summary string")
+            .to_string()
+            + &"x".repeat(filler);
+        large["summary"] = json!(summary);
+        input = payload_bytes(&large);
+    }
+    assert_eq!(input.len(), target, "payload is just under the stdin cap");
+
+    let outcome = append_checkpoint(&dd, session_uuid(), &input)
+        .expect("externalization must make the record fit");
+    assert_eq!(outcome.retained_count, 1);
+
+    let raw = Session::load(&path).expect("raw session load");
+    let checkpoint = raw.context_seed().checkpoint.expect("stored checkpoint");
+    let RetainedConversationRecord::Message(message) = &checkpoint.retained[0].record else {
+        panic!("retained message shape");
+    };
+    assert!(message.images[0].data_base64.is_empty());
+    let content_id = message.images[0]
+        .content_id
+        .as_deref()
+        .expect("stored content id");
+    let mut record_bytes = serde_json::to_vec(&SessionRecord::Compaction(checkpoint.clone()))
+        .expect("serialize stored checkpoint");
+    record_bytes.push(b'\n');
+    assert!(record_bytes.len() <= MAX_CHECKPOINT_RECORD_BYTES);
+
+    let blobs: Vec<_> = std::fs::read_dir(dd.session_blob_dir(session_uuid()))
+        .expect("blob directory")
+        .collect();
+    assert_eq!(blobs.len(), 1, "one image should store one blob");
+    let blob_path = blobs[0].as_ref().expect("blob entry").path();
+    assert_eq!(
+        blob_path.file_name().and_then(|name| name.to_str()),
+        Some(content_id)
+    );
+    assert_eq!(std::fs::read(&blob_path).expect("blob bytes"), image_bytes);
+
+    let hydrated = dd
+        .load_session(session_uuid())
+        .expect("hydrate session")
+        .expect("session exists");
+    let restored = hydrated
+        .context_seed()
+        .checkpoint
+        .expect("hydrated checkpoint");
+    let RetainedConversationRecord::Message(message) = &restored.retained[0].record else {
+        panic!("hydrated retained message shape");
+    };
+    assert_eq!(message.images[0].data_base64, encoded);
+    let inline_error = restored
+        .to_record_bytes()
+        .expect_err("the hydrated inline record must exceed the ceiling");
+    assert!(
+        inline_error
+            .to_string()
+            .contains("the limit is 8388608 bytes"),
+        "{inline_error}"
+    );
+    println!(
+        "stdin payload: {} bytes; externalized record: {} bytes; inline record rejected: {}",
+        input.len(),
+        record_bytes.len(),
+        inline_error
+    );
 }
 
 #[test]

@@ -1462,6 +1462,10 @@ mod tests {
         });
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one fork test proves message and checkpoint references, raw shape, and shared inodes together"
+    )]
     #[test]
     fn fork_hard_links_referenced_blobs_and_writes_content_ids() {
         temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
@@ -1471,6 +1475,31 @@ mod tests {
             let working_dir = tempfile::tempdir().expect("temp working dir");
             let (source, content_id) =
                 saved_session_with_image(&data_dir, working_dir.path(), false);
+            let checkpoint_bytes = b"fork checkpoint image";
+            let checkpoint_content_id = data_dir
+                .session_blob_store(source.id)
+                .put(checkpoint_bytes)
+                .expect("checkpoint blob");
+            let mut retained = test_support::message(crate::types::Role::User, "retained look");
+            let crate::types::compaction::RetainedConversationRecord::Message(data) =
+                &mut retained.record
+            else {
+                panic!("retained message shape");
+            };
+            data.images.push(ImagePart {
+                media_type: "image/png".to_string(),
+                data_base64: String::new(),
+                content_id: Some(checkpoint_content_id.as_str().to_owned()),
+            });
+            let mut checkpoint =
+                test_support::checkpoint("checkpoint-1", "checkpoint retention", vec![retained]);
+            checkpoint.session_id = source.id.to_string();
+            {
+                let mut file = Session::open_for_append(&data_dir.session_path(source.id))
+                    .expect("source session append");
+                Session::append_record(&mut file, &SessionRecord::Compaction(checkpoint))
+                    .expect("append checkpoint record");
+            }
 
             let run = build_for_mode(
                 &cli,
@@ -1490,7 +1519,13 @@ mod tests {
                 panic!("a fork persists a new session");
             };
             assert_eq!(*blob_source, Some(source.id));
-            assert_eq!(image_content_ids(seed_records), vec![content_id.clone()]);
+            assert_eq!(
+                image_content_ids(seed_records),
+                vec![
+                    content_id.clone(),
+                    checkpoint_content_id.as_str().to_owned()
+                ]
+            );
 
             let file = crate::cli::execute_persistence_plan(
                 run.persistence,
@@ -1506,30 +1541,40 @@ mod tests {
                 .load_session(fork_id)
                 .expect("fork should load")
                 .expect("fork exists");
-            assert_eq!(image_content_ids(&forked.records), vec![content_id.clone()]);
+            assert_eq!(
+                image_content_ids(&forked.records),
+                vec![
+                    content_id.clone(),
+                    checkpoint_content_id.as_str().to_owned()
+                ]
+            );
             let raw = std::fs::read_to_string(data_dir.session_path(fork_id))
                 .expect("fork JSONL should read");
             assert!(raw.contains(&content_id));
+            assert!(raw.contains(checkpoint_content_id.as_str()));
             assert!(
                 !raw.contains("data_base64"),
                 "fork seeds must be written by reference"
             );
 
-            let source_blob = data_dir.session_blob_dir(source.id).join(&content_id);
-            let fork_blob = data_dir.session_blob_dir(fork_id).join(&content_id);
-            assert_eq!(
-                std::fs::read(&source_blob).expect("source blob"),
-                b"fork image"
-            );
-            assert_eq!(std::fs::read(&fork_blob).expect("fork blob"), b"fork image");
+            let expected = [
+                (content_id.as_str(), b"fork image".as_slice()),
+                (checkpoint_content_id.as_str(), checkpoint_bytes.as_slice()),
+            ];
+            for (id, bytes) in expected {
+                let source_blob = data_dir.session_blob_dir(source.id).join(id);
+                let fork_blob = data_dir.session_blob_dir(fork_id).join(id);
+                assert_eq!(std::fs::read(&source_blob).expect("source blob"), bytes);
+                assert_eq!(std::fs::read(&fork_blob).expect("fork blob"), bytes);
 
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::MetadataExt as _;
-                let source_meta = std::fs::metadata(&source_blob).expect("source metadata");
-                let fork_meta = std::fs::metadata(&fork_blob).expect("fork metadata");
-                assert_eq!(source_meta.ino(), fork_meta.ino());
-                assert!(source_meta.nlink() >= 2);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt as _;
+                    let source_meta = std::fs::metadata(&source_blob).expect("source metadata");
+                    let fork_meta = std::fs::metadata(&fork_blob).expect("fork metadata");
+                    assert_eq!(source_meta.ino(), fork_meta.ino());
+                    assert!(source_meta.nlink() >= 2);
+                }
             }
         });
     }

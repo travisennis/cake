@@ -232,8 +232,9 @@ impl BlobStore {
         Ok(bytes)
     }
 
-    /// Return a copy of `record` whose message and function-call-output
-    /// images refer to blobs instead of carrying inline bytes.
+    /// Return a copy of `record` whose message, function-call-output, and
+    /// checkpoint-retained images refer to blobs instead of carrying inline
+    /// bytes.
     ///
     /// An image with neither inline bytes nor a content id is rejected. An
     /// image with both must name the digest of its inline bytes, and the blob
@@ -254,7 +255,46 @@ impl BlobStore {
             SessionRecord::FunctionCallOutput(data) => {
                 self.externalize_images(&mut data.images, "function call output")?;
             },
+            SessionRecord::Compaction(checkpoint) => {
+                let externalized_checkpoint = self.externalize_checkpoint(checkpoint)?;
+                *checkpoint = externalized_checkpoint;
+            },
             _ => {},
+        }
+        Ok(externalized)
+    }
+
+    /// Return a copy of `checkpoint` whose retained message and
+    /// function-call-output images refer to blobs instead of carrying inline
+    /// bytes.
+    ///
+    /// An image with neither inline bytes nor a content id is rejected. The
+    /// original checkpoint is unchanged, so a live checkpoint can retain the
+    /// bytes it measured before persistence. Retained output text stays inline.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a retained image cannot be decoded, its declared
+    /// content id does not match, its blob is missing or corrupt, or it has no
+    /// payload reference. Error text never includes image bytes.
+    pub fn externalize_checkpoint(
+        &self,
+        checkpoint: &CompactionData,
+    ) -> anyhow::Result<CompactionData> {
+        let mut externalized = checkpoint.clone();
+        for (retained_index, retained) in externalized.retained.iter_mut().enumerate() {
+            match &mut retained.record {
+                RetainedConversationRecord::Message(data) => self.externalize_images(
+                    &mut data.images,
+                    &format!("checkpoint retained {retained_index} message"),
+                )?,
+                RetainedConversationRecord::FunctionCallOutput(data) => self.externalize_images(
+                    &mut data.images,
+                    &format!("checkpoint retained {retained_index} function call output"),
+                )?,
+                RetainedConversationRecord::Reasoning(_)
+                | RetainedConversationRecord::FunctionCall(_) => {},
+            }
         }
         Ok(externalized)
     }
@@ -826,7 +866,7 @@ mod tests {
 
     use super::*;
     use crate::types::Role;
-    use crate::types::compaction::test_support;
+    use crate::types::compaction::{RetainedRecord, test_support};
     use crate::types::session::{FunctionCallOutputData, MessageData};
 
     fn new_store() -> (BlobStore, TempDir) {
@@ -1154,6 +1194,22 @@ mod tests {
         })
     }
 
+    fn retained_output_with_images(images: Vec<ImagePart>) -> RetainedRecord {
+        RetainedRecord {
+            record: RetainedConversationRecord::FunctionCallOutput(FunctionCallOutputData {
+                call_id: "call-1".to_string(),
+                output: "ReadImage /tmp/image.png".to_string(),
+                replay: None,
+                timestamp: None,
+                images,
+            }),
+            pin: None,
+            source_task: None,
+            origin: None,
+            skill_read: None,
+        }
+    }
+
     #[test]
     fn externalize_and_hydrate_round_trip_message_and_output_images() {
         let (store, _temporary) = new_store();
@@ -1241,6 +1297,102 @@ mod tests {
     }
 
     #[test]
+    fn externalize_and_hydrate_round_trip_checkpoint_retained_images() {
+        let (store, _temporary) = new_store();
+        let message_bytes = b"retained message image";
+        let output_bytes = b"retained output image";
+        let mut retained_message = test_support::message(Role::User, "look");
+        let RetainedConversationRecord::Message(data) = &mut retained_message.record else {
+            panic!("retained message shape");
+        };
+        data.images.push(image_with_bytes(message_bytes));
+        let retained_output = retained_output_with_images(vec![image_with_bytes(output_bytes)]);
+        let call = test_support::exchange("call-1", "out").remove(0);
+        let checkpoint = test_support::checkpoint(
+            "checkpoint-1",
+            "summary",
+            vec![retained_message, call, retained_output],
+        );
+
+        let externalized = store
+            .externalize_checkpoint(&checkpoint)
+            .expect("externalize checkpoint");
+        let RetainedConversationRecord::Message(message) = &externalized.retained[0].record else {
+            panic!("retained message shape");
+        };
+        let message_id = message.images[0].content_id.clone().expect("message id");
+        assert!(message.images[0].data_base64.is_empty());
+        let RetainedConversationRecord::FunctionCallOutput(output) =
+            &externalized.retained[2].record
+        else {
+            panic!("retained output shape");
+        };
+        let output_id = output.images[0].content_id.clone().expect("output id");
+        assert!(output.images[0].data_base64.is_empty());
+        assert_eq!(output.output, "ReadImage /tmp/image.png");
+        assert_ne!(message_id, output_id);
+        assert_eq!(fs::read_dir(store.root()).expect("read root").count(), 2);
+
+        let RetainedConversationRecord::Message(original) = &checkpoint.retained[0].record else {
+            panic!("original retained message shape");
+        };
+        assert_eq!(
+            original.images[0].data_base64,
+            base64::engine::general_purpose::STANDARD.encode(message_bytes),
+            "externalization must not mutate the live checkpoint"
+        );
+
+        let mut records = vec![SessionRecord::Compaction(externalized)];
+        store
+            .hydrate_session("session-1", &mut records)
+            .expect("hydrate checkpoint");
+        let SessionRecord::Compaction(hydrated) = &records[0] else {
+            panic!("checkpoint shape");
+        };
+        let RetainedConversationRecord::Message(message) = &hydrated.retained[0].record else {
+            panic!("hydrated message shape");
+        };
+        assert_eq!(
+            message.images[0].data_base64,
+            base64::engine::general_purpose::STANDARD.encode(message_bytes)
+        );
+        let RetainedConversationRecord::FunctionCallOutput(output) = &hydrated.retained[2].record
+        else {
+            panic!("hydrated output shape");
+        };
+        assert_eq!(
+            output.images[0].data_base64,
+            base64::engine::general_purpose::STANDARD.encode(output_bytes)
+        );
+    }
+
+    #[test]
+    fn checkpoint_externalize_rejects_an_image_without_a_payload_reference() {
+        let (store, _temporary) = new_store();
+        let mut retained = test_support::message(Role::User, "look");
+        let RetainedConversationRecord::Message(data) = &mut retained.record else {
+            panic!("retained message shape");
+        };
+        data.images.push(ImagePart {
+            media_type: "image/png".to_string(),
+            data_base64: String::new(),
+            content_id: None,
+        });
+        let checkpoint = test_support::checkpoint("checkpoint-1", "summary", vec![retained]);
+
+        let error = store
+            .externalize_checkpoint(&checkpoint)
+            .expect_err("empty retained image must fail");
+        assert!(
+            format!("{error:#}").contains(
+                "checkpoint retained 0 message image 0 has neither inline bytes nor a content id"
+            ),
+            "{error:#}"
+        );
+        assert!(!store.root().exists());
+    }
+
+    #[test]
     fn hydrate_rejects_a_missing_blob_and_a_mismatched_inline_id() {
         let (store, _temporary) = new_store();
         let missing = ContentId::from_bytes(b"missing image");
@@ -1304,6 +1456,37 @@ mod tests {
             data.images[0].data_base64,
             base64::engine::general_purpose::STANDARD.encode(bytes)
         );
+    }
+
+    #[test]
+    fn hydrate_keeps_a_legacy_inline_checkpoint_image_without_a_blob() {
+        let (store, _temporary) = new_store();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(b"legacy image");
+        let mut retained = test_support::message(Role::User, "look");
+        let RetainedConversationRecord::Message(data) = &mut retained.record else {
+            panic!("retained message shape");
+        };
+        data.images.push(ImagePart {
+            media_type: "image/png".to_string(),
+            data_base64: encoded.clone(),
+            content_id: None,
+        });
+        let checkpoint = test_support::checkpoint("checkpoint-1", "summary", vec![retained]);
+        let mut records = vec![SessionRecord::Compaction(checkpoint)];
+
+        store
+            .hydrate_session("session-1", &mut records)
+            .expect("legacy inline checkpoint hydrates");
+
+        let SessionRecord::Compaction(checkpoint) = &records[0] else {
+            panic!("checkpoint shape");
+        };
+        let RetainedConversationRecord::Message(data) = &checkpoint.retained[0].record else {
+            panic!("retained message shape");
+        };
+        assert_eq!(data.images[0].data_base64, encoded);
+        assert_eq!(data.images[0].content_id, None);
+        assert!(!store.root().exists(), "hydration must not create a store");
     }
 
     #[test]

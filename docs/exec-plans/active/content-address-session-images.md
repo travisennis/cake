@@ -19,8 +19,8 @@ Tool-output externalization is out of scope for this task. At current defaults B
 - [x] Milestone 2: add optional `ImagePart.content_id`, carry it through the conversions, externalize images in the session writer, and hydrate on load and replay.
 - [x] Milestone 2: hard-link parent blobs into a fork and prove a missing blob fails before the provider request.
 - [x] Milestone 2: prove an image round trip through a real CLI run with a mock provider.
-- [ ] Milestone 3: externalize retained checkpoint images before the eight-MiB check and in `cake sessions checkpoint`.
-- [ ] Milestone 3: add checkpoint, fork, replay, and legacy-inline regression tests.
+- [x] Milestone 3: externalize retained checkpoint images before the eight-MiB check and in `cake sessions checkpoint`.
+- [x] Milestone 3: add checkpoint, fork, replay, and legacy-inline regression tests.
 - [ ] Milestone 4: add payload-first recovery at resume: scan the session, remove unreferenced blobs and stale temporary files, and never touch referenced blobs.
 - [ ] Milestone 4: add the read-only `cake debug blobs` diagnostics command and its tests.
 - [ ] Milestone 5: update `docs/integrations.md`, `docs/security.md`, `docs/configuration.md`, `ARCHITECTURE.md`, and the record snapshots.
@@ -55,6 +55,9 @@ Milestone 2 core is implemented. `ImagePart` carries an optional `content_id`; t
 Fork provisioning is implemented. `SessionPersistencePlan::Create` carries `blob_source`; seed creation hard-links every referenced parent blob, externalizes legacy inline message and function-call-output images, and then writes the fork file by reference. A failure removes the incomplete child file and any blob directory the fork created, and a missing parent blob fails before the child file exists. `SessionRecord::image_parts` is the shared traversal for message, output, and checkpoint-retained images. The fork test asserts matching content ids, a shared inode, and a link count of at least two; the missing-blob test asserts no child file or blob directory is left behind.
 
 Milestone 2 is complete. `tests/session_images.rs` drives the real binary against a mock image-capable Responses provider: the model calls `ReadImage`, the second provider request carries the image, and the session stores one digest-named blob with a `content_id` and no `data_base64`. A resume hydrates the image and reaches the provider without duplicating the blob. Removing the blob or replacing its bytes makes resume fail before any provider request, with the session id and digest in stderr.
+
+Milestone 3 is complete. `BlobStore::externalize_checkpoint` clears retained message and function-call-output image bytes while leaving retained output text inline, and `externalize_record` routes checkpoint records through it so fork seed records are written by reference. `SessionWriter::commit_checkpoint` externalizes and re-verifies inside its locked critical section before measuring the framed record. `cake sessions checkpoint` externalizes before its pre-validation, so the eight-MiB ceiling applies to references. The writer size test rejects a 13,981,609-byte inline checkpoint and commits the same two maximum-size images as 719 bytes of references; the near-cap payload test accepts an 8,388,607-byte payload, writes a 22,169-byte externalized record, and confirms the hydrated 8,388,950-byte inline form is rejected. The fork test now includes a checkpoint-retained reference and verifies both parent and child blob inodes; the replay test hydrates and strips a checkpoint-retained
+image; the legacy-inline test confirms hydration does not create a blob directory.
 
 ## Context and Orientation
 
