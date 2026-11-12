@@ -365,7 +365,10 @@ async fn post_tool_use_persists_hook_record_while_session_locked() {
         },
     };
     let file = Session::create_on_disk(&session_path, &meta).unwrap();
-    let writer = SessionWriter::new(file);
+    let writer = SessionWriter::new(
+        file,
+        Arc::new(crate::config::BlobStore::new(dir.path().join("blobs"))),
+    );
 
     let source_path = dir.path().join("hooks.json");
     let command = HookCommand {

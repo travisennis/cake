@@ -289,6 +289,7 @@ fn render_image(
     images.push(ImagePart {
         media_type: media_type.to_string(),
         data_base64: data.to_string(),
+        content_id: None,
     });
 }
 

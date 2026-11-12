@@ -1887,6 +1887,7 @@ fn build_request_json_omits_history_images_for_a_text_only_model() {
         images: vec![ImagePart {
             media_type: "image/png".to_string(),
             data_base64: "QUJD".to_string(),
+            content_id: None,
         }],
     }];
 

@@ -114,7 +114,16 @@ impl CmdRunner for ReplayCommand {
         // `session_not_found`. `load_records` distinguishes missing files from
         // permission failures via `File::open`'s error kind.
         let path = data_dir.session_path(uuid);
-        let records = load_records(&path, uuid).map_err(fail)?;
+        let mut records = load_records(&path, uuid).map_err(fail)?;
+        data_dir
+            .session_blob_store(uuid)
+            .hydrate_session(&uuid.to_string(), &mut records)
+            .map_err(|error| {
+                fail(ReplayError::Corrupt(
+                    uuid.to_string(),
+                    format!("failed to hydrate session images: {error:#}"),
+                ))
+            })?;
         emit_records(records)
     }
 }
@@ -122,9 +131,13 @@ impl CmdRunner for ReplayCommand {
 fn emit_records(records: Vec<SessionRecord>) -> anyhow::Result<()> {
     // Replay mirrors the live stream vocabulary and preserves physical record
     // order. `turn_usage` records are emitted verbatim, including records
-    // written before the optional context-budget fields existed.
+    // written before the optional context-budget fields existed. References
+    // are stripped after hydration so stream consumers never see the blob
+    // shape.
     for record in records {
-        emit(&StreamRecord::from(record))?;
+        let mut stream = StreamRecord::from(record);
+        stream.strip_image_content_ids();
+        emit(&stream)?;
     }
     Ok(())
 }

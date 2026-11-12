@@ -415,6 +415,7 @@ fn test_image() -> crate::types::ImagePart {
     crate::types::ImagePart {
         media_type: "image/png".to_string(),
         data_base64: "iVBORw0KGgo=".to_string(),
+        content_id: None,
     }
 }
 

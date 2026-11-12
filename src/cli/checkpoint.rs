@@ -14,6 +14,7 @@
 //! derived boundary cannot disagree with the append it describes.
 
 use std::io::{IsTerminal, Read};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -287,7 +288,7 @@ fn append_checkpoint(
     checkpoint.to_record_bytes().map_err(|error| {
         CheckpointError::input(format!("checkpoint payload was rejected: {error:#}"))
     })?;
-    SessionWriter::new(file)
+    SessionWriter::new(file, Arc::new(data_dir.session_blob_store(requested)))
         .commit_checkpoint(&checkpoint)
         .map_err(|error| CheckpointError::Append {
             session_id: session_id.clone(),

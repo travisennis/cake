@@ -3,6 +3,7 @@ use crate::config::session::CURRENT_FORMAT_VERSION;
 use crate::types::compaction::{
     CHECKPOINT_VERSION, CompactionData, CompactionTrigger, EstimateBasis, EstimatedInput,
     MessageOrigin, ModelIdentity, PinReason, RetainedConversationRecord, RetainedRecord,
+    test_support,
 };
 use crate::types::conversation::{ReasoningContentKind, ReasoningSummary};
 use crate::types::usage::{InputTokensDetails, OutputTokensDetails, UsagePresence};
@@ -859,6 +860,7 @@ fn image_parts_roundtrip_through_stream_and_session_records() {
     let image = ImagePart {
         media_type: "image/png".to_string(),
         data_base64: "iVBORw0KGgo=".to_string(),
+        content_id: None,
     };
     let message = ConversationItem::Message {
         role: Role::User,
@@ -883,6 +885,107 @@ fn image_parts_roundtrip_through_stream_and_session_records() {
     assert_eq!(message_json["images"][0]["data_base64"], "iVBORw0KGgo=");
     let output_json = session_json_for(&output);
     assert_eq!(output_json["images"][0]["media_type"], "image/png");
+}
+
+#[test]
+fn externalized_image_serializes_by_reference_and_roundtrips() {
+    let content_id = "a".repeat(64);
+    let record = SessionRecord::Message(MessageData {
+        role: Role::User,
+        content: "look".to_string(),
+        id: None,
+        status: None,
+        timestamp: None,
+        images: vec![ImagePart {
+            media_type: "image/png".to_string(),
+            data_base64: String::new(),
+            content_id: Some(content_id.clone()),
+        }],
+    });
+
+    let json = serde_json::to_value(&record).unwrap();
+    let image = &json["images"][0];
+    assert!(image.get("data_base64").is_none());
+    assert_eq!(image["content_id"], content_id);
+
+    let parsed: SessionRecord = serde_json::from_value(json).unwrap();
+    let SessionRecord::Message(data) = parsed else {
+        panic!("message shape");
+    };
+    assert!(data.images[0].data_base64.is_empty());
+    assert_eq!(
+        data.images[0].content_id.as_deref(),
+        Some(content_id.as_str())
+    );
+}
+
+#[test]
+fn strip_image_content_ids_covers_message_output_and_checkpoint_images() {
+    let image = || ImagePart {
+        media_type: "image/png".to_string(),
+        data_base64: "QUJD".to_string(),
+        content_id: Some("a".repeat(64)),
+    };
+    let mut message = SessionRecord::Message(MessageData {
+        role: Role::User,
+        content: "look".to_string(),
+        id: None,
+        status: None,
+        timestamp: None,
+        images: vec![image()],
+    });
+    let mut output = SessionRecord::FunctionCallOutput(FunctionCallOutputData {
+        call_id: "call-1".to_string(),
+        output: "result".to_string(),
+        replay: None,
+        timestamp: None,
+        images: vec![image()],
+    });
+    let mut retained = test_support::message(Role::User, "retained");
+    let RetainedConversationRecord::Message(retained_message) = &mut retained.record else {
+        panic!("retained message shape");
+    };
+    retained_message.images.push(image());
+    let stream_retained = retained.clone();
+    let mut checkpoint = SessionRecord::Compaction(test_support::checkpoint(
+        "checkpoint-1",
+        "summary",
+        vec![retained],
+    ));
+
+    for record in [&mut message, &mut output, &mut checkpoint] {
+        record.strip_image_content_ids();
+    }
+
+    let SessionRecord::Message(message) = &message else {
+        panic!("message shape");
+    };
+    assert_eq!(message.images[0].content_id, None);
+    let SessionRecord::FunctionCallOutput(output) = &output else {
+        panic!("output shape");
+    };
+    assert_eq!(output.images[0].content_id, None);
+    let SessionRecord::Compaction(checkpoint) = &checkpoint else {
+        panic!("checkpoint shape");
+    };
+    let RetainedConversationRecord::Message(retained) = &checkpoint.retained[0].record else {
+        panic!("retained message shape");
+    };
+    assert_eq!(retained.images[0].content_id, None);
+
+    let mut stream = StreamRecord::Compaction(test_support::checkpoint(
+        "checkpoint-2",
+        "summary",
+        vec![stream_retained],
+    ));
+    stream.strip_image_content_ids();
+    let StreamRecord::Compaction(checkpoint) = stream else {
+        panic!("stream checkpoint shape");
+    };
+    let RetainedConversationRecord::Message(retained) = &checkpoint.retained[0].record else {
+        panic!("retained message shape");
+    };
+    assert_eq!(retained.images[0].content_id, None);
 }
 
 #[test]

@@ -23,6 +23,7 @@ fn tiny_png_image() -> ImagePart {
     ImagePart {
         media_type: "image/png".to_string(),
         data_base64: TINY_PNG_BASE64.to_string(),
+        content_id: None,
     }
 }
 

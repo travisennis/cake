@@ -158,18 +158,29 @@ impl<'de> Deserialize<'de> for ReasoningContentKind {
 // Conversation Item Enum (for Responses API input/output)
 // =============================================================================
 
-/// One inline image attached to a message or a function-call output.
+/// One image attached to a message or a function-call output.
 ///
-/// The bytes are carried as standard base64 with no data-URL prefix so the
-/// internal representation stays backend-agnostic: each backend builds the
-/// shape its API expects. Empty on every text-only item, so records written
-/// before images existed load unchanged.
+/// In memory, the bytes are carried as standard base64 with no data-URL prefix
+/// so the internal representation stays backend-agnostic: each backend builds
+/// the shape its API expects. On disk, a record carries either `data_base64`
+/// (legacy inline shape) or `content_id` (a digest into the session's blob
+/// store), never both. Empty on every text-only item, so records written before
+/// images existed load unchanged.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImagePart {
     /// The image's MIME type, for example `image/png`.
     pub media_type: String,
     /// The image bytes encoded as standard base64.
+    ///
+    /// Empty when the persisted record refers to a blob instead.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub data_base64: String,
+    /// The lowercase SHA-256 digest of the decoded image bytes.
+    ///
+    /// Hydrated in-memory images may carry this alongside `data_base64` so the
+    /// reference survives another persistence pass. Stream output strips it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_id: Option<String>,
 }
 
 impl ImagePart {
@@ -291,6 +302,7 @@ mod tests {
         let image = ImagePart {
             media_type: "image/png".to_string(),
             data_base64: "QUJD".to_string(),
+            content_id: None,
         };
 
         assert_eq!(image.data_url(), "data:image/png;base64,QUJD");
@@ -301,6 +313,7 @@ mod tests {
         let image = ImagePart {
             media_type: "image/png".to_string(),
             data_base64: "QUJD".to_string(),
+            content_id: None,
         };
         let message = ConversationItem::Message {
             role: Role::User,

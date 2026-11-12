@@ -26,9 +26,13 @@ use std::{
 };
 
 use anyhow::{Context, bail};
+use base64::Engine as _;
 use sha2::{Digest, Sha256};
 
 use crate::config::owner_only;
+use crate::types::ImagePart;
+use crate::types::compaction::{CompactionData, RetainedConversationRecord};
+use crate::types::session::SessionRecord;
 
 /// Prefix reserved for temporary files inside a session blob directory.
 ///
@@ -104,6 +108,13 @@ pub struct BlobStore {
     root: PathBuf,
 }
 
+/// Whether the store root already exists or must be created lazily.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RootState {
+    Existing,
+    Missing,
+}
+
 impl BlobStore {
     /// Create a store rooted at `root`.
     ///
@@ -133,66 +144,12 @@ impl BlobStore {
         let id = ContentId::from_bytes(bytes);
         let root = self.ensure_root_for_write()?;
         let final_path = root.join(id.as_str());
-
-        match fs::symlink_metadata(&final_path) {
-            Ok(_) => {
-                self.read_verified(&id)?;
-                return Ok(id);
-            },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
-            Err(source) => {
-                return Err(source)
-                    .with_context(|| format!("failed to inspect blob '{}'", final_path.display()));
-            },
+        if self.existing_blob_verified(&final_path, &id)? {
+            return Ok(id);
         }
 
-        let temp_path = root.join(temp_file_name());
-        let mut temp = open_temp_file(&temp_path)?;
-        let write_result = (|| -> anyhow::Result<()> {
-            owner_only::set_file_owner_only(&temp).with_context(|| {
-                format!(
-                    "failed to set owner-only mode {:04o} on temporary blob '{}'",
-                    owner_only::OWNER_ONLY_FILE_MODE,
-                    temp_path.display()
-                )
-            })?;
-            temp.write_all(bytes).with_context(|| {
-                format!("failed to write temporary blob '{}'", temp_path.display())
-            })?;
-            temp.sync_all().with_context(|| {
-                format!(
-                    "failed to sync temporary blob '{}' to disk",
-                    temp_path.display()
-                )
-            })?;
-            Ok(())
-        })();
-        drop(temp);
-
-        if let Err(error) = write_result {
-            drop(fs::remove_file(&temp_path));
-            return Err(error);
-        }
-
-        let publish_result = match fs::hard_link(&temp_path, &final_path) {
-            Ok(()) => sync_dir(&root).with_context(|| {
-                format!(
-                    "failed to sync blob directory '{}' after publishing '{}'",
-                    root.display(),
-                    id
-                )
-            }),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                self.read_verified(&id).map(|_| ())
-            },
-            Err(source) => Err(source).with_context(|| {
-                format!(
-                    "failed to publish blob '{}' at '{}'",
-                    id,
-                    final_path.display()
-                )
-            }),
-        };
+        let temp_path = write_temp_blob(&root, bytes)?;
+        let publish_result = self.publish_temp_blob(&root, &temp_path, &final_path, &id);
         let cleanup_result = fs::remove_file(&temp_path);
         publish_result?;
         cleanup_result.with_context(|| {
@@ -204,6 +161,46 @@ impl BlobStore {
         })?;
 
         Ok(id)
+    }
+
+    fn existing_blob_verified(&self, final_path: &Path, id: &ContentId) -> anyhow::Result<bool> {
+        match fs::symlink_metadata(final_path) {
+            Ok(_) => {
+                self.read_verified(id)?;
+                Ok(true)
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(source) => Err(source)
+                .with_context(|| format!("failed to inspect blob '{}'", final_path.display())),
+        }
+    }
+
+    fn publish_temp_blob(
+        &self,
+        root: &Path,
+        temp_path: &Path,
+        final_path: &Path,
+        id: &ContentId,
+    ) -> anyhow::Result<()> {
+        match fs::hard_link(temp_path, final_path) {
+            Ok(()) => sync_dir(root).with_context(|| {
+                format!(
+                    "failed to sync blob directory '{}' after publishing '{}'",
+                    root.display(),
+                    id
+                )
+            }),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                self.read_verified(id).map(|_| ())
+            },
+            Err(source) => Err(source).with_context(|| {
+                format!(
+                    "failed to publish blob '{}' at '{}'",
+                    id,
+                    final_path.display()
+                )
+            }),
+        }
     }
 
     /// Read a blob and verify its digest.
@@ -219,53 +216,8 @@ impl BlobStore {
     pub fn read_verified(&self, id: &ContentId) -> anyhow::Result<Vec<u8>> {
         let root = self.validate_existing_root()?;
         let path = root.join(id.as_str());
-
-        match fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                bail!(
-                    "blob '{}' at '{}' is a symlink; Cake refuses to follow it",
-                    id,
-                    path.display()
-                );
-            },
-            Ok(metadata) if !metadata.is_file() => {
-                bail!(
-                    "blob '{}' at '{}' is not a regular file; Cake refuses to use it",
-                    id,
-                    path.display()
-                );
-            },
-            Ok(_) => {},
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                bail!("blob '{}' is missing at '{}'", id, path.display());
-            },
-            Err(source) => {
-                return Err(source).with_context(|| {
-                    format!("failed to inspect blob '{}' at '{}'", id, path.display())
-                });
-            },
-        }
-
-        let mut options = OpenOptions::new();
-        options.read(true);
-        apply_no_follow(&mut options);
-        let mut file = options.open(&path).with_context(|| {
-            format!(
-                "failed to open blob '{}' at '{}' without following symlinks",
-                id,
-                path.display()
-            )
-        })?;
-        let metadata = file
-            .metadata()
-            .with_context(|| format!("failed to inspect blob '{id}'"))?;
-        if !metadata.is_file() {
-            bail!(
-                "blob '{}' at '{}' is not a regular file; Cake refuses to use it",
-                id,
-                path.display()
-            );
-        }
+        validate_blob_target(&path, id)?;
+        let mut file = open_blob_for_read(&path, id)?;
 
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)
@@ -282,6 +234,209 @@ impl BlobStore {
         Ok(bytes)
     }
 
+    /// Return a copy of `record` whose message and function-call-output
+    /// images refer to blobs instead of carrying inline bytes.
+    ///
+    /// An image with neither inline bytes nor a content id is rejected. An
+    /// image with both must name the digest of its inline bytes, and the blob
+    /// must already verify. The original record is unchanged, so a live
+    /// conversation can keep the bytes for the next provider request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an image cannot be decoded, its declared content
+    /// id does not match, its blob is missing or corrupt, or it has no payload
+    /// reference. Error text never includes image bytes.
+    pub fn externalize_record(&self, record: &SessionRecord) -> anyhow::Result<SessionRecord> {
+        let mut externalized = record.clone();
+        match &mut externalized {
+            SessionRecord::Message(data) => {
+                self.externalize_images(&mut data.images, "message")?;
+            },
+            SessionRecord::FunctionCallOutput(data) => {
+                self.externalize_images(&mut data.images, "function call output")?;
+            },
+            _ => {},
+        }
+        Ok(externalized)
+    }
+
+    /// Restore every referenced image in `records` from this store.
+    ///
+    /// Walks message images, function-call-output images, and images retained
+    /// inside checkpoints. An image that carries both inline bytes and a
+    /// content id keeps its inline bytes after verifying that they hash to the
+    /// id. An image with neither is rejected before it can reach a provider.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the session and digest when a reference is
+    /// invalid, missing, unreadable, non-regular, or mismatched. Error text
+    /// never includes image bytes.
+    pub fn hydrate_session(
+        &self,
+        session_id: &str,
+        records: &mut [SessionRecord],
+    ) -> anyhow::Result<()> {
+        for (record_index, record) in records.iter_mut().enumerate() {
+            self.hydrate_record(session_id, record_index, record)?;
+        }
+        Ok(())
+    }
+
+    fn hydrate_record(
+        &self,
+        session_id: &str,
+        record_index: usize,
+        record: &mut SessionRecord,
+    ) -> anyhow::Result<()> {
+        match record {
+            SessionRecord::Message(data) => self.hydrate_images(
+                session_id,
+                &mut data.images,
+                &format!("record {record_index} message"),
+            ),
+            SessionRecord::FunctionCallOutput(data) => self.hydrate_images(
+                session_id,
+                &mut data.images,
+                &format!("record {record_index} function call output"),
+            ),
+            SessionRecord::Compaction(checkpoint) => {
+                self.hydrate_checkpoint(session_id, record_index, checkpoint)
+            },
+            _ => Ok(()),
+        }
+    }
+
+    fn hydrate_checkpoint(
+        &self,
+        session_id: &str,
+        record_index: usize,
+        checkpoint: &mut CompactionData,
+    ) -> anyhow::Result<()> {
+        for (retained_index, retained) in checkpoint.retained.iter_mut().enumerate() {
+            match &mut retained.record {
+                RetainedConversationRecord::Message(data) => self.hydrate_images(
+                    session_id,
+                    &mut data.images,
+                    &format!(
+                        "record {record_index} checkpoint retained {retained_index} message"
+                    ),
+                )?,
+                RetainedConversationRecord::FunctionCallOutput(data) => self.hydrate_images(
+                    session_id,
+                    &mut data.images,
+                    &format!(
+                        "record {record_index} checkpoint retained {retained_index} function call output"
+                    ),
+                )?,
+                RetainedConversationRecord::Reasoning(_)
+                | RetainedConversationRecord::FunctionCall(_) => {},
+            }
+        }
+        Ok(())
+    }
+
+    fn externalize_images(
+        &self,
+        images: &mut [ImagePart],
+        record_kind: &str,
+    ) -> anyhow::Result<()> {
+        for (index, image) in images.iter_mut().enumerate() {
+            self.externalize_image(image, &format!("{record_kind} image {index}"))?;
+        }
+        Ok(())
+    }
+
+    fn externalize_image(&self, image: &mut ImagePart, context: &str) -> anyhow::Result<()> {
+        let declared = image
+            .content_id
+            .as_deref()
+            .map(ContentId::parse)
+            .transpose()
+            .with_context(|| format!("{context} has an invalid content id"))?;
+
+        if image.data_base64.is_empty() {
+            let id = declared.ok_or_else(|| {
+                anyhow::anyhow!("{context} has neither inline bytes nor a content id")
+            })?;
+            self.read_verified(&id)
+                .with_context(|| format!("{context} content id '{id}'"))?;
+            image.content_id = Some(id.as_str().to_owned());
+            return Ok(());
+        }
+
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&image.data_base64)
+            .with_context(|| format!("{context} has invalid base64 image data"))?;
+        let computed = ContentId::from_bytes(&bytes);
+        let id = match declared {
+            Some(id) => {
+                anyhow::ensure!(
+                    id == computed,
+                    "{context} content id '{id}' does not match its inline bytes (found '{computed}')"
+                );
+                self.read_verified(&id)
+                    .with_context(|| format!("{context} content id '{id}'"))?;
+                id
+            },
+            None => self
+                .put(&bytes)
+                .with_context(|| format!("failed to store {context}"))?,
+        };
+        image.data_base64.clear();
+        image.content_id = Some(id.as_str().to_owned());
+        Ok(())
+    }
+
+    fn hydrate_images(
+        &self,
+        session_id: &str,
+        images: &mut [ImagePart],
+        context: &str,
+    ) -> anyhow::Result<()> {
+        for (index, image) in images.iter_mut().enumerate() {
+            let image_context = format!("{context} image {index}");
+            let declared = image
+                .content_id
+                .as_deref()
+                .map(ContentId::parse)
+                .transpose()
+                .with_context(|| {
+                    format!("session {session_id}: {image_context} has an invalid content id")
+                })?;
+
+            if !image.data_base64.is_empty() {
+                if let Some(id) = declared {
+                    let bytes = base64::engine::general_purpose::STANDARD
+                        .decode(&image.data_base64)
+                        .with_context(|| {
+                            format!(
+                                "session {session_id}: {image_context} has invalid base64 image data"
+                            )
+                        })?;
+                    anyhow::ensure!(
+                        id.matches(&bytes),
+                        "session {session_id}: {image_context} inline bytes do not match content id '{id}'"
+                    );
+                }
+                continue;
+            }
+
+            let id = declared.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "session {session_id}: {image_context} has neither inline bytes nor a content id"
+                )
+            })?;
+            let bytes = self.read_verified(&id).with_context(|| {
+                format!("session {session_id}: failed to hydrate {image_context} content id '{id}'")
+            })?;
+            image.data_base64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+            image.content_id = Some(id.as_str().to_owned());
+        }
+        Ok(())
+    }
+
     /// Hard-link `id` from `source` into this store and verify the result.
     ///
     /// This is the fork primitive. Both roots are validated, an existing
@@ -296,28 +451,41 @@ impl BlobStore {
         let _ = source.read_verified(id)?;
         let destination_root = self.ensure_root_for_write()?;
         let destination = destination_root.join(id.as_str());
-
-        match fs::symlink_metadata(&destination) {
-            Ok(_) => {
-                self.read_verified(id)?;
-                return Ok(());
-            },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
-            Err(source_error) => {
-                return Err(source_error).with_context(|| {
-                    format!(
-                        "failed to inspect destination blob '{}' at '{}'",
-                        id,
-                        destination.display()
-                    )
-                });
-            },
+        if !self.destination_needs_link(&destination, id)? {
+            return Ok(());
         }
 
         let source_path = source.checked_root().join(id.as_str());
-        match fs::hard_link(&source_path, &destination) {
+        self.link_temp_blob(&source_path, &destination, &destination_root, id)
+    }
+
+    fn destination_needs_link(&self, destination: &Path, id: &ContentId) -> anyhow::Result<bool> {
+        match fs::symlink_metadata(destination) {
+            Ok(_) => {
+                self.read_verified(id)?;
+                Ok(false)
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+            Err(source_error) => Err(source_error).with_context(|| {
+                format!(
+                    "failed to inspect destination blob '{}' at '{}'",
+                    id,
+                    destination.display()
+                )
+            }),
+        }
+    }
+
+    fn link_temp_blob(
+        &self,
+        source_path: &Path,
+        destination: &Path,
+        destination_root: &Path,
+        id: &ContentId,
+    ) -> anyhow::Result<()> {
+        match fs::hard_link(source_path, destination) {
             Ok(()) => {
-                sync_dir(&destination_root).with_context(|| {
+                sync_dir(destination_root).with_context(|| {
                     format!(
                         "failed to sync blob directory '{}' after linking '{}'",
                         destination_root.display(),
@@ -380,23 +548,8 @@ impl BlobStore {
 
     fn ensure_root_for_write(&self) -> anyhow::Result<PathBuf> {
         let root = self.checked_root();
-        if root.as_os_str().is_empty() {
-            bail!("blob store root is empty");
-        }
-        match fs::symlink_metadata(&root) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                bail!(
-                    "blob store root '{}' is a symlink; Cake refuses to follow it",
-                    root.display()
-                );
-            },
-            Ok(metadata) if !metadata.is_dir() => {
-                bail!(
-                    "blob store root '{}' is not a directory; Cake requires a real directory",
-                    root.display()
-                );
-            },
-            Ok(_) => {
+        match inspect_root_for_write(&root)? {
+            RootState::Existing => {
                 owner_only::tighten_dir_owner_only(&root).with_context(|| {
                     format!(
                         "failed to set owner-only mode {:04o} on blob store root '{}'",
@@ -404,39 +557,143 @@ impl BlobStore {
                         root.display()
                     )
                 })?;
-                Ok(root)
             },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                owner_only::create_dir_all_owner_only(&root).with_context(|| {
-                    format!(
-                        "failed to create blob store root '{}' with owner-only mode {:04o}",
-                        root.display(),
-                        owner_only::OWNER_ONLY_DIR_MODE
-                    )
-                })?;
-                let metadata = fs::symlink_metadata(&root).with_context(|| {
-                    format!("failed to inspect new blob store root '{}'", root.display())
-                })?;
-                if metadata.file_type().is_symlink() || !metadata.is_dir() {
-                    bail!(
-                        "blob store root '{}' was not created as a real directory",
-                        root.display()
-                    );
-                }
-                if let Some(parent) = root.parent() {
-                    sync_dir(parent).with_context(|| {
-                        format!(
-                            "failed to sync parent directory '{}' after creating blob store root '{}'",
-                            parent.display(),
-                            root.display()
-                        )
-                    })?;
-                }
-                Ok(root)
-            },
-            Err(source) => Err(source)
-                .with_context(|| format!("failed to inspect blob store root '{}'", root.display())),
+            RootState::Missing => create_root_for_write(&root)?,
         }
+        Ok(root)
+    }
+}
+
+fn inspect_root_for_write(root: &Path) -> anyhow::Result<RootState> {
+    if root.as_os_str().is_empty() {
+        bail!("blob store root is empty");
+    }
+    match fs::symlink_metadata(root) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            bail!(
+                "blob store root '{}' is a symlink; Cake refuses to follow it",
+                root.display()
+            );
+        },
+        Ok(metadata) if !metadata.is_dir() => {
+            bail!(
+                "blob store root '{}' is not a directory; Cake requires a real directory",
+                root.display()
+            );
+        },
+        Ok(_) => Ok(RootState::Existing),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(RootState::Missing),
+        Err(source) => Err(source)
+            .with_context(|| format!("failed to inspect blob store root '{}'", root.display())),
+    }
+}
+
+fn create_root_for_write(root: &Path) -> anyhow::Result<()> {
+    owner_only::create_dir_all_owner_only(root).with_context(|| {
+        format!(
+            "failed to create blob store root '{}' with owner-only mode {:04o}",
+            root.display(),
+            owner_only::OWNER_ONLY_DIR_MODE
+        )
+    })?;
+    let metadata = fs::symlink_metadata(root)
+        .with_context(|| format!("failed to inspect new blob store root '{}'", root.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        bail!(
+            "blob store root '{}' was not created as a real directory",
+            root.display()
+        );
+    }
+    if let Some(parent) = root.parent() {
+        sync_dir(parent).with_context(|| {
+            format!(
+                "failed to sync parent directory '{}' after creating blob store root '{}'",
+                parent.display(),
+                root.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn validate_blob_target(path: &Path, id: &ContentId) -> anyhow::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            bail!(
+                "blob '{}' at '{}' is a symlink; Cake refuses to follow it",
+                id,
+                path.display()
+            );
+        },
+        Ok(metadata) if !metadata.is_file() => {
+            bail!(
+                "blob '{}' at '{}' is not a regular file; Cake refuses to use it",
+                id,
+                path.display()
+            );
+        },
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            bail!("blob '{}' is missing at '{}'", id, path.display());
+        },
+        Err(source) => Err(source)
+            .with_context(|| format!("failed to inspect blob '{}' at '{}'", id, path.display())),
+    }
+}
+
+fn open_blob_for_read(path: &Path, id: &ContentId) -> anyhow::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    apply_no_follow(&mut options);
+    let file = options.open(path).with_context(|| {
+        format!(
+            "failed to open blob '{}' at '{}' without following symlinks",
+            id,
+            path.display()
+        )
+    })?;
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("failed to inspect blob '{id}'"))?;
+    if !metadata.is_file() {
+        bail!(
+            "blob '{}' at '{}' is not a regular file; Cake refuses to use it",
+            id,
+            path.display()
+        );
+    }
+    Ok(file)
+}
+
+fn write_temp_blob(root: &Path, bytes: &[u8]) -> anyhow::Result<PathBuf> {
+    let temp_path = root.join(temp_file_name());
+    let mut temp = open_temp_file(&temp_path)?;
+    let write_result = (|| -> anyhow::Result<()> {
+        owner_only::set_file_owner_only(&temp).with_context(|| {
+            format!(
+                "failed to set owner-only mode {:04o} on temporary blob '{}'",
+                owner_only::OWNER_ONLY_FILE_MODE,
+                temp_path.display()
+            )
+        })?;
+        temp.write_all(bytes)
+            .with_context(|| format!("failed to write temporary blob '{}'", temp_path.display()))?;
+        temp.sync_all().with_context(|| {
+            format!(
+                "failed to sync temporary blob '{}' to disk",
+                temp_path.display()
+            )
+        })?;
+        Ok(())
+    })();
+    drop(temp);
+
+    match write_result {
+        Ok(()) => Ok(temp_path),
+        Err(error) => {
+            drop(fs::remove_file(&temp_path));
+            Err(error)
+        },
     }
 }
 
@@ -520,6 +777,9 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::types::Role;
+    use crate::types::compaction::test_support;
+    use crate::types::session::{FunctionCallOutputData, MessageData};
 
     fn new_store() -> (BlobStore, TempDir) {
         let temporary = TempDir::new().expect("temporary directory");
@@ -814,6 +1074,187 @@ mod tests {
         assert_eq!(
             fs::read(&destination_path).expect("destination remains"),
             b"wrong bytes"
+        );
+    }
+
+    fn image_with_bytes(bytes: &[u8]) -> ImagePart {
+        ImagePart {
+            media_type: "image/png".to_string(),
+            data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+            content_id: None,
+        }
+    }
+
+    fn message_with_images(images: Vec<ImagePart>) -> SessionRecord {
+        SessionRecord::Message(MessageData {
+            role: Role::User,
+            content: "look".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+            images,
+        })
+    }
+
+    fn output_with_images(images: Vec<ImagePart>) -> SessionRecord {
+        SessionRecord::FunctionCallOutput(FunctionCallOutputData {
+            call_id: "call-1".to_string(),
+            output: "ReadImage /tmp/image.png".to_string(),
+            replay: None,
+            timestamp: None,
+            images,
+        })
+    }
+
+    #[test]
+    fn externalize_and_hydrate_round_trip_message_and_output_images() {
+        let (store, _temporary) = new_store();
+        let bytes = b"image bytes";
+        let message = message_with_images(vec![image_with_bytes(bytes)]);
+
+        let externalized = store.externalize_record(&message).expect("externalize");
+        let SessionRecord::Message(data) = &externalized else {
+            panic!("message shape");
+        };
+        assert!(data.images[0].data_base64.is_empty());
+        let id = data.images[0].content_id.clone().expect("content id");
+        assert_eq!(
+            store
+                .read_verified(&ContentId::parse(&id).expect("parse"))
+                .expect("stored bytes"),
+            bytes
+        );
+        let SessionRecord::Message(original) = &message else {
+            panic!("message shape");
+        };
+        assert_eq!(
+            original.images[0].data_base64,
+            base64::engine::general_purpose::STANDARD.encode(bytes),
+            "externalization must not mutate the live record"
+        );
+
+        let output = output_with_images(vec![image_with_bytes(bytes)]);
+        let externalized_output = store
+            .externalize_record(&output)
+            .expect("externalize output");
+        let SessionRecord::FunctionCallOutput(output_data) = &externalized_output else {
+            panic!("function call output shape");
+        };
+        assert!(output_data.images[0].data_base64.is_empty());
+        assert_eq!(
+            output_data.images[0].content_id.as_deref(),
+            Some(id.as_str())
+        );
+
+        let mut records = vec![externalized, externalized_output];
+        store
+            .hydrate_session("session-1", &mut records)
+            .expect("hydrate");
+        let SessionRecord::Message(hydrated_message) = &records[0] else {
+            panic!("hydrated message shape");
+        };
+        assert_eq!(
+            hydrated_message.images[0].data_base64,
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        );
+        assert_eq!(
+            hydrated_message.images[0].content_id.as_deref(),
+            Some(id.as_str())
+        );
+
+        let externalized_again = store
+            .externalize_record(&records[0])
+            .expect("idempotent externalize");
+        let SessionRecord::Message(again) = &externalized_again else {
+            panic!("message shape");
+        };
+        assert!(again.images[0].data_base64.is_empty());
+        assert_eq!(again.images[0].content_id.as_deref(), Some(id.as_str()));
+        assert_eq!(fs::read_dir(store.root()).expect("read root").count(), 1);
+    }
+
+    #[test]
+    fn externalize_rejects_an_image_without_a_payload_reference() {
+        let (store, _temporary) = new_store();
+        let record = message_with_images(vec![ImagePart {
+            media_type: "image/png".to_string(),
+            data_base64: String::new(),
+            content_id: None,
+        }]);
+
+        let error = store
+            .externalize_record(&record)
+            .expect_err("empty image must fail");
+        assert!(
+            format!("{error:#}").contains("neither inline bytes nor a content id"),
+            "{error:#}"
+        );
+        assert!(!store.root().exists());
+    }
+
+    #[test]
+    fn hydrate_rejects_a_missing_blob_and_a_mismatched_inline_id() {
+        let (store, _temporary) = new_store();
+        let missing = ContentId::from_bytes(b"missing image");
+        let mut records = vec![message_with_images(vec![ImagePart {
+            media_type: "image/png".to_string(),
+            data_base64: String::new(),
+            content_id: Some(missing.as_str().to_string()),
+        }])];
+
+        let error = store
+            .hydrate_session("session-1", &mut records)
+            .expect_err("missing blob");
+        let text = format!("{error:#}");
+        assert!(text.contains("session-1"), "{text}");
+        assert!(text.contains(missing.as_str()), "{text}");
+        assert!(text.contains("does not exist"), "{text}");
+
+        let declared = ContentId::from_bytes(b"different image");
+        let mut records = vec![message_with_images(vec![ImagePart {
+            media_type: "image/png".to_string(),
+            data_base64: base64::engine::general_purpose::STANDARD.encode(b"inline image"),
+            content_id: Some(declared.as_str().to_string()),
+        }])];
+        let error = store
+            .hydrate_session("session-2", &mut records)
+            .expect_err("mismatched inline id");
+        let text = format!("{error:#}");
+        assert!(text.contains("session-2"), "{text}");
+        assert!(text.contains(declared.as_str()), "{text}");
+        assert!(text.contains("do not match"), "{text}");
+    }
+
+    #[test]
+    fn hydrate_restores_checkpoint_retained_images() {
+        let (store, _temporary) = new_store();
+        let bytes = b"retained image";
+        let id = store.put(bytes).expect("put");
+        let mut retained = test_support::message(Role::User, "look");
+        let RetainedConversationRecord::Message(data) = &mut retained.record else {
+            panic!("retained message shape");
+        };
+        data.images.push(ImagePart {
+            media_type: "image/png".to_string(),
+            data_base64: String::new(),
+            content_id: Some(id.as_str().to_string()),
+        });
+        let checkpoint = test_support::checkpoint("checkpoint-1", "summary", vec![retained]);
+        let mut records = vec![SessionRecord::Compaction(checkpoint)];
+
+        store
+            .hydrate_session("session-1", &mut records)
+            .expect("hydrate checkpoint");
+
+        let SessionRecord::Compaction(checkpoint) = &records[0] else {
+            panic!("checkpoint shape");
+        };
+        let RetainedConversationRecord::Message(data) = &checkpoint.retained[0].record else {
+            panic!("retained message shape");
+        };
+        assert_eq!(
+            data.images[0].data_base64,
+            base64::engine::general_purpose::STANDARD.encode(bytes)
         );
     }
 

@@ -1871,7 +1871,10 @@ async fn failed_writer_does_not_mask_a_cut_off_turn() {
         ) + "\n",
     )
     .unwrap();
-    let writer = SessionWriter::new(Session::open_for_append(&path).unwrap());
+    let writer = SessionWriter::new(
+        Session::open_for_append(&path).unwrap(),
+        std::sync::Arc::new(crate::config::BlobStore::new(dir.path().join("blobs"))),
+    );
     let mut checkpoint = test_support::checkpoint("checkpoint-1", "summary", Vec::new());
     checkpoint.session_id = session_id.to_string();
     writer.fail_next_checkpoint(crate::config::session::WriterFault::Flush);
@@ -1918,7 +1921,10 @@ async fn failed_writer_preserves_the_commit_error_and_runs_the_session_end_hook(
         ) + "\n",
     )
     .unwrap();
-    let writer = SessionWriter::new(Session::open_for_append(&path).unwrap());
+    let writer = SessionWriter::new(
+        Session::open_for_append(&path).unwrap(),
+        std::sync::Arc::new(crate::config::BlobStore::new(dir.path().join("blobs"))),
+    );
     let mut checkpoint = test_support::checkpoint("checkpoint-1", "summary", Vec::new());
     checkpoint.session_id = session_id.to_string();
     writer.fail_next_checkpoint(crate::config::session::WriterFault::Flush);

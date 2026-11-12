@@ -390,7 +390,10 @@ async fn failed_checkpoint_commit_through_the_persist_callback_stops_the_loop() 
             ) + "\n",
         )
         .unwrap();
-        let writer = SessionWriter::new(Session::open_for_append(&path).unwrap());
+        let writer = SessionWriter::new(
+            Session::open_for_append(&path).unwrap(),
+            Arc::new(crate::config::BlobStore::new(dir.path().join("blobs"))),
+        );
         let mut checkpoint = test_support::checkpoint("checkpoint-1", "retired work", Vec::new());
         checkpoint.session_id = session_id.to_string();
         writer.fail_next_checkpoint(stage);

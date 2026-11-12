@@ -716,6 +716,7 @@ mod tests {
             images: vec![ImagePart {
                 media_type: "image/png".to_string(),
                 data_base64: "QUJD".to_string(),
+                content_id: None,
             }],
         }));
 

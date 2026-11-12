@@ -9,7 +9,7 @@ use std::{
 };
 
 use crate::config::{
-    owner_only,
+    BlobStore, owner_only,
     session_jsonl::SessionFramer,
     session_paths::{validate_session_parent, validate_session_target},
 };
@@ -41,6 +41,9 @@ use crate::types::{
 #[derive(Clone)]
 pub struct SessionWriter {
     inner: Arc<Mutex<WriterState>>,
+    /// The owning session's image store. Every non-checkpoint append
+    /// externalizes a clone of the record against this store before writing.
+    blobs: Arc<BlobStore>,
     /// Test-only fault injected at the next checkpoint commit stage.
     #[cfg(test)]
     fault: Arc<Mutex<Option<WriterFault>>>,
@@ -98,14 +101,15 @@ pub enum WriterFault {
 }
 
 impl SessionWriter {
-    /// Create a writer that owns the locked append handle.
-    pub fn new(file: File) -> Self {
+    /// Create a writer that owns the locked append handle and image store.
+    pub fn new(file: File, blobs: Arc<BlobStore>) -> Self {
         Self {
             inner: Arc::new(Mutex::new(WriterState {
                 buffer: Some(BufWriter::new(file)),
                 locked_file: None,
                 failure: None,
             })),
+            blobs,
             #[cfg(test)]
             fault: Arc::new(Mutex::new(None)),
         }
@@ -115,11 +119,16 @@ impl SessionWriter {
     ///
     /// A `compaction` record routes through [`Self::commit_checkpoint`] so no
     /// caller can persist a checkpoint without its durability and validation
-    /// semantics.
+    /// semantics. Every other record is cloned and externalized inside the
+    /// write critical section, so a blob failure terminally fails the writer
+    /// instead of landing a record whose payload is missing.
     pub fn append_record(&self, record: &SessionRecord) -> anyhow::Result<()> {
         match record {
             SessionRecord::Compaction(checkpoint) => self.commit_checkpoint(checkpoint),
-            record => self.write(|buffer| Session::append_record(buffer, record)),
+            record => self.write(|buffer| {
+                let externalized = self.blobs.externalize_record(record)?;
+                Session::append_record(buffer, &externalized)
+            }),
         }
     }
 
@@ -371,7 +380,11 @@ impl Session {
             .collect()
     }
 
-    /// Loads a v4 append-only session from a JSONL file.
+    /// Loads a v4 append-only session from a JSONL file as raw records.
+    ///
+    /// Image references are not resolved here. Callers that build provider
+    /// input must hydrate through [`crate::config::DataDir`] or
+    /// [`crate::config::BlobStore::hydrate_session`] first.
     ///
     /// # Errors
     ///
@@ -383,13 +396,14 @@ impl Session {
         Self::read_from(BufReader::new(file), path)
     }
 
-    /// Load a session through a file already opened for append.
+    /// Load a session through a file already opened for append as raw records.
     ///
     /// [`Self::load`] opens its own handle. A caller that must lock first ---
     /// such as the checkpoint append command --- uses this instead, so the
     /// identity check, the derived boundary, and the append all happen under
     /// one advisory lock without opening a second handle. The handle is rewound
-    /// to the start of the file before it is read.
+    /// to the start of the file before it is read. Image references are not
+    /// resolved here; provider-bound callers must hydrate first.
     pub fn load_from_append_handle(file: &File, path: &Path) -> anyhow::Result<Self> {
         let mut reader = file;
         reader
@@ -836,9 +850,10 @@ mod tests {
         FunctionCallData, FunctionCallOutputData, MessageData, ReasoningData,
     };
     use crate::types::{
-        ReasoningContent, ReasoningContentKind, Role, TaskCompleteData, TaskOutcome, TaskStartData,
-        Usage,
+        ImagePart, ReasoningContent, ReasoningContentKind, Role, TaskCompleteData, TaskOutcome,
+        TaskStartData, Usage,
     };
+    use base64::Engine as _;
     use tempfile::TempDir;
 
     /// Helper to create a minimal v4 session for testing.
@@ -848,6 +863,10 @@ mod tests {
         session.model = Some("test-model".to_string());
         session.model_config = Some("test-config".to_string());
         session
+    }
+
+    fn test_writer(dir: &TempDir, file: File) -> SessionWriter {
+        SessionWriter::new(file, Arc::new(BlobStore::new(dir.path().join("blobs"))))
     }
 
     fn meta_record(session: &Session) -> SessionRecord {
@@ -2059,7 +2078,7 @@ mod tests {
         let session = make_test_session();
         let mut file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
         Session::append_record(&mut file, &message_record(Role::User, "hello")).unwrap();
-        let writer = SessionWriter::new(file);
+        let writer = test_writer(&dir, file);
         let mut checkpoint = test_support::checkpoint(
             "checkpoint-1",
             "summarized earlier work",
@@ -2093,12 +2112,101 @@ mod tests {
     }
 
     #[test]
+    fn writer_externalizes_image_records_and_hydration_restores_the_payload() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let session = make_test_session();
+        let file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
+        let writer = test_writer(&dir, file);
+        let bytes = b"image bytes";
+        let image = ImagePart {
+            media_type: "image/png".to_string(),
+            data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+            content_id: None,
+        };
+        let record = SessionRecord::Message(MessageData {
+            role: Role::User,
+            content: "look".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+            images: vec![image.clone()],
+        });
+
+        writer.append_record(&record).expect("append image record");
+        drop(writer);
+
+        let raw = Session::load(&path).expect("raw session load");
+        let SessionRecord::Message(stored) = &raw.records[1] else {
+            panic!("message shape");
+        };
+        assert!(stored.images[0].data_base64.is_empty());
+        let id = stored.images[0]
+            .content_id
+            .as_deref()
+            .expect("persisted content id");
+        assert_eq!(
+            fs::read(dir.path().join("blobs").join(id)).expect("blob file"),
+            bytes
+        );
+        let SessionRecord::Message(live) = &record else {
+            panic!("live message shape");
+        };
+        assert_eq!(
+            live.images[0].data_base64, image.data_base64,
+            "the live record keeps its bytes for the next provider request"
+        );
+
+        let mut hydrated = raw;
+        BlobStore::new(dir.path().join("blobs"))
+            .hydrate_session(&session.id.to_string(), &mut hydrated.records)
+            .expect("hydrate through the writer's store");
+        let SessionRecord::Message(hydrated) = &hydrated.records[1] else {
+            panic!("hydrated message shape");
+        };
+        assert_eq!(
+            hydrated.images[0].data_base64,
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        );
+    }
+
+    #[test]
+    fn writer_fails_terminally_when_an_image_has_no_payload() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let session = make_test_session();
+        let file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
+        let writer = test_writer(&dir, file);
+        let before = fs::read(&path).unwrap();
+        let record = SessionRecord::Message(MessageData {
+            role: Role::User,
+            content: "look".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+            images: vec![ImagePart {
+                media_type: "image/png".to_string(),
+                data_base64: String::new(),
+                content_id: None,
+            }],
+        });
+
+        let error = writer.append_record(&record).unwrap_err().to_string();
+        assert!(
+            error.contains("neither inline bytes nor a content id"),
+            "{error}"
+        );
+        assert!(writer.is_failed());
+        assert_eq!(fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
     fn compaction_checkpoint_commit_rejects_invalid_data_without_writing() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("session.jsonl");
         let session = make_test_session();
         let file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
-        let writer = SessionWriter::new(file);
+        let writer = test_writer(&dir, file);
         let before = fs::read(&path).unwrap();
         let mut invalid = test_support::checkpoint("checkpoint-1", "  ", Vec::new());
         invalid.session_id = session.id.to_string();
@@ -2127,7 +2235,7 @@ mod tests {
             let path = dir.path().join(format!("session-{stage:?}.jsonl"));
             let session = make_test_session();
             let file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
-            let writer = SessionWriter::new(file);
+            let writer = test_writer(&dir, file);
             let clone = writer.clone();
             let mut checkpoint = test_support::checkpoint("checkpoint-1", "summary", Vec::new());
             checkpoint.session_id = session.id.to_string();
@@ -2212,7 +2320,7 @@ mod tests {
         let path = dir.path().join("session.jsonl");
         let session = make_test_session();
         let file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
-        let writer = SessionWriter::new(file);
+        let writer = test_writer(&dir, file);
         let before = fs::read(&path).unwrap();
 
         // Larger than `BufWriter`'s capacity. `write_all` bypasses the buffer
@@ -2282,7 +2390,7 @@ mod tests {
         let path = dir.path().join("session.jsonl");
         let session = make_test_session();
         let file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
-        let writer = SessionWriter::new(file);
+        let writer = test_writer(&dir, file);
         let mut checkpoint =
             test_support::checkpoint("checkpoint-1", "durable summary", Vec::new());
         checkpoint.session_id = session.id.to_string();

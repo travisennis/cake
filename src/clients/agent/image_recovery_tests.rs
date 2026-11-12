@@ -76,6 +76,7 @@ fn agent_with_tool_output_image(base_url: &str) -> Agent {
             images: vec![ImagePart {
                 media_type: "image/jpeg".to_string(),
                 data_base64: "AAAA".to_string(),
+                content_id: None,
             }],
         });
     agent

@@ -1062,7 +1062,10 @@ impl CodingAssistant {
             return Ok((client, None));
         };
 
-        let writer = crate::config::SessionWriter::new(file);
+        let writer = crate::config::SessionWriter::new(
+            file,
+            Arc::new(data_dir.session_blob_store(session.id)),
+        );
         let writer_for_callback = writer.clone();
         client =
             client.with_persist_callback(move |record| writer_for_callback.append_record(record));

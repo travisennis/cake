@@ -443,6 +443,29 @@ impl CompactionData {
         Ok(bytes)
     }
 
+    /// Remove image content ids from retained messages and tool outputs.
+    ///
+    /// Persisted checkpoints retain references. Stream-json and other
+    /// projections use this to keep the pre-blob image shape.
+    pub(crate) fn strip_image_content_ids(&mut self) {
+        for retained in &mut self.retained {
+            match &mut retained.record {
+                RetainedConversationRecord::Message(data) => {
+                    for image in &mut data.images {
+                        image.content_id = None;
+                    }
+                },
+                RetainedConversationRecord::FunctionCallOutput(data) => {
+                    for image in &mut data.images {
+                        image.content_id = None;
+                    }
+                },
+                RetainedConversationRecord::Reasoning(_)
+                | RetainedConversationRecord::FunctionCall(_) => {},
+            }
+        }
+    }
+
     /// Copy this checkpoint into another session's envelope.
     ///
     /// Fork seeding keeps the checkpoint's content and identity, and only

@@ -418,6 +418,7 @@ mod tests {
         ImagePart {
             media_type: "image/jpeg".to_string(),
             data_base64: "AAAA".to_string(),
+            content_id: None,
         }
     }
 

@@ -943,6 +943,12 @@ impl From<SessionRecord> for StreamRecord {
     }
 }
 
+fn strip_image_content_ids(images: &mut [ImagePart]) {
+    for image in images {
+        image.content_id = None;
+    }
+}
+
 /// Convert one activation metadata record without growing the main conversion
 /// match past its complexity ceiling.
 fn session_activation_stream_record(record: SessionRecord) -> StreamRecord {
@@ -976,6 +982,30 @@ fn session_activation_stream_record(record: SessionRecord) -> StreamRecord {
 }
 
 impl StreamRecord {
+    /// Remove image content ids from every stream payload shape.
+    ///
+    /// This covers message images, function-call-output images, and images
+    /// retained inside a checkpoint. It keeps replayed and hydrated stream
+    /// output in the shape clients received before blob storage existed.
+    pub fn strip_image_content_ids(&mut self) {
+        match self {
+            Self::Message(data) => strip_image_content_ids(&mut data.images),
+            Self::FunctionCallOutput(data) => strip_image_content_ids(&mut data.images),
+            Self::Compaction(data) => data.strip_image_content_ids(),
+            Self::SessionMeta { .. }
+            | Self::TaskStart(_)
+            | Self::PromptContext { .. }
+            | Self::FunctionCall(_)
+            | Self::SkillActivated { .. }
+            | Self::McpToolsActivated { .. }
+            | Self::HookEvent(_)
+            | Self::Reasoning(_)
+            | Self::TaskComplete(_)
+            | Self::TurnUsage(_)
+            | Self::ReplayError { .. } => {},
+        }
+    }
+
     /// Convert a [`ConversationItem`] into its corresponding `StreamRecord`
     /// variant without a replay declaration.
     pub fn from_conversation_item(item: &ConversationItem) -> Self {
@@ -1053,6 +1083,36 @@ impl StreamRecord {
 }
 
 impl SessionRecord {
+    /// Remove image content ids from every persisted payload shape.
+    ///
+    /// Session records keep references so a hydrated record can be written
+    /// again, but stream-json output must preserve the pre-blob shape. This is
+    /// the shared projection used by replay and any other stream emitter.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "replay strips the converted stream record; this keeps the shared projection complete for raw-record callers"
+        )
+    )]
+    pub fn strip_image_content_ids(&mut self) {
+        match self {
+            Self::Message(data) => strip_image_content_ids(&mut data.images),
+            Self::FunctionCallOutput(data) => strip_image_content_ids(&mut data.images),
+            Self::Compaction(data) => data.strip_image_content_ids(),
+            Self::SessionMeta { .. }
+            | Self::TaskStart(_)
+            | Self::PromptContext { .. }
+            | Self::FunctionCall(_)
+            | Self::SkillActivated { .. }
+            | Self::McpToolsActivated { .. }
+            | Self::HookEvent(_)
+            | Self::Reasoning(_)
+            | Self::TaskComplete(_)
+            | Self::TurnUsage(_) => {},
+        }
+    }
+
     /// Fill legacy omissions that are no longer absent in newly written sessions.
     pub(crate) fn normalize_legacy_fields(&mut self, fallback_timestamp: DateTime<Utc>) {
         match self {

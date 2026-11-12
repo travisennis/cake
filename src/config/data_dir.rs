@@ -175,19 +175,11 @@ impl DataDir {
     ///
     /// The directory is not created by this method; the first blob write
     /// creates it lazily.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired into persistence in Milestone 2")
-    )]
     pub fn session_blob_dir(&self, id: uuid::Uuid) -> PathBuf {
         self.sessions_dir().join(format!("{id}.blobs"))
     }
 
     /// Returns the content-addressed image store for a session UUID.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired into persistence in Milestone 2")
-    )]
     pub fn session_blob_store(&self, id: uuid::Uuid) -> BlobStore {
         BlobStore::new(self.session_blob_dir(id))
     }
@@ -310,7 +302,7 @@ impl DataDir {
                 (header.working_directory == working_dir).then_some((path, header.timestamp))
             })
             .max_by_key(|(_, timestamp)| *timestamp)
-            .map(|(path, _)| Session::load(&path))
+            .map(|(path, _)| self.load_session_file(&path))
             .transpose()?;
 
         if let Some(ref session) = result {
@@ -348,9 +340,40 @@ impl DataDir {
             return Ok(None);
         }
 
-        Session::load(&session_path).map(Some)
+        self.load_session_file(&session_path).map(Some)
+    }
+
+    /// Load and hydrate one session file discovered in this data directory.
+    ///
+    /// The filename UUID selects the blob directory, so the header id must
+    /// match it before any reference is resolved. Raw session readers remain
+    /// available for callers that only need identity or ordering.
+    fn load_session_file(&self, path: &Path) -> anyhow::Result<Session> {
+        let id = session_id_from_path(path)?;
+        let mut session = Session::load(path)?;
+        anyhow::ensure!(
+            session.id == id,
+            "Session header id {} does not match filename UUID {id} in {}",
+            session.id,
+            path.display()
+        );
+        self.session_blob_store(id)
+            .hydrate_session(&id.to_string(), &mut session.records)
+            .with_context(|| format!("Failed to hydrate session {} from {}", id, path.display()))?;
+        Ok(session)
     }
 }
+
+/// Parse the session UUID encoded in a session file's name.
+fn session_id_from_path(path: &Path) -> anyhow::Result<uuid::Uuid> {
+    let stem = path
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .ok_or_else(|| anyhow!("Session file name is not a UUID: {}", path.display()))?;
+    uuid::Uuid::parse_str(stem)
+        .with_context(|| format!("Session file name is not a UUID: {}", path.display()))
+}
+
 /// Minimal header struct for quickly inspecting a session file without
 /// loading the entire conversation history.
 #[derive(Deserialize)]
@@ -509,7 +532,11 @@ fn git_output(working_dir: &Path, args: &[&str]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::blob_store::ContentId;
     use crate::config::git::test_support::{init_repo, run_git};
+    use crate::types::session::MessageData;
+    use crate::types::{ImagePart, Role};
+    use base64::Engine as _;
     use tempfile::TempDir;
 
     fn test_data_dir() -> (DataDir, TempDir) {
@@ -553,6 +580,88 @@ mod tests {
         let store = dd.session_blob_store(id);
         assert_eq!(store.root(), expected.as_path());
         assert!(!expected.exists());
+    }
+
+    #[test]
+    fn load_session_hydrates_externalized_images() {
+        let (dd, _tmp) = test_data_dir();
+        let mut session = Session::new(uuid::Uuid::new_v4(), PathBuf::from("/work"));
+        let bytes = b"image bytes";
+        let id = dd
+            .session_blob_store(session.id)
+            .put(bytes)
+            .expect("put image");
+        session.records.push(SessionRecord::Message(MessageData {
+            role: Role::User,
+            content: "look".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+            images: vec![ImagePart {
+                media_type: "image/png".to_string(),
+                data_base64: String::new(),
+                content_id: Some(id.as_str().to_string()),
+            }],
+        }));
+        dd.save_session(&session).expect("save session");
+
+        let loaded = dd
+            .load_session(session.id)
+            .expect("load session")
+            .expect("session exists");
+        let SessionRecord::Message(data) = &loaded.records[1] else {
+            panic!("message shape");
+        };
+        assert_eq!(
+            data.images[0].data_base64,
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        );
+        assert_eq!(data.images[0].content_id.as_deref(), Some(id.as_str()));
+    }
+
+    #[test]
+    fn load_session_rejects_a_missing_image_blob() {
+        let (dd, _tmp) = test_data_dir();
+        let mut session = Session::new(uuid::Uuid::new_v4(), PathBuf::from("/work"));
+        let missing = ContentId::from_bytes(b"missing image");
+        session.records.push(SessionRecord::Message(MessageData {
+            role: Role::User,
+            content: "look".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+            images: vec![ImagePart {
+                media_type: "image/png".to_string(),
+                data_base64: String::new(),
+                content_id: Some(missing.as_str().to_string()),
+            }],
+        }));
+        dd.save_session(&session).expect("save session");
+
+        let error = dd.load_session(session.id).expect_err("missing blob");
+        let text = format!("{error:#}");
+        assert!(text.contains(&session.id.to_string()), "{text}");
+        assert!(text.contains(missing.as_str()), "{text}");
+        assert!(text.contains("does not exist"), "{text}");
+    }
+
+    #[test]
+    fn load_session_rejects_a_header_filename_mismatch() {
+        let (dd, _tmp) = test_data_dir();
+        let filename_id = uuid::Uuid::new_v4();
+        let header_id = uuid::Uuid::new_v4();
+        let session = Session::new(header_id, PathBuf::from("/work"));
+        let path = dd.session_path(filename_id);
+        drop(
+            Session::create_on_disk(&path, &session_meta_record(&session, Vec::new()))
+                .expect("create mismatched session"),
+        );
+
+        let error = dd.load_session(filename_id).expect_err("identity mismatch");
+        let text = format!("{error:#}");
+        assert!(text.contains(&filename_id.to_string()), "{text}");
+        assert!(text.contains(&header_id.to_string()), "{text}");
+        assert!(text.contains("does not match"), "{text}");
     }
 
     #[test]

@@ -107,6 +107,7 @@ pub(super) fn execute_read_image(
         images: vec![ImagePart {
             media_type: prepared.media_type.to_string(),
             data_base64: base64::engine::general_purpose::STANDARD.encode(&prepared.bytes),
+            content_id: None,
         }],
         compensation_events: Vec::new(),
         permission_denials: Vec::new(),
