@@ -953,6 +953,10 @@ fn strip_image_content_ids_covers_message_output_and_checkpoint_images() {
         vec![retained],
     ));
 
+    assert_eq!(message.image_parts().len(), 1);
+    assert_eq!(output.image_parts().len(), 1);
+    assert_eq!(checkpoint.image_parts().len(), 1);
+
     for record in [&mut message, &mut output, &mut checkpoint] {
         record.strip_image_content_ids();
     }

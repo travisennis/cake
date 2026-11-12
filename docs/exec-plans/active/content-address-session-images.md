@@ -17,7 +17,7 @@ Tool-output externalization is out of scope for this task. At current defaults B
 - [x] Milestone 1: add `ContentId`, the per-session `BlobStore`, shared no-follow root validation, `.tmp-` naming, parent-directory sync, and `DataDir::session_blob_dir` / `session_blob_store`.
 - [x] Milestone 1: cover digest paths, write-once publication, owner-only modes, no-follow behavior, temp cleanup, parent and destination directory sync paths, concurrent writers, and corrupt reuse with unit tests.
 - [x] Milestone 2: add optional `ImagePart.content_id`, carry it through the conversions, externalize images in the session writer, and hydrate on load and replay.
-- [ ] Milestone 2: hard-link parent blobs into a fork and prove a missing blob fails before the provider request.
+- [x] Milestone 2: hard-link parent blobs into a fork and prove a missing blob fails before the provider request.
 - [ ] Milestone 2: prove an image round trip through a real CLI run with a mock provider.
 - [ ] Milestone 3: externalize retained checkpoint images before the eight-MiB check and in `cake sessions checkpoint`.
 - [ ] Milestone 3: add checkpoint, fork, replay, and legacy-inline regression tests.
@@ -50,7 +50,9 @@ Tool-output externalization is out of scope for this task. At current defaults B
 
 Milestone 1 is implemented. `src/config/blob_store.rs` has validated content ids, write-once publication, verified reads, hard-link forks, owner-only modes, no-follow root checks, `.tmp-` cleanup naming, and parent/destination directory syncs. `DataDir` exposes the sibling path and store without creating the directory.
 
-Milestone 2 core is implemented. `ImagePart` carries an optional `content_id`; the live record keeps inline bytes while `SessionWriter` externalizes a clone under its mutex and fails terminally on a blob error. `DataDir` validates the filename UUID against the header and hydrates before returning a provider-bound session; replay hydrates before emitting and strips references from message, function-call-output, and checkpoint-retained images. The targeted store, session-record, data-directory, and replay tests pass, as does the full 2155-test unit suite; `just cc-check` is clean. Fork hard links and the mock-provider CLI round trip remain in Milestone 2.
+Milestone 2 core is implemented. `ImagePart` carries an optional `content_id`; the live record keeps inline bytes while `SessionWriter` externalizes a clone under its mutex and fails terminally on a blob error. `DataDir` validates the filename UUID against the header and hydrates before returning a provider-bound session; replay hydrates before emitting and strips references from message, function-call-output, and checkpoint-retained images. The targeted store, session-record, data-directory, and replay tests pass, as does the full 2155-test unit suite; `just cc-check` is clean.
+
+Fork provisioning is implemented. `SessionPersistencePlan::Create` carries `blob_source`; seed creation hard-links every referenced parent blob, externalizes legacy inline message and function-call-output images, and then writes the fork file by reference. A failure removes the incomplete child file and any blob directory the fork created, and a missing parent blob fails before the child file exists. `SessionRecord::image_parts` is the shared traversal for message, output, and checkpoint-retained images. The fork test asserts matching content ids, a shared inode, and a link count of at least two; the missing-blob test asserts no child file or blob directory is left behind. The mock-provider CLI round trip remains in Milestone 2.
 
 ## Context and Orientation
 

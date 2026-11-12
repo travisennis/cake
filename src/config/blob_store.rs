@@ -10,14 +10,8 @@
 //! append lock serializes writers, and recovery is scoped to one session. See
 //! ADR 061 and `docs/exec-plans/active/content-address-session-images.md`.
 
-// The primitive is wired into persistence in Milestone 2. Keep it warning-free
-// while the store and its tests land before the call sites.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired into persistence in Milestone 2")
-)]
-
 use std::{
+    collections::BTreeSet,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -127,6 +121,10 @@ impl BlobStore {
 
     /// Return the configured store root.
     #[must_use]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "diagnostics use the root in Milestone 4")
+    )]
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -259,6 +257,54 @@ impl BlobStore {
             _ => {},
         }
         Ok(externalized)
+    }
+
+    /// Prepare fork seed records for a child session.
+    ///
+    /// Every content id referenced by `records` is hard-linked from `source`
+    /// and verified in this store. Images that remain inline in legacy seed
+    /// records are then externalized into this store. A missing or corrupt
+    /// parent blob fails before the caller creates the child session file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the record and digest when a reference is
+    /// invalid, a parent blob is missing or corrupt, or an inline image cannot
+    /// be stored or verified. Error text never includes image bytes.
+    pub fn prepare_fork_seed_records(
+        &self,
+        source: &Self,
+        records: &[SessionRecord],
+    ) -> anyhow::Result<Vec<SessionRecord>> {
+        let mut referenced = BTreeSet::new();
+        for (record_index, record) in records.iter().enumerate() {
+            for (image_index, image) in record.image_parts().iter().enumerate() {
+                let Some(value) = image.content_id.as_deref() else {
+                    continue;
+                };
+                let id = ContentId::parse(value).with_context(|| {
+                    format!(
+                        "fork seed record {record_index} image {image_index} has an invalid content id"
+                    )
+                })?;
+                referenced.insert(id);
+            }
+        }
+
+        for id in &referenced {
+            self.link_verified(source, id)
+                .with_context(|| format!("failed to link fork blob '{id}'"))?;
+        }
+
+        records
+            .iter()
+            .enumerate()
+            .map(|(record_index, record)| {
+                self.externalize_record(record).with_context(|| {
+                    format!("failed to externalize fork seed record {record_index}")
+                })
+            })
+            .collect()
     }
 
     /// Restore every referenced image in `records` from this store.
@@ -718,10 +764,12 @@ fn temp_file_name() -> String {
     format!("{TEMP_PREFIX}{}-{nanos}-{counter}", std::process::id())
 }
 
+#[cfg(test)]
 fn is_digest_name(name: &str) -> bool {
     ContentId::parse(name).is_ok()
 }
 
+#[cfg(test)]
 fn is_temp_name(name: &str) -> bool {
     name.starts_with(TEMP_PREFIX)
 }

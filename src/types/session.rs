@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::types::compaction::CompactionData;
+use crate::types::compaction::{CompactionData, RetainedConversationRecord};
 use crate::types::conversation::{
     ConversationItem, ImagePart, ReasoningContent, ReasoningSummary, Role,
 };
@@ -1083,6 +1083,45 @@ impl StreamRecord {
 }
 
 impl SessionRecord {
+    /// Return every image carried by this record, including images retained
+    /// inside a checkpoint.
+    ///
+    /// This is the shared traversal for blob references; fork provisioning and
+    /// future recovery and diagnostics must use it so a new payload-bearing
+    /// record cannot be missed by one caller.
+    pub(crate) fn image_parts(&self) -> Vec<&ImagePart> {
+        match self {
+            Self::Message(data) => data.images.iter().collect(),
+            Self::FunctionCallOutput(data) => data.images.iter().collect(),
+            Self::Compaction(checkpoint) => {
+                let mut images = Vec::new();
+                for retained in &checkpoint.retained {
+                    match &retained.record {
+                        RetainedConversationRecord::Message(data) => {
+                            images.extend(data.images.iter());
+                        },
+                        RetainedConversationRecord::FunctionCallOutput(data) => {
+                            images.extend(data.images.iter());
+                        },
+                        RetainedConversationRecord::Reasoning(_)
+                        | RetainedConversationRecord::FunctionCall(_) => {},
+                    }
+                }
+                images
+            },
+            Self::SessionMeta { .. }
+            | Self::TaskStart(_)
+            | Self::PromptContext { .. }
+            | Self::FunctionCall(_)
+            | Self::SkillActivated { .. }
+            | Self::McpToolsActivated { .. }
+            | Self::HookEvent(_)
+            | Self::Reasoning(_)
+            | Self::TaskComplete(_)
+            | Self::TurnUsage(_) => Vec::new(),
+        }
+    }
+
     /// Remove image content ids from every persisted payload shape.
     ///
     /// Session records keep references so a hydrated record can be written

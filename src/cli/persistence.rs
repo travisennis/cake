@@ -1,6 +1,8 @@
 //! Execute session persistence plans while retaining one locked file handle.
 
-use std::fs::File;
+use std::{fs, fs::File, path::Path};
+
+use uuid::Uuid;
 
 use crate::cli::SessionPersistencePlan;
 use crate::config::{DataDir, Session};
@@ -22,11 +24,17 @@ pub fn execute_persistence_plan(
     };
 
     let file = match plan {
-        SessionPersistencePlan::Create { seed_records } => create_seeded_session_file(
+        SessionPersistencePlan::Create {
+            seed_records,
+            blob_source,
+        } => create_seeded_session_file(
             data_dir,
             session,
-            tools,
-            &seed_records,
+            SeedRequest {
+                tools,
+                seed_records: &seed_records,
+                blob_source,
+            },
             Session::append_records,
         )?,
         SessionPersistencePlan::Append => data_dir.open_session_for_append(session.id)?,
@@ -35,17 +43,30 @@ pub fn execute_persistence_plan(
     Ok(Some(file))
 }
 
+struct SeedRequest<'a> {
+    tools: Vec<String>,
+    seed_records: &'a [SessionRecord],
+    blob_source: Option<Uuid>,
+}
+
 /// Create and seed a session under one lock.
 ///
-/// A seed-write failure removes the incomplete new file after releasing its
-/// handle. If cleanup also fails, the returned error reports both failures.
+/// A fork links the parent's referenced blobs into the child and externalizes
+/// any legacy inline seed images before the child file exists. A failure after
+/// provisioning begins removes the incomplete file and any blob directory this
+/// fork created. If cleanup also fails, the returned error reports both
+/// failures.
 fn create_seeded_session_file(
     data_dir: &DataDir,
     session: &Session,
-    tools: Vec<String>,
-    seed_records: &[SessionRecord],
+    request: SeedRequest<'_>,
     append_seed_records: impl FnOnce(&mut File, &[SessionRecord]) -> anyhow::Result<()>,
 ) -> anyhow::Result<File> {
+    let SeedRequest {
+        tools,
+        seed_records,
+        blob_source,
+    } = request;
     if seed_records
         .iter()
         .any(|record| matches!(record, SessionRecord::SessionMeta { .. }))
@@ -53,22 +74,103 @@ fn create_seeded_session_file(
         anyhow::bail!("Cannot seed a new session with a session_meta record");
     }
 
+    let blob_dir = blob_source.map(|_| data_dir.session_blob_dir(session.id));
+    // Capture this before linking; only a directory this fork creates is
+    // removed on failure. A pre-existing directory may hold another writer's
+    // data and is left in place.
+    let created_blob_dir = blob_dir.as_deref().filter(|path| {
+        matches!(
+            fs::symlink_metadata(path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        )
+    });
+    let prepared_records = blob_source.map_or_else(
+        || Ok(None),
+        |source_id| {
+            data_dir
+                .session_blob_store(session.id)
+                .prepare_fork_seed_records(&data_dir.session_blob_store(source_id), seed_records)
+                .map(Some)
+        },
+    );
+    let prepared_records = match prepared_records {
+        Ok(prepared_records) => prepared_records,
+        Err(error) => {
+            let error = error.context(format!(
+                "Failed to prepare image blobs for new session {}",
+                session.id
+            ));
+            return Err(attach_cleanup_errors(
+                error,
+                cleanup_created_blob_dir(created_blob_dir),
+            ));
+        },
+    };
+    let seed_records = prepared_records.as_deref().unwrap_or(seed_records);
+
     let path = data_dir.session_path(session.id);
-    let mut file = data_dir.create_session_file(session, tools)?;
+    let path_was_absent = matches!(
+        fs::symlink_metadata(&path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    );
+    let mut file = match data_dir.create_session_file(session, tools) {
+        Ok(file) => file,
+        Err(error) => {
+            let error = error.context(format!("Failed to create new session {}", session.id));
+            let cleanup_errors = if path_was_absent {
+                cleanup_incomplete_create(&path, created_blob_dir)
+            } else {
+                cleanup_created_blob_dir(created_blob_dir)
+            };
+            return Err(attach_cleanup_errors(error, cleanup_errors));
+        },
+    };
 
     if let Err(error) = append_seed_records(&mut file, seed_records) {
         let error = error.context(format!("Failed to seed new session {}", session.id));
         drop(file);
-        return match std::fs::remove_file(&path) {
-            Ok(()) => Err(error),
-            Err(cleanup_error) => Err(error.context(format!(
-                "Failed to remove incomplete session file {}: {cleanup_error}",
-                path.display()
-            ))),
-        };
+        return Err(attach_cleanup_errors(
+            error,
+            cleanup_incomplete_create(&path, created_blob_dir),
+        ));
     }
 
     Ok(file)
+}
+
+fn cleanup_incomplete_create(path: &Path, created_blob_dir: Option<&Path>) -> Vec<String> {
+    let mut errors = Vec::new();
+    if let Err(error) = fs::remove_file(path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        errors.push(format!(
+            "Failed to remove incomplete session file {}: {error}",
+            path.display()
+        ));
+    }
+    errors.extend(cleanup_created_blob_dir(created_blob_dir));
+    errors
+}
+
+fn cleanup_created_blob_dir(created_blob_dir: Option<&Path>) -> Vec<String> {
+    let Some(blob_dir) = created_blob_dir else {
+        return Vec::new();
+    };
+    match fs::remove_dir_all(blob_dir) {
+        Ok(()) => Vec::new(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => vec![format!(
+            "Failed to remove incomplete blob directory {}: {error}",
+            blob_dir.display()
+        )],
+    }
+}
+
+fn attach_cleanup_errors(mut error: anyhow::Error, cleanup_errors: Vec<String>) -> anyhow::Error {
+    for cleanup_error in cleanup_errors {
+        error = error.context(cleanup_error);
+    }
+    error
 }
 
 #[cfg(test)]
@@ -101,6 +203,7 @@ mod tests {
         let path = data_dir.session_path(session.id);
         let plan = SessionPersistencePlan::Create {
             seed_records: vec![seed_record("first"), seed_record("second")],
+            blob_source: None,
         };
 
         let file = execute_persistence_plan(Some(plan), &data_dir, &session, Vec::new())
@@ -198,8 +301,15 @@ mod tests {
         let path = data_dir.session_path(session.id);
         let seeds = vec![seed_record("unwritten")];
 
-        let error =
-            create_seeded_session_file(&data_dir, &session, Vec::new(), &seeds, |file, records| {
+        let error = create_seeded_session_file(
+            &data_dir,
+            &session,
+            SeedRequest {
+                tools: Vec::new(),
+                seed_records: &seeds,
+                blob_source: None,
+            },
+            |file, records| {
                 assert!(path.exists(), "metadata file should exist before seeding");
                 assert!(
                     Session::open_for_append(&path).is_err(),
@@ -207,8 +317,9 @@ mod tests {
                 );
                 Session::append_record(file, &records[0])?;
                 Err(anyhow::anyhow!("forced seed failure"))
-            })
-            .expect_err("seed failure should abort create");
+            },
+        )
+        .expect_err("seed failure should abort create");
 
         assert!(error.to_string().contains("Failed to seed new session"));
         assert!(format!("{error:#}").contains("forced seed failure"));
@@ -238,6 +349,7 @@ mod tests {
         let target_path = data_dir.session_path(target.id);
         let plan = SessionPersistencePlan::Create {
             seed_records: vec![source_meta],
+            blob_source: None,
         };
         let error = execute_persistence_plan(Some(plan), &data_dir, &target, Vec::new())
             .expect_err("metadata seed should be rejected");

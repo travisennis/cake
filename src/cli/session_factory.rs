@@ -299,7 +299,10 @@ impl crate::CodingAssistant {
         Ok(RunSession {
             agent,
             session,
-            persistence: Some(SessionPersistencePlan::Create { seed_records }),
+            persistence: Some(SessionPersistencePlan::Create {
+                seed_records,
+                blob_source: Some(restored.id),
+            }),
             effective_provider_identity: Some(effective_provider_identity),
             session_model_change_override,
         })
@@ -358,6 +361,7 @@ impl crate::CodingAssistant {
                     .persists_session()
                     .then_some(SessionPersistencePlan::Create {
                         seed_records: Vec::new(),
+                        blob_source: None,
                     }),
             ),
         }
@@ -619,6 +623,7 @@ mod tests {
     use crate::config::settings::ModelDefinition;
     use crate::config::skills::SkillCatalog;
     use crate::types::ImagePart;
+    use base64::Engine as _;
     use clap::Parser;
     use std::collections::HashSet;
 
@@ -955,7 +960,7 @@ mod tests {
         );
         assert!(matches!(
             run.persistence.as_ref(),
-            Some(SessionPersistencePlan::Create { seed_records })
+            Some(SessionPersistencePlan::Create { seed_records, .. })
                 if matches!(
                     seed_records.first(),
                     Some(SessionRecord::SkillActivated { name, .. }) if name == "debugging-cake"
@@ -985,7 +990,8 @@ mod tests {
         .expect("fork should succeed");
 
         let new_session_id = run.agent.session_id().to_string();
-        let Some(SessionPersistencePlan::Create { seed_records }) = run.persistence.as_ref() else {
+        let Some(SessionPersistencePlan::Create { seed_records, .. }) = run.persistence.as_ref()
+        else {
             panic!("a fork persists a new session");
         };
         let activation = seed_records
@@ -1048,6 +1054,52 @@ mod tests {
             .save_session(&session)
             .expect("session fixture should save");
         session
+    }
+
+    /// Persist a session with one referenced image. `inline_bytes` selects the
+    /// legacy shape that can still load after its blob is removed.
+    fn saved_session_with_image(
+        data_dir: &DataDir,
+        working_dir: &Path,
+        inline_bytes: bool,
+    ) -> (Session, String) {
+        let bytes = b"fork image";
+        let mut session = Session::new(uuid::Uuid::new_v4(), working_dir.to_path_buf());
+        session.model = Some("glm-5.1".to_string());
+        session.model_config = Some("test".to_string());
+        session.provider_identity = Some(test_provider_identity());
+        let content_id = data_dir
+            .session_blob_store(session.id)
+            .put(bytes)
+            .expect("source blob");
+        session.records.push(SessionRecord::Message(MessageData {
+            role: crate::types::Role::User,
+            content: "look".to_string(),
+            id: None,
+            status: None,
+            timestamp: None,
+            images: vec![ImagePart {
+                media_type: "image/png".to_string(),
+                data_base64: if inline_bytes {
+                    base64::engine::general_purpose::STANDARD.encode(bytes)
+                } else {
+                    String::new()
+                },
+                content_id: Some(content_id.as_str().to_owned()),
+            }],
+        }));
+        data_dir
+            .save_session(&session)
+            .expect("session fixture should save");
+        (session, content_id.as_str().to_owned())
+    }
+
+    fn image_content_ids(records: &[SessionRecord]) -> Vec<String> {
+        records
+            .iter()
+            .flat_map(|record| record.image_parts())
+            .filter_map(|image| image.content_id.clone())
+            .collect()
     }
 
     /// Call `build_client_and_session` with the shared test fixtures.
@@ -1411,6 +1463,115 @@ mod tests {
     }
 
     #[test]
+    fn fork_hard_links_referenced_blobs_and_writes_content_ids() {
+        temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
+            let cli = crate::CodingAssistant::parse_from(["cake"]);
+            let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+            let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+            let working_dir = tempfile::tempdir().expect("temp working dir");
+            let (source, content_id) =
+                saved_session_with_image(&data_dir, working_dir.path(), false);
+
+            let run = build_for_mode(
+                &cli,
+                &RunMode::Fork {
+                    session_id: source.id,
+                },
+                &data_dir,
+                working_dir.path(),
+            )
+            .expect("fork should succeed");
+            let fork_id = run.session.id;
+            let Some(SessionPersistencePlan::Create {
+                seed_records,
+                blob_source,
+            }) = run.persistence.as_ref()
+            else {
+                panic!("a fork persists a new session");
+            };
+            assert_eq!(*blob_source, Some(source.id));
+            assert_eq!(image_content_ids(seed_records), vec![content_id.clone()]);
+
+            let file = crate::cli::execute_persistence_plan(
+                run.persistence,
+                &data_dir,
+                &run.session,
+                Vec::new(),
+            )
+            .expect("fork persistence should succeed")
+            .expect("fork creates a file");
+            drop(file);
+
+            let forked = data_dir
+                .load_session(fork_id)
+                .expect("fork should load")
+                .expect("fork exists");
+            assert_eq!(image_content_ids(&forked.records), vec![content_id.clone()]);
+            let raw = std::fs::read_to_string(data_dir.session_path(fork_id))
+                .expect("fork JSONL should read");
+            assert!(raw.contains(&content_id));
+            assert!(
+                !raw.contains("data_base64"),
+                "fork seeds must be written by reference"
+            );
+
+            let source_blob = data_dir.session_blob_dir(source.id).join(&content_id);
+            let fork_blob = data_dir.session_blob_dir(fork_id).join(&content_id);
+            assert_eq!(
+                std::fs::read(&source_blob).expect("source blob"),
+                b"fork image"
+            );
+            assert_eq!(std::fs::read(&fork_blob).expect("fork blob"), b"fork image");
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt as _;
+                let source_meta = std::fs::metadata(&source_blob).expect("source metadata");
+                let fork_meta = std::fs::metadata(&fork_blob).expect("fork metadata");
+                assert_eq!(source_meta.ino(), fork_meta.ino());
+                assert!(source_meta.nlink() >= 2);
+            }
+        });
+    }
+
+    #[test]
+    fn fork_missing_parent_blob_fails_before_creating_the_child() {
+        temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
+            let cli = crate::CodingAssistant::parse_from(["cake"]);
+            let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+            let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+            let working_dir = tempfile::tempdir().expect("temp working dir");
+            let (source, content_id) =
+                saved_session_with_image(&data_dir, working_dir.path(), true);
+            std::fs::remove_file(data_dir.session_blob_dir(source.id).join(&content_id))
+                .expect("remove source blob");
+
+            let run = build_for_mode(
+                &cli,
+                &RunMode::Fork {
+                    session_id: source.id,
+                },
+                &data_dir,
+                working_dir.path(),
+            )
+            .expect("inline source bytes should still load");
+            let fork_id = run.session.id;
+            let error = crate::cli::execute_persistence_plan(
+                run.persistence,
+                &data_dir,
+                &run.session,
+                Vec::new(),
+            )
+            .expect_err("a missing parent blob must fail the fork");
+            let detail = format!("{error:#}");
+            assert!(detail.contains(&content_id), "{detail}");
+            assert!(detail.contains("failed to link fork blob"), "{detail}");
+            assert!(!data_dir.session_path(fork_id).exists());
+            assert!(!data_dir.session_blob_dir(fork_id).exists());
+        });
+    }
+
+    #[test]
     fn resume_unknown_session_reports_not_found() {
         let cli = crate::CodingAssistant::parse_from(["cake"]);
         let data_dir_dir = tempfile::tempdir().expect("temp data dir");
@@ -1452,7 +1613,7 @@ mod tests {
             assert!(
                 matches!(
                     run.persistence.as_ref(),
-                    Some(SessionPersistencePlan::Create { seed_records })
+                    Some(SessionPersistencePlan::Create { seed_records, .. })
                         if matches!(
                             seed_records.first(),
                             Some(SessionRecord::SkillActivated { name, .. }) if name == "debugging-cake"
@@ -1511,7 +1672,7 @@ mod tests {
 
             assert!(matches!(
                 run.persistence,
-                Some(SessionPersistencePlan::Create { seed_records }) if seed_records.is_empty()
+                Some(SessionPersistencePlan::Create { seed_records, .. }) if seed_records.is_empty()
             ));
         });
     }
@@ -1779,7 +1940,8 @@ mod tests {
         )
         .expect("fork should succeed");
 
-        let Some(SessionPersistencePlan::Create { seed_records }) = run.persistence.as_ref() else {
+        let Some(SessionPersistencePlan::Create { seed_records, .. }) = run.persistence.as_ref()
+        else {
             panic!("a fork persists a new session");
         };
         assert_fork_seed(seed_records, &run.agent.session_id().to_string());
@@ -1858,7 +2020,8 @@ mod tests {
         )
         .expect("fork should succeed");
 
-        let Some(SessionPersistencePlan::Create { seed_records }) = run.persistence.as_ref() else {
+        let Some(SessionPersistencePlan::Create { seed_records, .. }) = run.persistence.as_ref()
+        else {
             panic!("a fork persists a new session");
         };
         assert_eq!(

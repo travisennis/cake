@@ -118,7 +118,12 @@ mod tests {
 #[derive(Debug)]
 pub enum SessionPersistencePlan {
     /// Create a new session file and write these records after its metadata.
-    Create { seed_records: Vec<SessionRecord> },
+    Create {
+        seed_records: Vec<SessionRecord>,
+        /// Parent session whose image blobs are hard-linked into the child
+        /// before the seed records are written. A plain create has none.
+        blob_source: Option<uuid::Uuid>,
+    },
     /// Append to an existing session file.
     Append,
 }

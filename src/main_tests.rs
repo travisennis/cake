@@ -879,7 +879,8 @@ fn forked_session_seeds_skills_from_structured_records() {
     )
     .unwrap();
 
-    let Some(SessionPersistencePlan::Create { seed_records }) = run_session.persistence.as_ref()
+    let Some(SessionPersistencePlan::Create { seed_records, .. }) =
+        run_session.persistence.as_ref()
     else {
         panic!("fork should produce a create plan with seed records")
     };
