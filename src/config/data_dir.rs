@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use crate::config::session_jsonl::SessionFramer;
-use crate::config::{Session, git, session::CURRENT_FORMAT_VERSION};
+use crate::config::{BlobStore, Session, git, session::CURRENT_FORMAT_VERSION};
 use crate::types::{GitState, SessionRecord};
 
 /// A data-directory preparation failure.
@@ -169,6 +169,27 @@ impl DataDir {
     /// Returns the canonical path for a session UUID.
     pub fn session_path(&self, id: uuid::Uuid) -> PathBuf {
         self.sessions_dir().join(format!("{id}.jsonl"))
+    }
+
+    /// Returns the blob directory sibling for a session UUID.
+    ///
+    /// The directory is not created by this method; the first blob write
+    /// creates it lazily.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "wired into persistence in Milestone 2")
+    )]
+    pub fn session_blob_dir(&self, id: uuid::Uuid) -> PathBuf {
+        self.sessions_dir().join(format!("{id}.blobs"))
+    }
+
+    /// Returns the content-addressed image store for a session UUID.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "wired into persistence in Milestone 2")
+    )]
+    pub fn session_blob_store(&self, id: uuid::Uuid) -> BlobStore {
+        BlobStore::new(self.session_blob_dir(id))
     }
 
     /// Returns the canonical telemetry sidecar path for a session UUID.
@@ -518,6 +539,20 @@ mod tests {
             sessions_dir: root.clone(),
         };
         assert_eq!(dd.sandbox_read_dirs(), vec![root]);
+    }
+
+    #[test]
+    fn session_blob_dir_is_a_sibling_and_is_not_created() {
+        let (dd, _tmp) = test_data_dir();
+        let id = uuid::Uuid::new_v4();
+        let expected = dd.sessions_dir().join(format!("{id}.blobs"));
+
+        assert_eq!(dd.session_blob_dir(id), expected);
+        assert!(!expected.exists());
+
+        let store = dd.session_blob_store(id);
+        assert_eq!(store.root(), expected.as_path());
+        assert!(!expected.exists());
     }
 
     #[test]

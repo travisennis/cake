@@ -12,6 +12,7 @@
 //! - [`SettingsLoader`] - Loads settings from TOML files
 
 mod agents;
+pub mod blob_store;
 mod config_dir;
 mod data_dir;
 pub mod gates;
@@ -35,6 +36,8 @@ use std::path::PathBuf;
 
 #[doc(inline)]
 pub use agents::{AgentsFile, read_agents_files};
+#[doc(inline)]
+pub use blob_store::BlobStore;
 #[doc(inline)]
 pub use config_dir::config_dir;
 #[doc(inline)]
