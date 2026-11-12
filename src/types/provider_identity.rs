@@ -51,8 +51,10 @@ impl Display for ProviderCredentialSource {
 ///
 /// Every field is optional and omitted when unset. `provider_headers_digest`
 /// is the SHA-256 digest of the configured provider header values; the raw
-/// values are never persisted.
+/// values are never persisted. Unknown fields are rejected so a binary cannot
+/// silently compare a partial request-shape snapshot.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderRequestShape {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
@@ -91,7 +93,10 @@ impl ProviderRequestShape {
 ///
 /// Additive to session format version 4: the whole object is optional on
 /// `session_meta`, and every nested field is optional or omitted when absent.
+/// Unknown fields are rejected so a binary that does not understand a newer
+/// identity shape fails closed instead of comparing a partial snapshot.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderIdentity {
     /// The `[[models]]` entry name the session was created with.
     pub model_config: String,

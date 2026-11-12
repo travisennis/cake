@@ -32,6 +32,34 @@ fn identity_serializes_only_present_optional_fields() {
 }
 
 #[test]
+fn unknown_identity_fields_are_rejected() {
+    let mut json = serde_json::to_value(env_identity()).unwrap();
+    json["future_destination_control"] = serde_json::json!("enabled");
+
+    let error = serde_json::from_value::<ProviderIdentity>(json)
+        .expect_err("unknown top-level identity fields must fail closed");
+    let message = error.to_string();
+    assert!(
+        message.contains("unknown field `future_destination_control`"),
+        "{message}"
+    );
+}
+
+#[test]
+fn unknown_request_shape_fields_are_rejected() {
+    let mut json = serde_json::to_value(env_identity()).unwrap();
+    json["request_shape"] = serde_json::json!({ "future_request_control": "enabled" });
+
+    let error = serde_json::from_value::<ProviderIdentity>(json)
+        .expect_err("unknown request-shape fields must fail closed");
+    let message = error.to_string();
+    assert!(
+        message.contains("unknown field `future_request_control`"),
+        "{message}"
+    );
+}
+
+#[test]
 fn codex_identity_serializes_account_digest_without_a_token_field() {
     let identity = ProviderIdentity {
         credential: ProviderCredentialSource::CodexFile {
