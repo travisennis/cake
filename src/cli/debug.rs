@@ -1,10 +1,13 @@
 use crate::cli::settings::load_settings;
 use crate::cli::{
-    CHECK_MCP_CONFIG, CHECK_MCP_SERVER, CmdRunner, CommandRunOptions, DiagnosticCheck,
-    DiagnosticDocument, report_failure, settings_warnings,
+    CHECK_BLOBS_DIRECTORY, CHECK_BLOBS_ORPHANED_STORE, CHECK_BLOBS_REFERENCE_CORRUPT,
+    CHECK_BLOBS_REFERENCE_MISSING, CHECK_BLOBS_SESSION, CHECK_BLOBS_TEMPORARY,
+    CHECK_BLOBS_UNREFERENCED, CHECK_MCP_CONFIG, CHECK_MCP_SERVER, CmdRunner, CommandRunOptions,
+    DiagnosticCheck, DiagnosticDocument, report_failure, settings_warnings,
 };
 use crate::clients::SandboxPolicy;
 use crate::clients::mcp::connect_server;
+use crate::config::blob_store::{BlobDiagnostics, SessionBlobDiagnostics};
 use crate::config::mcp::discover_mcp_servers;
 use crate::config::model::ApiType;
 use crate::config::settings::LoadedSettings;
@@ -34,6 +37,7 @@ Examples:
   cake debug config
   cake debug config --json | jq '.data.model'
   cake debug session 550e8400-e29b-41d4-a716-446655440000 --json | jq '.data.tasks'
+  cake debug blobs --json | jq '.data.blobs.totals'
   cake debug skills --catalog-budget 4000
   cake debug skills --json | jq '.data.skills[].name'
   cake debug grants --json | jq '.data.read_write[]'
@@ -95,6 +99,18 @@ Examples:
         #[arg(long, value_name = "MS", default_value_t = 2000)]
         slow_ms: u64,
         /// Output the session diagnostic as one JSON document
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Report session image blob health without deleting anything
+    #[command(after_help = "\
+Examples:
+  cake debug blobs
+  cake debug blobs --json | jq '.data.blobs.totals'
+
+This command is read-only. Resume-time recovery removes unreferenced blobs.")]
+    Blobs {
+        /// Output the blob report as one diagnostic JSON document
         #[arg(long, default_value_t = false)]
         json: bool,
     },
@@ -218,6 +234,7 @@ impl CmdRunner for DebugCommand {
                 data_dir,
                 options,
             ),
+            DebugSubcommand::Blobs { json } => run_blobs(*json, data_dir),
             DebugSubcommand::Session {
                 uuid,
                 export,
@@ -271,6 +288,274 @@ impl CmdRunner for DebugCommand {
             ),
             DebugSubcommand::Mcp { json, mcp_config } => run_mcp(*json, mcp_config, options).await,
         }
+    }
+}
+
+/// Report session image blob health without deleting anything.
+fn run_blobs(json: bool, data_dir: &DataDir) -> anyhow::Result<()> {
+    let diagnostics = data_dir
+        .blob_diagnostics()
+        .map_err(|error| report_failure(json, "debug blobs", CHECK_BLOBS_DIRECTORY, error))?;
+    if json {
+        print_blob_document(&diagnostics);
+    } else {
+        print!("{}", format_blob_diagnostics(&diagnostics));
+    }
+    Ok(())
+}
+
+/// Turn report findings into stable diagnostic checks.
+fn blob_checks(diagnostics: &BlobDiagnostics) -> Vec<DiagnosticCheck> {
+    let mut checks = Vec::new();
+    for session in &diagnostics.sessions {
+        append_session_blob_checks(session, &mut checks);
+    }
+    for store in &diagnostics.orphaned_stores {
+        if let Some(error) = &store.directory_error {
+            checks.push(DiagnosticCheck::warning(
+                CHECK_BLOBS_DIRECTORY,
+                format!(
+                    "orphaned blob directory {}: {error}",
+                    store.blob_dir.display()
+                ),
+            ));
+        }
+        checks.push(DiagnosticCheck::warning(
+            CHECK_BLOBS_ORPHANED_STORE,
+            format!(
+                "blob directory {} has no matching session file ({} blob(s), {} bytes)",
+                store.blob_dir.display(),
+                store.blob_count,
+                store.stored_bytes
+            ),
+        ));
+        if store.temporary_file_count > 0 {
+            checks.push(DiagnosticCheck::warning(
+                CHECK_BLOBS_TEMPORARY,
+                format!(
+                    "orphaned blob directory {}: {} stale temporary blob file(s)",
+                    store.blob_dir.display(),
+                    store.temporary_file_count
+                ),
+            ));
+        }
+    }
+    checks
+}
+
+/// Append the findings for one session report.
+fn append_session_blob_checks(session: &SessionBlobDiagnostics, checks: &mut Vec<DiagnosticCheck>) {
+    if let Some(error) = &session.session_error {
+        checks.push(DiagnosticCheck::warning(
+            CHECK_BLOBS_SESSION,
+            format!("session {}: {error}", session.session_id),
+        ));
+    } else if !session.references_complete {
+        checks.push(DiagnosticCheck::warning(
+            CHECK_BLOBS_SESSION,
+            format!(
+                "session {}: image references could not be collected completely",
+                session.session_id
+            ),
+        ));
+    }
+    if let Some(error) = &session.directory_error {
+        checks.push(DiagnosticCheck::warning(
+            CHECK_BLOBS_DIRECTORY,
+            format!(
+                "session {}: blob directory {}: {error}",
+                session.session_id,
+                session.blob_dir.display()
+            ),
+        ));
+    }
+    for missing in &session.missing_references {
+        checks.push(DiagnosticCheck::warning(
+            CHECK_BLOBS_REFERENCE_MISSING,
+            format!(
+                "session {}: referenced image {} is missing at {}",
+                session.session_id,
+                missing.digest,
+                missing.path.display()
+            ),
+        ));
+    }
+    for corrupt in &session.corrupt_references {
+        checks.push(DiagnosticCheck::warning(
+            CHECK_BLOBS_REFERENCE_CORRUPT,
+            format!(
+                "session {}: referenced image {} is corrupt at {}: {}",
+                session.session_id,
+                corrupt.digest,
+                corrupt.path.display(),
+                corrupt.reason
+            ),
+        ));
+    }
+    if session.unreferenced_count > 0 {
+        checks.push(DiagnosticCheck::warning(
+            CHECK_BLOBS_UNREFERENCED,
+            format!(
+                "session {}: {} unreferenced blob(s) in {}",
+                session.session_id,
+                session.unreferenced_count,
+                session.blob_dir.display()
+            ),
+        ));
+    }
+    if session.temporary_file_count > 0 {
+        checks.push(DiagnosticCheck::warning(
+            CHECK_BLOBS_TEMPORARY,
+            format!(
+                "session {}: {} stale temporary blob file(s) in {}",
+                session.session_id,
+                session.temporary_file_count,
+                session.blob_dir.display()
+            ),
+        ));
+    }
+}
+
+/// Emit the machine-readable report.
+fn print_blob_document(diagnostics: &BlobDiagnostics) {
+    let totals = &diagnostics.totals;
+    let summary = json!({
+        "sessions": totals.session_count,
+        "blobs": totals.blob_count,
+        "unique_blobs": totals.unique_blob_count,
+        "stored_bytes": totals.stored_bytes,
+        "referenced": totals.referenced_count,
+        "referenced_bytes": totals.referenced_bytes,
+        "unreferenced": totals.unreferenced_count,
+        "missing_references": totals.missing_reference_count,
+        "corrupt_references": totals.corrupt_reference_count,
+        "orphaned_stores": totals.orphaned_store_count,
+    });
+    DiagnosticDocument::new(
+        "debug blobs",
+        summary,
+        blob_checks(diagnostics),
+        json!({ "blobs": diagnostics }),
+    )
+    .print();
+}
+
+/// Render the short human-readable blob report.
+fn format_blob_diagnostics(diagnostics: &BlobDiagnostics) -> String {
+    let totals = &diagnostics.totals;
+    let mut output = String::from("Image blobs\n");
+    _ = writeln!(output, "  sessions: {}", totals.session_count);
+    _ = writeln!(
+        output,
+        "  blobs: {} ({} unique files)",
+        totals.blob_count, totals.unique_blob_count
+    );
+    _ = writeln!(
+        output,
+        "  stored: {} bytes (deduplicated)",
+        totals.stored_bytes
+    );
+    _ = writeln!(
+        output,
+        "  referenced: {} ids, {} bytes",
+        totals.referenced_count, totals.referenced_bytes
+    );
+    _ = writeln!(
+        output,
+        "  unreferenced: {} blobs, {} bytes",
+        totals.unreferenced_count, totals.unreferenced_bytes
+    );
+    _ = writeln!(output, "  temporary files: {}", totals.temporary_file_count);
+    _ = writeln!(
+        output,
+        "  missing references: {}",
+        totals.missing_reference_count
+    );
+    _ = writeln!(
+        output,
+        "  corrupt references: {}",
+        totals.corrupt_reference_count
+    );
+    _ = writeln!(
+        output,
+        "  orphaned stores: {} ({} blobs, {} bytes)",
+        totals.orphaned_store_count, totals.orphaned_store_blob_count, totals.orphaned_store_bytes
+    );
+
+    output.push_str("\nSessions\n");
+    if diagnostics.sessions.is_empty() {
+        output.push_str("  (none)\n");
+    }
+    for session in &diagnostics.sessions {
+        format_session_blob_diagnostics(session, &mut output);
+    }
+
+    output.push_str("\nOrphaned stores\n");
+    if diagnostics.orphaned_stores.is_empty() {
+        output.push_str("  (none)\n");
+    }
+    for store in &diagnostics.orphaned_stores {
+        _ = writeln!(
+            output,
+            "  {}: {} blobs, {} bytes",
+            store.blob_dir.display(),
+            store.blob_count,
+            store.stored_bytes
+        );
+        if let Some(error) = &store.directory_error {
+            _ = writeln!(output, "    directory error: {error}");
+        }
+        if store.temporary_file_count > 0 {
+            _ = writeln!(
+                output,
+                "    temporary files: {}",
+                store.temporary_file_count
+            );
+        }
+    }
+    output
+}
+
+/// Append one session row and its problems to the text report.
+fn format_session_blob_diagnostics(session: &SessionBlobDiagnostics, output: &mut String) {
+    _ = writeln!(
+        output,
+        "  {}: {} blobs, {} bytes; {} referenced ({} bytes), {} unreferenced ({} bytes)",
+        session.session_id,
+        session.blob_count,
+        session.stored_bytes,
+        session.referenced_count,
+        session.referenced_bytes,
+        session.unreferenced_count,
+        session.unreferenced_bytes
+    );
+    if let Some(error) = &session.session_error {
+        _ = writeln!(output, "    session error: {error}");
+    }
+    if let Some(error) = &session.directory_error {
+        _ = writeln!(output, "    directory error: {error}");
+    }
+    if session.temporary_file_count > 0 {
+        _ = writeln!(
+            output,
+            "    temporary files: {}",
+            session.temporary_file_count
+        );
+    }
+    for missing in &session.missing_references {
+        _ = writeln!(
+            output,
+            "    missing: {} at {}",
+            missing.digest,
+            missing.path.display()
+        );
+    }
+    for corrupt in &session.corrupt_references {
+        _ = writeln!(
+            output,
+            "    corrupt: {}: {}",
+            corrupt.digest, corrupt.reason
+        );
     }
 }
 

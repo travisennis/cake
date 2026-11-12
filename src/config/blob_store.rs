@@ -11,9 +11,10 @@
 //! ADR 061 and `docs/exec-plans/active/content-address-session-images.md`.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
+    ffi::OsString,
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::{BufReader, Read, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
@@ -21,9 +22,11 @@ use std::{
 
 use anyhow::{Context, bail};
 use base64::Engine as _;
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::config::owner_only;
+use crate::config::session_jsonl::{FramedSessionLine, SessionFramer};
 use crate::types::ImagePart;
 use crate::types::compaction::{CompactionData, RetainedConversationRecord};
 use crate::types::session::SessionRecord;
@@ -107,6 +110,139 @@ pub struct BlobStore {
 enum RootState {
     Existing,
     Missing,
+}
+
+/// What one append-time recovery pass removed.
+#[derive(Debug, Default)]
+pub struct RecoveryReport {
+    /// Published blobs that no record in the session references.
+    pub removed_blobs: Vec<ContentId>,
+    /// Stale `.tmp-*` files left by interrupted publication.
+    pub removed_temporary_files: Vec<PathBuf>,
+    /// Best-effort removal failures. These never fail the resume.
+    pub errors: Vec<String>,
+}
+
+/// One missing referenced blob.
+#[derive(Debug, Serialize)]
+pub struct MissingBlobReference {
+    /// Referenced content id.
+    pub digest: String,
+    /// Expected blob path.
+    pub path: PathBuf,
+}
+
+/// One referenced blob whose bytes do not verify.
+#[derive(Debug, Serialize)]
+pub struct CorruptBlobReference {
+    /// Referenced content id.
+    pub digest: String,
+    /// Blob path that failed verification.
+    pub path: PathBuf,
+    /// Why verification failed. Never contains payload bytes.
+    pub reason: String,
+}
+
+/// Read-only health for one session and its blob directory.
+#[derive(Debug, Serialize)]
+pub struct SessionBlobDiagnostics {
+    /// Session identity derived from the session filename.
+    pub session_id: String,
+    /// Session JSONL path paired with this report.
+    pub session_file: PathBuf,
+    /// Sibling blob directory. It may be absent.
+    pub blob_dir: PathBuf,
+    /// Number of regular digest-named files in the blob directory.
+    pub blob_count: usize,
+    /// Logical bytes across those files, before global inode deduplication.
+    pub stored_bytes: u64,
+    /// Distinct content ids referenced by the session records.
+    pub referenced_count: usize,
+    /// Bytes in referenced blob files that exist, verified or not.
+    pub referenced_bytes: u64,
+    /// Regular digest-named files that no session record references.
+    pub unreferenced_count: usize,
+    /// Logical bytes in unreferenced files.
+    pub unreferenced_bytes: u64,
+    /// Stale `.tmp-*` files left behind.
+    pub temporary_file_count: usize,
+    /// Paths of stale temporary files.
+    pub temporary_files: Vec<PathBuf>,
+    /// Referenced digests with no regular digest-named file.
+    pub missing_references: Vec<MissingBlobReference>,
+    /// Referenced files whose bytes fail verification.
+    pub corrupt_references: Vec<CorruptBlobReference>,
+    /// A session read or parse problem. The report still covers what was read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_error: Option<String>,
+    /// A blob-directory validation or read problem. No traversal was done.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub directory_error: Option<String>,
+    /// False when an unread reference or malformed record makes the set
+    /// incomplete. Recovery deletes nothing in that case.
+    pub references_complete: bool,
+}
+
+/// One `.blobs` directory with no matching session file.
+#[derive(Debug, Serialize)]
+pub struct OrphanedBlobStoreDiagnostics {
+    /// The unpaired blob directory.
+    pub blob_dir: PathBuf,
+    /// Number of regular digest-named files.
+    pub blob_count: usize,
+    /// Logical bytes across those files.
+    pub stored_bytes: u64,
+    /// Stale `.tmp-*` files left behind.
+    pub temporary_file_count: usize,
+    /// Paths of stale temporary files.
+    pub temporary_files: Vec<PathBuf>,
+    /// A directory validation or read problem. No traversal was done.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub directory_error: Option<String>,
+}
+
+/// Aggregate counts for every blob directory in a data directory.
+#[derive(Debug, Serialize)]
+pub struct BlobDiagnosticsTotals {
+    /// Paired session reports.
+    pub session_count: usize,
+    /// Logical blob entries across paired sessions, before inode deduplication.
+    pub blob_count: usize,
+    /// Distinct blob files across paired sessions after inode deduplication.
+    pub unique_blob_count: usize,
+    /// Distinct stored bytes across paired sessions after inode deduplication.
+    pub stored_bytes: u64,
+    /// Distinct content ids referenced across paired sessions.
+    pub referenced_count: usize,
+    /// Distinct referenced bytes after inode deduplication.
+    pub referenced_bytes: u64,
+    /// Unreferenced blob entries across paired sessions.
+    pub unreferenced_count: usize,
+    /// Logical unreferenced bytes across paired sessions.
+    pub unreferenced_bytes: u64,
+    /// Stale temporary files across paired sessions.
+    pub temporary_file_count: usize,
+    /// Missing referenced digests across paired sessions.
+    pub missing_reference_count: usize,
+    /// Corrupt referenced digests across paired sessions.
+    pub corrupt_reference_count: usize,
+    /// Blob directories with no matching session file.
+    pub orphaned_store_count: usize,
+    /// Blob entries in orphaned stores.
+    pub orphaned_store_blob_count: usize,
+    /// Distinct orphaned-store bytes after inode deduplication.
+    pub orphaned_store_bytes: u64,
+}
+
+/// Read-only report for every session blob directory under one data root.
+#[derive(Debug, Serialize)]
+pub struct BlobDiagnostics {
+    /// One report per session file, sorted by filename stem.
+    pub sessions: Vec<SessionBlobDiagnostics>,
+    /// Blob directories with no session file, sorted by filename stem.
+    pub orphaned_stores: Vec<OrphanedBlobStoreDiagnostics>,
+    /// Aggregate counts. Byte totals deduplicate hard-linked files.
+    pub totals: BlobDiagnosticsTotals,
 }
 
 impl BlobStore {
@@ -230,6 +366,47 @@ impl BlobStore {
             );
         }
         Ok(bytes)
+    }
+
+    /// Remove unreferenced blobs and stale temporary files from this store.
+    ///
+    /// A missing root is a no-op and is never created. A symlinked or
+    /// non-directory root fails without deleting anything. Only regular files
+    /// named by a lowercase SHA-256 digest or the `.tmp-` prefix are removal
+    /// candidates; symlinks, directories, unknown names, and every referenced
+    /// digest are left untouched.
+    ///
+    /// Removal is garbage collection, not correctness: individual removal
+    /// failures are collected in the report instead of failing the caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the root cannot be inspected or enumerated. No
+    /// files are removed in that case.
+    pub fn recover_unreferenced(
+        &self,
+        session_id: &str,
+        referenced: &BTreeSet<ContentId>,
+    ) -> anyhow::Result<RecoveryReport> {
+        let root = self.checked_root();
+        match inspect_root_for_write(&root)? {
+            RootState::Missing => return Ok(RecoveryReport::default()),
+            RootState::Existing => {},
+        }
+
+        let entries = fs::read_dir(&root).with_context(|| {
+            format!(
+                "failed to read blob store directory '{}' for recovery of session {session_id}",
+                root.display()
+            )
+        })?;
+        let mut report = RecoveryReport::default();
+        for entry in entries {
+            recover_entry(entry, &root, session_id, referenced, &mut report);
+        }
+        report.removed_blobs.sort();
+        report.removed_temporary_files.sort();
+        Ok(report)
     }
 
     /// Return a copy of `record` whose message, function-call-output, and
@@ -647,6 +824,669 @@ impl BlobStore {
             RootState::Missing => create_root_for_write(&root)?,
         }
         Ok(root)
+    }
+}
+
+/// Inspect one recovery candidate and remove it when it is unreferenced.
+fn recover_entry(
+    entry: std::io::Result<fs::DirEntry>,
+    root: &Path,
+    session_id: &str,
+    referenced: &BTreeSet<ContentId>,
+    report: &mut RecoveryReport,
+) {
+    let entry = match entry {
+        Ok(entry) => entry,
+        Err(error) => {
+            report.errors.push(format!(
+                "session {session_id}: failed to read an entry in '{}': {error}",
+                root.display()
+            ));
+            return;
+        },
+    };
+    let file_type = match entry.file_type() {
+        Ok(file_type) => file_type,
+        Err(error) => {
+            report.errors.push(format!(
+                "session {session_id}: failed to inspect '{}': {error}",
+                entry.path().display()
+            ));
+            return;
+        },
+    };
+    if !file_type.is_file() {
+        return;
+    }
+    let path = entry.path();
+    let name = entry.file_name();
+    let Some(name) = name.to_str() else {
+        return;
+    };
+    if name.starts_with(TEMP_PREFIX) {
+        remove_temporary_blob(&path, session_id, report);
+        return;
+    }
+    let Ok(id) = ContentId::parse(name) else {
+        return;
+    };
+    if !referenced.contains(&id) {
+        remove_unreferenced_blob(&path, &id, session_id, report);
+    }
+}
+
+fn remove_temporary_blob(path: &Path, session_id: &str, report: &mut RecoveryReport) {
+    match fs::remove_file(path) {
+        Ok(()) => report.removed_temporary_files.push(path.to_path_buf()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+        Err(error) => report.errors.push(format!(
+            "session {session_id}: failed to remove temporary blob '{}': {error}",
+            path.display()
+        )),
+    }
+}
+
+fn remove_unreferenced_blob(
+    path: &Path,
+    id: &ContentId,
+    session_id: &str,
+    report: &mut RecoveryReport,
+) {
+    match fs::remove_file(path) {
+        Ok(()) => report.removed_blobs.push(id.clone()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+        Err(error) => report.errors.push(format!(
+            "session {session_id}: failed to remove unreferenced blob '{id}' at '{}': {error}",
+            path.display()
+        )),
+    }
+}
+
+/// Collect every valid content id referenced by `records`.
+///
+/// An invalid id rejects the whole set so recovery cannot delete a blob that
+/// an unreadable reference still needs.
+///
+/// # Errors
+///
+/// Returns an error when any record carries a malformed content id.
+pub fn referenced_content_ids(records: &[SessionRecord]) -> anyhow::Result<BTreeSet<ContentId>> {
+    let mut referenced = BTreeSet::new();
+    for (record_index, record) in records.iter().enumerate() {
+        for (id_index, value) in record.content_ids().enumerate() {
+            let id = ContentId::parse(value).with_context(|| {
+                format!("session record {record_index} content id {id_index} is invalid")
+            })?;
+            referenced.insert(id);
+        }
+    }
+    Ok(referenced)
+}
+
+/// Build the read-only report for every session file under `sessions_dir`.
+///
+/// # Errors
+///
+/// Returns an error when the sessions directory itself cannot be read. A
+/// malformed or unreadable session becomes a report entry instead.
+pub fn blob_diagnostics(sessions_dir: &Path) -> anyhow::Result<BlobDiagnostics> {
+    let mut session_files = BTreeMap::new();
+    let mut blob_dirs = BTreeMap::new();
+    for entry in fs::read_dir(sessions_dir).with_context(|| {
+        format!(
+            "failed to read sessions directory '{}' for blob diagnostics",
+            sessions_dir.display()
+        )
+    })? {
+        let entry = entry.with_context(|| {
+            format!(
+                "failed to read an entry in sessions directory '{}'",
+                sessions_dir.display()
+            )
+        })?;
+        let path = entry.path();
+        let Some(extension) = path.extension().and_then(std::ffi::OsStr::to_str) else {
+            continue;
+        };
+        let Some(stem) = path.file_stem().map(OsString::from) else {
+            continue;
+        };
+        match extension {
+            "jsonl" => {
+                session_files.insert(stem, path);
+            },
+            "blobs" => {
+                blob_dirs.insert(stem, path);
+            },
+            _ => {},
+        }
+    }
+
+    let mut totals = TotalsAccumulator::default();
+    let mut sessions = Vec::with_capacity(session_files.len());
+    for (stem, session_file) in session_files {
+        let blob_dir = session_file.with_extension("blobs");
+        blob_dirs.remove(&stem);
+        let scan = scan_session_references(&session_file);
+        sessions.push(diagnose_session_blobs(
+            &stem.to_string_lossy(),
+            &session_file,
+            &blob_dir,
+            scan,
+            &mut totals,
+        ));
+    }
+
+    let mut orphaned_stores = Vec::with_capacity(blob_dirs.len());
+    for (_, blob_dir) in blob_dirs {
+        let (report, files) = diagnose_orphaned_store(&blob_dir);
+        for file in &files {
+            totals.observe_orphaned_file(file);
+        }
+        totals.orphaned_store_count += 1;
+        totals.orphaned_store_blob_count += report.blob_count;
+        orphaned_stores.push(report);
+    }
+
+    Ok(BlobDiagnostics {
+        sessions,
+        orphaned_stores,
+        totals: totals.finish(),
+    })
+}
+
+/// What one scan of a session file found, even when parsing stopped early.
+struct SessionReferenceScan {
+    referenced: BTreeSet<ContentId>,
+    error: Option<String>,
+    complete: bool,
+}
+
+impl SessionReferenceScan {
+    const fn new() -> Self {
+        Self {
+            referenced: BTreeSet::new(),
+            error: None,
+            complete: true,
+        }
+    }
+
+    fn fail(&mut self, message: String) {
+        if self.error.is_none() {
+            self.error = Some(message);
+        }
+        self.complete = false;
+    }
+}
+
+/// One regular digest-named file in a blob directory.
+struct BlobFile {
+    id: ContentId,
+    size: u64,
+    identity: Option<(u64, u64)>,
+    referenced: bool,
+}
+
+/// A read-only inventory of one blob directory.
+struct BlobDirectoryInventory {
+    files: Vec<BlobFile>,
+    temporary_files: Vec<PathBuf>,
+}
+
+fn scan_session_references(path: &Path) -> SessionReferenceScan {
+    let mut scan = SessionReferenceScan::new();
+    if !session_source_is_regular(path, &mut scan) {
+        return scan;
+    }
+    let Some(file) = open_session_source(path, &mut scan) else {
+        return scan;
+    };
+    let mut framer = SessionFramer::new(BufReader::new(file));
+    let saw_record = scan_session_records(&mut framer, path, &mut scan);
+    if !saw_record {
+        scan.fail(format!("session file '{}' is empty", path.display()));
+    }
+    scan
+}
+
+fn session_source_is_regular(path: &Path, scan: &mut SessionReferenceScan) -> bool {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            scan.fail(format!(
+                "failed to inspect session file '{}': {error}",
+                path.display()
+            ));
+            return false;
+        },
+    };
+    if metadata.file_type().is_symlink() {
+        scan.fail(format!(
+            "session file '{}' is a symlink; refusing to follow it",
+            path.display()
+        ));
+        return false;
+    }
+    if !metadata.is_file() {
+        scan.fail(format!(
+            "session file '{}' is not a regular file",
+            path.display()
+        ));
+        return false;
+    }
+    true
+}
+
+fn open_session_source(path: &Path, scan: &mut SessionReferenceScan) -> Option<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    apply_no_follow(&mut options);
+    let file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) => {
+            scan.fail(format!(
+                "failed to open session file '{}': {error}",
+                path.display()
+            ));
+            return None;
+        },
+    };
+    if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
+        scan.fail(format!(
+            "session file '{}' is not a regular file",
+            path.display()
+        ));
+        return None;
+    }
+    Some(file)
+}
+
+fn scan_session_records(
+    framer: &mut SessionFramer<BufReader<File>>,
+    path: &Path,
+    scan: &mut SessionReferenceScan,
+) -> bool {
+    let mut saw_record = false;
+    loop {
+        let line = match framer.next_record() {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(error) => {
+                scan.fail(format!(
+                    "failed to read session file '{}': {error}",
+                    path.display()
+                ));
+                break;
+            },
+        };
+        saw_record = true;
+        if !scan_session_record(&line, path, scan) {
+            break;
+        }
+    }
+    saw_record
+}
+
+fn scan_session_record(
+    line: &FramedSessionLine,
+    path: &Path,
+    scan: &mut SessionReferenceScan,
+) -> bool {
+    match serde_json::from_str::<SessionRecord>(&line.text) {
+        Ok(record) => {
+            collect_record_content_ids(&record, path, line.line_number, scan);
+            true
+        },
+        Err(error) if line.partial_tail => {
+            scan.fail(format!(
+                "session file '{}' line {} has an ignored partial record: {error}",
+                path.display(),
+                line.line_number
+            ));
+            false
+        },
+        Err(error) => {
+            scan.fail(format!(
+                "session file '{}' line {} is malformed: {error}",
+                path.display(),
+                line.line_number
+            ));
+            false
+        },
+    }
+}
+
+fn collect_record_content_ids(
+    record: &SessionRecord,
+    path: &Path,
+    line_number: usize,
+    scan: &mut SessionReferenceScan,
+) {
+    for value in record.content_ids() {
+        match ContentId::parse(value) {
+            Ok(id) => {
+                scan.referenced.insert(id);
+            },
+            Err(error) => scan.fail(format!(
+                "session file '{}' line {line_number} has an invalid content id: {error}",
+                path.display()
+            )),
+        }
+    }
+}
+
+fn inspect_blob_directory(blob_dir: &Path) -> anyhow::Result<Option<BlobDirectoryInventory>> {
+    match inspect_root_for_write(blob_dir)? {
+        RootState::Missing => return Ok(None),
+        RootState::Existing => {},
+    }
+
+    let mut inventory = BlobDirectoryInventory {
+        files: Vec::new(),
+        temporary_files: Vec::new(),
+    };
+    for entry in fs::read_dir(blob_dir).with_context(|| {
+        format!(
+            "failed to read blob directory '{}' for diagnostics",
+            blob_dir.display()
+        )
+    })? {
+        collect_blob_directory_entry(entry, blob_dir, &mut inventory)?;
+    }
+    inventory
+        .files
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    inventory.temporary_files.sort();
+    Ok(Some(inventory))
+}
+
+fn collect_blob_directory_entry(
+    entry: std::io::Result<fs::DirEntry>,
+    blob_dir: &Path,
+    inventory: &mut BlobDirectoryInventory,
+) -> anyhow::Result<()> {
+    let entry = entry.with_context(|| {
+        format!(
+            "failed to read an entry in blob directory '{}'",
+            blob_dir.display()
+        )
+    })?;
+    let file_type = entry.file_type().with_context(|| {
+        format!(
+            "failed to inspect an entry in blob directory '{}'",
+            blob_dir.display()
+        )
+    })?;
+    if !file_type.is_file() {
+        return Ok(());
+    }
+    let path = entry.path();
+    let name = entry.file_name();
+    let Some(name) = name.to_str() else {
+        return Ok(());
+    };
+    if name.starts_with(TEMP_PREFIX) {
+        inventory.temporary_files.push(path);
+        return Ok(());
+    }
+    let Ok(id) = ContentId::parse(name) else {
+        return Ok(());
+    };
+    let metadata = fs::symlink_metadata(&path)
+        .with_context(|| format!("failed to inspect blob '{}' at '{}'", id, path.display()))?;
+    inventory.files.push(BlobFile {
+        id,
+        size: metadata.len(),
+        identity: file_identity(&metadata),
+        referenced: false,
+    });
+    Ok(())
+}
+
+fn diagnose_session_blobs(
+    session_id: &str,
+    session_file: &Path,
+    blob_dir: &Path,
+    scan: SessionReferenceScan,
+    totals: &mut TotalsAccumulator,
+) -> SessionBlobDiagnostics {
+    let mut report = SessionBlobDiagnostics {
+        session_id: session_id.to_string(),
+        session_file: session_file.to_path_buf(),
+        blob_dir: blob_dir.to_path_buf(),
+        blob_count: 0,
+        stored_bytes: 0,
+        referenced_count: scan.referenced.len(),
+        referenced_bytes: 0,
+        unreferenced_count: 0,
+        unreferenced_bytes: 0,
+        temporary_file_count: 0,
+        temporary_files: Vec::new(),
+        missing_references: Vec::new(),
+        corrupt_references: Vec::new(),
+        session_error: scan.error,
+        directory_error: None,
+        references_complete: scan.complete,
+    };
+
+    let mut files = Vec::new();
+    match inspect_blob_directory(blob_dir) {
+        Ok(Some(inventory)) => {
+            files = apply_blob_inventory(&mut report, inventory, &scan.referenced);
+        },
+        Ok(None) => {},
+        Err(error) => report.directory_error = Some(format!("{error:#}")),
+    }
+
+    if report.directory_error.is_none() {
+        let (missing, corrupt) = reference_problems(blob_dir, &scan.referenced, &files);
+        report.missing_references = missing;
+        report.corrupt_references = corrupt;
+    }
+    sort_reference_problems(&mut report);
+    accumulate_session_totals(totals, &report, &files);
+    report
+}
+
+fn apply_blob_inventory(
+    report: &mut SessionBlobDiagnostics,
+    mut inventory: BlobDirectoryInventory,
+    referenced: &BTreeSet<ContentId>,
+) -> Vec<BlobFile> {
+    report.blob_count = inventory.files.len();
+    report.temporary_file_count = inventory.temporary_files.len();
+    report.temporary_files = inventory.temporary_files;
+    for file in &mut inventory.files {
+        report.stored_bytes += file.size;
+        file.referenced = referenced.contains(&file.id);
+        if file.referenced {
+            report.referenced_bytes += file.size;
+        } else {
+            report.unreferenced_count += 1;
+            report.unreferenced_bytes += file.size;
+        }
+    }
+    inventory.files
+}
+
+fn reference_problems(
+    blob_dir: &Path,
+    referenced: &BTreeSet<ContentId>,
+    files: &[BlobFile],
+) -> (Vec<MissingBlobReference>, Vec<CorruptBlobReference>) {
+    let seen = files
+        .iter()
+        .filter(|file| file.referenced)
+        .map(|file| &file.id)
+        .collect::<BTreeSet<_>>();
+    let missing = referenced
+        .iter()
+        .filter(|id| !seen.contains(id))
+        .map(|id| MissingBlobReference {
+            digest: id.to_string(),
+            path: blob_dir.join(id.as_str()),
+        })
+        .collect();
+    let store = BlobStore::new(blob_dir.to_path_buf());
+    let corrupt = seen
+        .into_iter()
+        .filter_map(|id| {
+            store
+                .read_verified(id)
+                .err()
+                .map(|error| CorruptBlobReference {
+                    digest: id.to_string(),
+                    path: blob_dir.join(id.as_str()),
+                    reason: format!("{error:#}"),
+                })
+        })
+        .collect();
+    (missing, corrupt)
+}
+
+fn sort_reference_problems(report: &mut SessionBlobDiagnostics) {
+    report.missing_references.sort_by(|left, right| {
+        left.digest
+            .cmp(&right.digest)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    report.corrupt_references.sort_by(|left, right| {
+        left.digest
+            .cmp(&right.digest)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+}
+
+fn accumulate_session_totals(
+    totals: &mut TotalsAccumulator,
+    report: &SessionBlobDiagnostics,
+    files: &[BlobFile],
+) {
+    totals.session_count += 1;
+    totals.blob_count += report.blob_count;
+    totals.referenced_count += report.referenced_count;
+    totals.unreferenced_count += report.unreferenced_count;
+    totals.unreferenced_bytes += report.unreferenced_bytes;
+    totals.temporary_file_count += report.temporary_file_count;
+    totals.missing_reference_count += report.missing_references.len();
+    totals.corrupt_reference_count += report.corrupt_references.len();
+    for file in files {
+        totals.observe_stored_file(file);
+        if file.referenced {
+            totals.observe_referenced_file(file);
+        }
+    }
+}
+
+fn diagnose_orphaned_store(blob_dir: &Path) -> (OrphanedBlobStoreDiagnostics, Vec<BlobFile>) {
+    let mut report = OrphanedBlobStoreDiagnostics {
+        blob_dir: blob_dir.to_path_buf(),
+        blob_count: 0,
+        stored_bytes: 0,
+        temporary_file_count: 0,
+        temporary_files: Vec::new(),
+        directory_error: None,
+    };
+    match inspect_blob_directory(blob_dir) {
+        Ok(Some(inventory)) => {
+            report.blob_count = inventory.files.len();
+            report.stored_bytes = inventory.files.iter().map(|file| file.size).sum();
+            report.temporary_file_count = inventory.temporary_files.len();
+            report.temporary_files = inventory.temporary_files;
+            (report, inventory.files)
+        },
+        Ok(None) => (report, Vec::new()),
+        Err(error) => {
+            report.directory_error = Some(format!("{error:#}"));
+            (report, Vec::new())
+        },
+    }
+}
+
+#[derive(Debug, Default)]
+struct TotalsAccumulator {
+    session_count: usize,
+    blob_count: usize,
+    unique_blob_count: usize,
+    stored_bytes: u64,
+    referenced_count: usize,
+    referenced_bytes: u64,
+    unreferenced_count: usize,
+    unreferenced_bytes: u64,
+    temporary_file_count: usize,
+    missing_reference_count: usize,
+    corrupt_reference_count: usize,
+    orphaned_store_count: usize,
+    orphaned_store_blob_count: usize,
+    orphaned_store_bytes: u64,
+    stored_identities: BTreeSet<(u64, u64)>,
+    referenced_identities: BTreeSet<(u64, u64)>,
+    orphaned_identities: BTreeSet<(u64, u64)>,
+}
+
+impl TotalsAccumulator {
+    fn observe_stored_file(&mut self, file: &BlobFile) {
+        if let Some(identity) = file.identity
+            && !self.stored_identities.insert(identity)
+        {
+            return;
+        }
+        self.unique_blob_count += 1;
+        self.stored_bytes += file.size;
+    }
+
+    fn observe_referenced_file(&mut self, file: &BlobFile) {
+        if let Some(identity) = file.identity
+            && !self.referenced_identities.insert(identity)
+        {
+            return;
+        }
+        self.referenced_bytes += file.size;
+    }
+
+    fn observe_orphaned_file(&mut self, file: &BlobFile) {
+        if let Some(identity) = file.identity
+            && !self.orphaned_identities.insert(identity)
+        {
+            return;
+        }
+        self.orphaned_store_bytes += file.size;
+    }
+
+    fn finish(self) -> BlobDiagnosticsTotals {
+        BlobDiagnosticsTotals {
+            session_count: self.session_count,
+            blob_count: self.blob_count,
+            unique_blob_count: self.unique_blob_count,
+            stored_bytes: self.stored_bytes,
+            referenced_count: self.referenced_count,
+            referenced_bytes: self.referenced_bytes,
+            unreferenced_count: self.unreferenced_count,
+            unreferenced_bytes: self.unreferenced_bytes,
+            temporary_file_count: self.temporary_file_count,
+            missing_reference_count: self.missing_reference_count,
+            corrupt_reference_count: self.corrupt_reference_count,
+            orphaned_store_count: self.orphaned_store_count,
+            orphaned_store_blob_count: self.orphaned_store_blob_count,
+            orphaned_store_bytes: self.orphaned_store_bytes,
+        }
+    }
+}
+
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "non-Unix builds have no device and inode identity to deduplicate"
+)]
+fn file_identity(metadata: &fs::Metadata) -> Option<(u64, u64)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        Some((metadata.dev(), metadata.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        None
     }
 }
 
@@ -1487,6 +2327,392 @@ mod tests {
         assert_eq!(data.images[0].data_base64, encoded);
         assert_eq!(data.images[0].content_id, None);
         assert!(!store.root().exists(), "hydration must not create a store");
+    }
+
+    fn write_diagnostic_session(sessions_dir: &Path, session_id: &str, content_ids: &[&ContentId]) {
+        fs::create_dir_all(sessions_dir).expect("sessions directory");
+        let images = content_ids
+            .iter()
+            .map(|id| {
+                serde_json::json!({
+                    "media_type": "image/png",
+                    "content_id": id.as_str(),
+                })
+            })
+            .collect::<Vec<_>>();
+        let meta = serde_json::json!({
+            "type": "session_meta",
+            "format_version": 4,
+            "session_id": session_id,
+            "timestamp": "2026-01-02T03:00:00Z",
+            "working_directory": "/work",
+            "tools": [],
+        });
+        let message = serde_json::json!({
+            "type": "message",
+            "role": "user",
+            "content": "look",
+            "timestamp": "2026-01-02T03:00:01Z",
+            "images": images,
+        });
+        fs::write(
+            sessions_dir.join(format!("{session_id}.jsonl")),
+            format!(
+                "{}\n{}\n",
+                serde_json::to_string(&meta).expect("serialize meta"),
+                serde_json::to_string(&message).expect("serialize message")
+            ),
+        )
+        .expect("write diagnostic session");
+    }
+
+    #[test]
+    fn recover_removes_unreferenced_blobs_and_temporary_files() {
+        let (store, _temporary) = new_store();
+        let referenced = store.put(b"referenced image").expect("referenced blob");
+        let orphan = store.put(b"orphan image").expect("orphan blob");
+        let temp_path = store.root().join(format!("{TEMP_PREFIX}interrupted"));
+        fs::write(&temp_path, b"partial image").expect("temporary blob");
+
+        let report = store
+            .recover_unreferenced("session-1", &BTreeSet::from([referenced.clone()]))
+            .expect("recover");
+
+        assert_eq!(report.removed_blobs, vec![orphan]);
+        assert_eq!(report.removed_temporary_files, vec![temp_path.clone()]);
+        assert!(report.errors.is_empty());
+        assert!(store.root().join(referenced.as_str()).exists());
+        assert!(!temp_path.exists());
+        assert_eq!(fs::read_dir(store.root()).expect("read root").count(), 1);
+    }
+
+    #[test]
+    fn recover_missing_root_does_not_create_it() {
+        let (store, _temporary) = new_store();
+
+        let report = store
+            .recover_unreferenced("session-1", &BTreeSet::new())
+            .expect("recover missing root");
+
+        assert!(report.removed_blobs.is_empty());
+        assert!(report.removed_temporary_files.is_empty());
+        assert!(report.errors.is_empty());
+        assert!(!store.root().exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn recover_refuses_a_symlinked_root_without_deleting() {
+        use std::os::unix::fs::symlink;
+
+        let (store, temporary) = new_store();
+        let target = temporary.path().join("target");
+        fs::create_dir(&target).expect("target directory");
+        let orphan = ContentId::from_bytes(b"orphan");
+        let orphan_path = target.join(orphan.as_str());
+        fs::write(&orphan_path, b"orphan").expect("orphan blob");
+        symlink(&target, store.root()).expect("root symlink");
+
+        let error = store
+            .recover_unreferenced("session-1", &BTreeSet::new())
+            .expect_err("symlinked root must be refused");
+
+        assert!(format!("{error:#}").contains("symlink"), "{error:#}");
+        assert!(orphan_path.exists(), "recovery must not traverse the root");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn recover_ignores_symlinks_directories_and_unknown_names() {
+        use std::os::unix::fs::symlink;
+
+        let (store, temporary) = new_store();
+        let referenced = store.put(b"referenced").expect("create root");
+        let linked_id = ContentId::from_bytes(b"linked file");
+        let target = temporary.path().join("target");
+        fs::write(&target, b"target").expect("target file");
+        let linked_path = store.root().join(linked_id.as_str());
+        symlink(&target, &linked_path).expect("blob symlink");
+        let directory_id = ContentId::from_bytes(b"directory");
+        let directory = store.root().join(directory_id.as_str());
+        fs::create_dir(&directory).expect("digest directory");
+        let unknown = store.root().join("notes.txt");
+        fs::write(&unknown, b"not a blob").expect("unknown file");
+
+        let report = store
+            .recover_unreferenced("session-1", &BTreeSet::from([referenced]))
+            .expect("recover");
+
+        assert!(report.errors.is_empty());
+        assert!(
+            report.removed_blobs.is_empty(),
+            "symlinks and directories are not published blobs"
+        );
+        assert!(linked_path.exists());
+        assert!(directory.exists());
+        assert!(unknown.exists());
+        assert_eq!(fs::read(&target).expect("target remains"), b"target");
+    }
+
+    #[test]
+    fn recover_keeps_a_corrupt_referenced_blob() {
+        let (store, _temporary) = new_store();
+        let id = store.put(b"referenced").expect("referenced blob");
+        let path = store.root().join(id.as_str());
+        fs::write(&path, b"corrupt").expect("corrupt blob");
+
+        let report = store
+            .recover_unreferenced("session-1", &BTreeSet::from([id]))
+            .expect("recover");
+
+        assert!(report.removed_blobs.is_empty());
+        assert_eq!(fs::read(&path).expect("corrupt blob remains"), b"corrupt");
+    }
+
+    #[test]
+    fn referenced_ids_reject_a_malformed_content_id() {
+        let message = message_with_images(vec![ImagePart {
+            media_type: "image/png".to_string(),
+            data_base64: String::new(),
+            content_id: Some("not-a-digest".to_string()),
+        }]);
+
+        let error = referenced_content_ids(&[message]).expect_err("invalid id must fail");
+
+        assert!(
+            format!("{error:#}").contains("content id 0 is invalid"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn referenced_ids_cover_messages_outputs_and_checkpoint_images() {
+        let message_id = ContentId::from_bytes(b"message image");
+        let output_id = ContentId::from_bytes(b"output image");
+        let retained_id = ContentId::from_bytes(b"retained image");
+        let message = message_with_images(vec![ImagePart {
+            media_type: "image/png".to_string(),
+            data_base64: String::new(),
+            content_id: Some(message_id.as_str().to_string()),
+        }]);
+        let output = output_with_images(vec![ImagePart {
+            media_type: "image/png".to_string(),
+            data_base64: String::new(),
+            content_id: Some(output_id.as_str().to_string()),
+        }]);
+        let mut retained = test_support::message(Role::User, "look");
+        let RetainedConversationRecord::Message(data) = &mut retained.record else {
+            panic!("retained message shape");
+        };
+        data.images.push(ImagePart {
+            media_type: "image/png".to_string(),
+            data_base64: String::new(),
+            content_id: Some(retained_id.as_str().to_string()),
+        });
+        let checkpoint = test_support::checkpoint("checkpoint-1", "summary", vec![retained]);
+
+        let referenced =
+            referenced_content_ids(&[message, output, SessionRecord::Compaction(checkpoint)])
+                .expect("collect references");
+
+        assert_eq!(
+            referenced,
+            BTreeSet::from([message_id, output_id, retained_id])
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "one fixture asserts every diagnostic category"
+    )]
+    fn diagnostics_report_missing_corrupt_unreferenced_and_temporary_files() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let sessions = temporary.path().join("sessions");
+        let session_id = "session-1";
+        let valid = ContentId::from_bytes(b"valid image");
+        let corrupt = ContentId::from_bytes(b"corrupt image");
+        let missing = ContentId::from_bytes(b"missing image");
+        let orphan = ContentId::from_bytes(b"orphan image");
+        write_diagnostic_session(&sessions, session_id, &[&valid, &corrupt, &missing]);
+        let blob_dir = sessions.join(format!("{session_id}.blobs"));
+        let store = BlobStore::new(blob_dir.clone());
+        store.put(b"valid image").expect("valid blob");
+        fs::write(blob_dir.join(corrupt.as_str()), b"not the corrupt image").expect("corrupt blob");
+        fs::write(blob_dir.join(orphan.as_str()), b"orphan image").expect("orphan blob");
+        let temp_path = blob_dir.join(format!("{TEMP_PREFIX}stale"));
+        fs::write(&temp_path, b"temporary").expect("temporary blob");
+
+        let diagnostics = blob_diagnostics(&sessions).expect("diagnostics");
+
+        assert_eq!(diagnostics.sessions.len(), 1);
+        let session = &diagnostics.sessions[0];
+        assert_eq!(session.session_id, session_id);
+        assert_eq!(session.blob_count, 3);
+        assert_eq!(session.referenced_count, 3);
+        assert_eq!(session.unreferenced_count, 1);
+        assert_eq!(session.unreferenced_bytes, b"orphan image".len() as u64);
+        assert_eq!(session.temporary_file_count, 1);
+        assert_eq!(session.temporary_files, vec![temp_path.clone()]);
+        assert_eq!(session.missing_references.len(), 1);
+        assert_eq!(session.missing_references[0].digest, missing.as_str());
+        assert_eq!(session.corrupt_references.len(), 1);
+        assert_eq!(session.corrupt_references[0].digest, corrupt.as_str());
+        assert!(session.references_complete);
+        assert!(session.session_error.is_none());
+        assert!(session.directory_error.is_none());
+        assert!(diagnostics.orphaned_stores.is_empty());
+        assert_eq!(diagnostics.totals.session_count, 1);
+        assert_eq!(diagnostics.totals.blob_count, 3);
+        assert_eq!(diagnostics.totals.referenced_count, 3);
+        assert_eq!(diagnostics.totals.unreferenced_count, 1);
+        assert_eq!(diagnostics.totals.temporary_file_count, 1);
+        assert_eq!(diagnostics.totals.missing_reference_count, 1);
+        assert_eq!(diagnostics.totals.corrupt_reference_count, 1);
+
+        assert!(!blob_dir.join(missing.as_str()).exists());
+        assert!(blob_dir.join(corrupt.as_str()).exists());
+        assert!(blob_dir.join(orphan.as_str()).exists());
+        assert!(temp_path.exists(), "diagnostics must not delete");
+    }
+
+    #[test]
+    fn diagnostics_report_an_orphan_store_and_a_session_without_blobs() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let sessions = temporary.path().join("sessions");
+        let missing = ContentId::from_bytes(b"missing image");
+        write_diagnostic_session(&sessions, "session-1", &[&missing]);
+        let orphan = ContentId::from_bytes(b"orphan image");
+        let orphan_dir = sessions.join("orphan.blobs");
+        fs::create_dir_all(&orphan_dir).expect("orphan store");
+        fs::write(orphan_dir.join(orphan.as_str()), b"orphan image").expect("orphan blob");
+
+        let diagnostics = blob_diagnostics(&sessions).expect("diagnostics");
+
+        assert_eq!(diagnostics.sessions.len(), 1);
+        assert_eq!(diagnostics.sessions[0].blob_count, 0);
+        assert_eq!(diagnostics.sessions[0].stored_bytes, 0);
+        assert_eq!(
+            diagnostics.sessions[0].missing_references[0].digest,
+            missing.as_str()
+        );
+        assert!(
+            !sessions.join("session-1.blobs").exists(),
+            "diagnostics must not create a blob directory"
+        );
+        assert_eq!(diagnostics.orphaned_stores.len(), 1);
+        assert_eq!(diagnostics.orphaned_stores[0].blob_count, 1);
+        assert_eq!(
+            diagnostics.orphaned_stores[0].stored_bytes,
+            b"orphan image".len() as u64
+        );
+        assert_eq!(diagnostics.totals.orphaned_store_count, 1);
+        assert_eq!(diagnostics.totals.orphaned_store_blob_count, 1);
+        assert_eq!(
+            diagnostics.totals.orphaned_store_bytes,
+            b"orphan image".len() as u64
+        );
+        assert!(orphan_dir.join(orphan.as_str()).exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn diagnostics_ignore_a_symlink_in_a_blob_directory() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = TempDir::new().expect("temporary directory");
+        let sessions = temporary.path().join("sessions");
+        write_diagnostic_session(&sessions, "session-1", &[]);
+        let blob_dir = sessions.join("session-1.blobs");
+        fs::create_dir_all(&blob_dir).expect("blob directory");
+        let linked_id = ContentId::from_bytes(b"linked file");
+        let target = temporary.path().join("target");
+        fs::write(&target, b"target").expect("target file");
+        symlink(&target, blob_dir.join(linked_id.as_str())).expect("blob symlink");
+
+        let diagnostics = blob_diagnostics(&sessions).expect("diagnostics");
+
+        let session = &diagnostics.sessions[0];
+        assert_eq!(session.blob_count, 0);
+        assert_eq!(session.stored_bytes, 0);
+        assert!(session.directory_error.is_none());
+        assert!(blob_dir.join(linked_id.as_str()).exists());
+        assert_eq!(fs::read(&target).expect("target remains"), b"target");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn diagnostics_refuse_a_symlinked_blob_directory() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = TempDir::new().expect("temporary directory");
+        let sessions = temporary.path().join("sessions");
+        let id = ContentId::from_bytes(b"image");
+        write_diagnostic_session(&sessions, "session-1", &[&id]);
+        let target = temporary.path().join("target");
+        fs::create_dir(&target).expect("target directory");
+        let blob_path = target.join(id.as_str());
+        fs::write(&blob_path, b"image").expect("target blob");
+        symlink(&target, sessions.join("session-1.blobs")).expect("blob dir symlink");
+
+        let diagnostics = blob_diagnostics(&sessions).expect("diagnostics");
+
+        let session = &diagnostics.sessions[0];
+        assert!(session.directory_error.is_some());
+        assert_eq!(session.blob_count, 0);
+        assert!(
+            session.missing_references.is_empty(),
+            "no traversal on a symlink"
+        );
+        assert!(blob_path.exists());
+    }
+
+    #[test]
+    fn diagnostics_report_a_malformed_session_without_failing() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let sessions = temporary.path().join("sessions");
+        fs::create_dir_all(&sessions).expect("sessions directory");
+        fs::write(
+            sessions.join("session-1.jsonl"),
+            "{\"type\":\"message\"}\nnot json\n",
+        )
+        .expect("malformed session");
+
+        let diagnostics = blob_diagnostics(&sessions).expect("diagnostics");
+
+        assert_eq!(diagnostics.sessions.len(), 1);
+        assert!(!diagnostics.sessions[0].references_complete);
+        assert!(diagnostics.sessions[0].session_error.is_some());
+        assert_eq!(diagnostics.sessions[0].blob_count, 0);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn diagnostics_deduplicate_hard_linked_fork_bytes() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let sessions = temporary.path().join("sessions");
+        let id = ContentId::from_bytes(b"shared image");
+        write_diagnostic_session(&sessions, "parent", &[&id]);
+        write_diagnostic_session(&sessions, "fork", &[&id]);
+        let parent = BlobStore::new(sessions.join("parent.blobs"));
+        let fork = BlobStore::new(sessions.join("fork.blobs"));
+        parent.put(b"shared image").expect("parent blob");
+        fork.link_verified(&parent, &id).expect("fork link");
+
+        let diagnostics = blob_diagnostics(&sessions).expect("diagnostics");
+
+        assert_eq!(diagnostics.totals.session_count, 2);
+        assert_eq!(diagnostics.totals.blob_count, 2);
+        assert_eq!(diagnostics.totals.unique_blob_count, 1);
+        assert_eq!(
+            diagnostics.totals.stored_bytes,
+            b"shared image".len() as u64
+        );
+        assert_eq!(diagnostics.totals.referenced_count, 2);
+        assert_eq!(
+            diagnostics.totals.referenced_bytes,
+            b"shared image".len() as u64
+        );
     }
 
     #[test]

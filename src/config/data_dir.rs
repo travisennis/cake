@@ -8,6 +8,7 @@ use anyhow::{Context, anyhow};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
+use crate::config::blob_store::{self as blob_store, BlobDiagnostics};
 use crate::config::session_jsonl::SessionFramer;
 use crate::config::{BlobStore, Session, git, session::CURRENT_FORMAT_VERSION};
 use crate::types::{GitState, SessionRecord};
@@ -182,6 +183,20 @@ impl DataDir {
     /// Returns the content-addressed image store for a session UUID.
     pub fn session_blob_store(&self, id: uuid::Uuid) -> BlobStore {
         BlobStore::new(self.session_blob_dir(id))
+    }
+
+    /// Build the read-only blob-health report for this data directory.
+    ///
+    /// The report pairs every `.jsonl` file with its sibling `.blobs`
+    /// directory and reports unpaired stores. It never deletes, creates a
+    /// directory, follows a symlink, or reads a payload into its output.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the sessions directory itself cannot be read.
+    /// A malformed or unreadable session is reported as data instead.
+    pub fn blob_diagnostics(&self) -> anyhow::Result<BlobDiagnostics> {
+        blob_store::blob_diagnostics(&self.sessions_dir)
     }
 
     /// Returns the canonical telemetry sidecar path for a session UUID.

@@ -2,9 +2,11 @@
 
 use std::{fs, fs::File, path::Path};
 
+use anyhow::Context;
 use uuid::Uuid;
 
 use crate::cli::SessionPersistencePlan;
+use crate::config::blob_store::{RecoveryReport, referenced_content_ids};
 use crate::config::{DataDir, Session};
 use crate::types::SessionRecord;
 
@@ -37,10 +39,73 @@ pub fn execute_persistence_plan(
             },
             Session::append_records,
         )?,
-        SessionPersistencePlan::Append => data_dir.open_session_for_append(session.id)?,
+        SessionPersistencePlan::Append => {
+            let file = data_dir.open_session_for_append(session.id)?;
+            recover_append_blobs(data_dir, &file, session.id);
+            file
+        },
     };
 
     Ok(Some(file))
+}
+
+/// Remove unreferenced image blobs after an append lock and tail repair.
+///
+/// Recovery is best-effort: a missing blob directory skips the scan, and a
+/// read, parse, or removal error is reported without failing the resume.
+fn recover_append_blobs(data_dir: &DataDir, file: &File, session_id: Uuid) {
+    match try_recover_append_blobs(data_dir, file, session_id) {
+        Ok(Some(report)) => log_recovery_report(&report, session_id),
+        Ok(None) => {},
+        Err(error) => tracing::warn!(
+            target: "cake",
+            "Skipped image blob recovery for session {}: {error:#}",
+            session_id
+        ),
+    }
+}
+
+fn try_recover_append_blobs(
+    data_dir: &DataDir,
+    file: &File,
+    session_id: Uuid,
+) -> anyhow::Result<Option<RecoveryReport>> {
+    let blob_dir = data_dir.session_blob_dir(session_id);
+    match fs::symlink_metadata(&blob_dir) {
+        Ok(_) => {},
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).context(format!(
+                "failed to inspect blob directory {}",
+                blob_dir.display()
+            ));
+        },
+    }
+
+    let session_path = data_dir.session_path(session_id);
+    let session = Session::load_from_append_handle(file, &session_path)
+        .context("failed to read session references")?;
+    let referenced = referenced_content_ids(&session.records)
+        .context("failed to collect session image references")?;
+    data_dir
+        .session_blob_store(session_id)
+        .recover_unreferenced(&session_id.to_string(), &referenced)
+        .map(Some)
+}
+
+fn log_recovery_report(report: &RecoveryReport, session_id: Uuid) {
+    for error in &report.errors {
+        tracing::warn!(target: "cake", "{error}");
+    }
+    if !report.removed_blobs.is_empty() || !report.removed_temporary_files.is_empty() {
+        tracing::info!(
+            target: "cake",
+            "Recovered {} unreferenced blob(s) and {} temporary file(s) for session {}",
+            report.removed_blobs.len(),
+            report.removed_temporary_files.len(),
+            session_id
+        );
+    }
 }
 
 struct SeedRequest<'a> {
@@ -176,8 +241,8 @@ fn attach_cleanup_errors(mut error: anyhow::Error, cleanup_errors: Vec<String>) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::Role;
     use crate::types::session::MessageData;
+    use crate::types::{ImagePart, Role};
 
     fn test_session(working_dir: &std::path::Path) -> Session {
         let mut session = Session::new(uuid::Uuid::new_v4(), working_dir.to_path_buf());
@@ -278,6 +343,77 @@ mod tests {
                 if message.content == "continued"
         ));
         assert!(Session::open_for_append(&path).is_err());
+    }
+
+    #[test]
+    fn append_recovery_removes_orphans_and_temps_but_keeps_references() {
+        let root = tempfile::tempdir().expect("temp data dir");
+        let data_dir = DataDir::new_in_dir(root.path());
+        let session = test_session(root.path());
+        let store = data_dir.session_blob_store(session.id);
+        let referenced = store.put(b"referenced image").expect("referenced blob");
+        let orphan = store.put(b"orphan image").expect("orphan blob");
+        let temp_path = data_dir
+            .session_blob_dir(session.id)
+            .join(".tmp-interrupted");
+        std::fs::write(&temp_path, b"partial image").expect("temporary blob");
+
+        let mut file = data_dir
+            .create_session_file(&session, Vec::new())
+            .expect("create session");
+        Session::append_record(
+            &mut file,
+            &SessionRecord::Message(MessageData {
+                role: Role::User,
+                content: "look".to_string(),
+                id: None,
+                status: None,
+                timestamp: None,
+                images: vec![ImagePart {
+                    media_type: "image/png".to_string(),
+                    data_base64: String::new(),
+                    content_id: Some(referenced.as_str().to_string()),
+                }],
+            }),
+        )
+        .expect("append image reference");
+        drop(file);
+
+        data_dir
+            .load_session(session.id)
+            .expect("read-only load")
+            .expect("session exists");
+        assert!(
+            data_dir
+                .session_blob_dir(session.id)
+                .join(orphan.as_str())
+                .exists(),
+            "a read-only load must not recover blobs"
+        );
+
+        let file = execute_persistence_plan(
+            Some(SessionPersistencePlan::Append),
+            &data_dir,
+            &session,
+            Vec::new(),
+        )
+        .expect("append plan")
+        .expect("append handle");
+        drop(file);
+
+        assert!(
+            data_dir
+                .session_blob_dir(session.id)
+                .join(referenced.as_str())
+                .exists()
+        );
+        assert!(
+            !data_dir
+                .session_blob_dir(session.id)
+                .join(orphan.as_str())
+                .exists()
+        );
+        assert!(!temp_path.exists());
     }
 
     #[test]

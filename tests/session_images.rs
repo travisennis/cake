@@ -263,6 +263,11 @@ async fn resume_hydrates_blob_images_and_fails_closed_when_the_blob_is_missing_o
     let mock_server = MockServer::start().await;
     write_responses_settings(&env, &mock_server.uri());
     let (session_id, blob_path) = run_initial_image_task(&env, &mock_server).await;
+    let blob_dir = blob_path.parent().expect("blob directory");
+    let orphan_path = blob_dir.join(hex::encode(Sha256::digest(b"unreferenced image")));
+    fs::write(&orphan_path, b"unreferenced image").expect("orphan blob");
+    let temp_path = blob_dir.join(".tmp-interrupted");
+    fs::write(&temp_path, b"partial image").expect("temporary blob");
 
     mock_server.reset().await;
     Mock::given(method("POST"))
@@ -289,6 +294,12 @@ async fn resume_hydrates_blob_images_and_fails_closed_when_the_blob_is_missing_o
         1,
         "resume must not duplicate the blob"
     );
+    assert!(!orphan_path.exists(), "resume should remove an orphan blob");
+    assert!(
+        !temp_path.exists(),
+        "resume should remove a stale temporary blob"
+    );
+    assert!(blob_path.exists(), "resume must keep the referenced blob");
 
     mock_server.reset().await;
     fs::remove_file(&blob_path).expect("failed to remove blob");

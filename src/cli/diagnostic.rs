@@ -68,6 +68,27 @@ pub const CHECK_SESSIONS_DISCOVERY: &str = "sessions.discovery_failed";
 /// Check id for a checkpoint append that failed.
 pub const CHECK_SESSIONS_CHECKPOINT: &str = "sessions.checkpoint_failed";
 
+/// Check id for a blob directory that is missing, unsafe, or unreadable.
+pub const CHECK_BLOBS_DIRECTORY: &str = "blobs.directory_problem";
+
+/// Check id for a session file whose image references could not be read fully.
+pub const CHECK_BLOBS_SESSION: &str = "blobs.session_problem";
+
+/// Check id for a referenced image blob that is missing.
+pub const CHECK_BLOBS_REFERENCE_MISSING: &str = "blobs.reference_missing";
+
+/// Check id for a referenced image blob whose bytes do not verify.
+pub const CHECK_BLOBS_REFERENCE_CORRUPT: &str = "blobs.reference_corrupt";
+
+/// Check id for published blobs that no session record references.
+pub const CHECK_BLOBS_UNREFERENCED: &str = "blobs.unreferenced";
+
+/// Check id for a stale temporary file left by an interrupted publication.
+pub const CHECK_BLOBS_TEMPORARY: &str = "blobs.temporary_file";
+
+/// Check id for a blob directory with no matching session file.
+pub const CHECK_BLOBS_ORPHANED_STORE: &str = "blobs.orphaned_store";
+
 /// Check id for a session diagnostic invocation that cannot proceed because
 /// its identity or destination is invalid.
 pub const CHECK_SESSION_INPUT: &str = "session.invalid_input";

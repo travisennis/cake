@@ -1122,6 +1122,17 @@ impl SessionRecord {
         }
     }
 
+    /// Return every content id referenced by this record, including ids on
+    /// images retained inside a checkpoint.
+    ///
+    /// Recovery and blob diagnostics share this traversal so a future
+    /// payload-bearing record is either visible to both or to neither.
+    pub(crate) fn content_ids(&self) -> impl Iterator<Item = &str> + '_ {
+        self.image_parts()
+            .into_iter()
+            .filter_map(|image| image.content_id.as_deref())
+    }
+
     /// Remove image content ids from every persisted payload shape.
     ///
     /// Session records keep references so a hydrated record can be written
