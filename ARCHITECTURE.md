@@ -57,7 +57,7 @@ An opt-in TypeSafe evaluator observes the same command context under its own bou
 
 ### Persistence and integrations
 
-Persisted sessions are append-only, versioned JSONL logs. Stream-json is a current-task event stream, not a resumable session file. Public record shapes, configuration, exit codes, hook input/output, and toolbox and MCP protocols are compatibility contracts described in [Integrations](docs/integrations.md).
+Persisted sessions are append-only, versioned JSONL logs plus an optional adjacent per-session image blob directory. Image payloads are content-addressed by SHA-256, published before the record that references them, and verified before use; a record stores the digest instead of the bytes. Provider request and stream-json shapes are unchanged, so hydration materializes the existing data URL and replay emits the pre-blob inline shape. A session copied for backup or transfer must carry its blob directory. Stream-json is a current-task event stream, not a resumable session file. Public record shapes, configuration, exit codes, hook input/output, and toolbox and MCP protocols are compatibility contracts described in [Integrations](docs/integrations.md).
 
 ## Invariants
 
@@ -69,6 +69,7 @@ Persisted sessions are append-only, versioned JSONL logs. Stream-json is a curre
 - Filesystem tools validate paths before side effects.
 - Sandboxing is default-on and availability failures fail closed, except for the documented recognized nested-Seatbelt fallback.
 - Session files are append-only and versioned; older records are never silently rewritten.
+- Session image payloads are content-addressed per session, verified before use, and never substituted when missing or corrupt; a copied session without its blob directory is incomplete.
 - Machine-readable stdout contains only its declared JSON format.
 - Provider-specific behavior remains at provider/backend boundaries.
 - Untrusted model actions never acquire the authority of trusted hooks, toolbox executables, or MCP servers implicitly.

@@ -87,6 +87,14 @@ fn assert_conversation_item_stream_session_roundtrip(item: &ConversationItem) {
     assert_eq!(*item, restored);
 }
 
+fn referenced_image() -> ImagePart {
+    ImagePart {
+        media_type: "image/png".to_string(),
+        data_base64: String::new(),
+        content_id: Some("0123456789abcdef".repeat(4)),
+    }
+}
+
 #[test]
 fn task_outcome_serializes_canonical_task_complete_fields() {
     let record = StreamRecord::TaskComplete(TaskCompleteData {
@@ -1087,6 +1095,21 @@ fn snapshot_session_json_message_with_id_and_status() {
 }
 
 #[test]
+fn snapshot_session_json_message_with_image_reference() {
+    let item = ConversationItem::Message {
+        role: Role::User,
+        content: "What is in this image?".to_string(),
+        id: None,
+        status: None,
+        timestamp: Some(timestamp_at("2026-05-10T00:00:00Z")),
+        images: vec![referenced_image()],
+    };
+    let json = session_json_for(&item);
+    assert!(json["images"][0].get("data_base64").is_none());
+    insta::assert_json_snapshot!("session_json_message_with_image_reference", json);
+}
+
+#[test]
 fn snapshot_session_json_reasoning_with_content() {
     let item = ConversationItem::Reasoning {
         id: "r-1".to_string(),
@@ -1139,6 +1162,22 @@ fn snapshot_session_json_function_call_with_replay() {
     insta::assert_json_snapshot!(
         "session_json_function_call_with_replay",
         session_json_for_with_replay(&item, ReplaySafety::Safe)
+    );
+}
+
+#[test]
+fn snapshot_session_json_function_call_output_with_image_reference() {
+    let item = ConversationItem::FunctionCallOutput {
+        call_id: "call-1".to_string(),
+        output: "ReadImage /tmp/red.png (69 bytes, image/png)".to_string(),
+        timestamp: Some(timestamp_at("2026-05-10T00:00:01Z")),
+        images: vec![referenced_image()],
+    };
+    let json = session_json_for(&item);
+    assert!(json["images"][0].get("data_base64").is_none());
+    insta::assert_json_snapshot!(
+        "session_json_function_call_output_with_image_reference",
+        json
     );
 }
 
@@ -1228,6 +1267,80 @@ fn snapshot_session_json_compaction() {
         .expect("the snapshot is a valid, loadable checkpoint record");
 
     insta::assert_json_snapshot!("session_json_compaction", json);
+}
+
+#[test]
+fn snapshot_session_json_compaction_with_image_references() {
+    let json = session_record_json(SessionRecord::Compaction(CompactionData {
+        checkpoint_version: CHECKPOINT_VERSION,
+        checkpoint_id: "checkpoint-images".to_string(),
+        session_id: fixed_session_id(),
+        task_id: fixed_task_id(),
+        timestamp: fixed_timestamp(),
+        trigger: CompactionTrigger::Threshold,
+        summary: "The user asked about an image and ReadImage returned it.".to_string(),
+        retained: vec![
+            RetainedRecord {
+                record: RetainedConversationRecord::Message(MessageData {
+                    role: Role::User,
+                    content: "What is in this image?".to_string(),
+                    id: None,
+                    status: None,
+                    timestamp: Some(timestamp_at("2026-05-10T00:00:00Z")),
+                    images: vec![referenced_image()],
+                }),
+                pin: Some(PinReason::UnconsumedImage),
+                source_task: Some(fixed_task_id()),
+                origin: Some(MessageOrigin::User),
+                skill_read: None,
+            },
+            RetainedRecord {
+                record: RetainedConversationRecord::FunctionCall(FunctionCallData {
+                    id: "fc-1".to_string(),
+                    call_id: "call-1".to_string(),
+                    name: "ReadImage".to_string(),
+                    arguments: r#"{"path":"/tmp/red.png"}"#.to_string(),
+                    arguments_parse_error: None,
+                    replay: Some(ReplaySafety::Safe),
+                    timestamp: Some(timestamp_at("2026-05-10T00:00:01Z")),
+                }),
+                pin: None,
+                source_task: None,
+                origin: None,
+                skill_read: None,
+            },
+            RetainedRecord {
+                record: RetainedConversationRecord::FunctionCallOutput(FunctionCallOutputData {
+                    call_id: "call-1".to_string(),
+                    output: "ReadImage /tmp/red.png (69 bytes, image/png)".to_string(),
+                    replay: Some(ReplaySafety::Safe),
+                    timestamp: Some(timestamp_at("2026-05-10T00:00:02Z")),
+                    images: vec![referenced_image()],
+                }),
+                pin: Some(PinReason::UnconsumedImage),
+                source_task: None,
+                origin: None,
+                skill_read: None,
+            },
+        ],
+        model: ModelIdentity {
+            model: "gpt-5.4".to_string(),
+            model_config: Some("test".to_string()),
+            reasoning_effort: None,
+        },
+        summary_instruction_version: 1,
+        estimated_input: EstimatedInput {
+            before_tokens: 1200,
+            after_tokens: 400,
+            basis: EstimateBasis::ContentClass,
+        },
+        summary_usage: None,
+        summary_time_ms: None,
+    }));
+    serde_json::from_value::<SessionRecord>(json.clone())
+        .expect("the image checkpoint snapshot is a valid, loadable record");
+
+    insta::assert_json_snapshot!("session_json_compaction_with_image_references", json);
 }
 
 #[test]

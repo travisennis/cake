@@ -1,0 +1,16 @@
+---
+source: src/types/session_tests.rs
+expression: json
+---
+{
+  "content": "What is in this image?",
+  "images": [
+    {
+      "content_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "media_type": "image/png"
+    }
+  ],
+  "role": "user",
+  "timestamp": "2026-05-10T00:00:00Z",
+  "type": "message"
+}

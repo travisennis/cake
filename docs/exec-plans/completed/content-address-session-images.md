@@ -23,13 +23,14 @@ Tool-output externalization is out of scope for this task. At current defaults B
 - [x] Milestone 3: add checkpoint, fork, replay, and legacy-inline regression tests.
 - [x] Milestone 4: add payload-first recovery at resume: scan the session, remove unreferenced blobs and stale temporary files, and never touch referenced blobs.
 - [x] Milestone 4: add the read-only `cake debug blobs` diagnostics command and its tests.
-- [ ] Milestone 5: update `docs/integrations.md`, `docs/security.md`, `docs/configuration.md`, `ARCHITECTURE.md`, and the record snapshots.
-- [ ] Milestone 5: run the task verification commands and the full gate.
+- [x] Milestone 5: update `docs/integrations.md`, `docs/security.md`, `docs/configuration.md`, `ARCHITECTURE.md`, and the record snapshots.
+- [x] Milestone 5: run the task verification commands and the full gate.
 
 ## Surprises & Discoveries
 
-- Milestone 1 (2026-11-12): macOS temp directories accept directory `fsync` after creating the store root and after a fork hard link; 15 store tests pass. A plain read open of a FIFO target could block before the post-open metadata check, so `read_verified` preflights `symlink_metadata` and opens with `O_NONBLOCK` on Unix. Linux execution remains for later milestone verification.
+- Milestone 1 (2026-11-12): macOS temp directories accept directory `fsync` after creating the store root and after a fork hard link; 15 store tests pass. A plain read open of a FIFO target could block before the post-open metadata check, so `read_verified` preflights `symlink_metadata` and opens with `O_NONBLOCK` on Unix. Linux execution was not available in this session; the final verification ran on macOS against the shared Unix paths.
 - Milestone 4 (2026-11-12): diagnostics cannot use `DataDir::load_session`, because that hydrates every reference and fails when a blob is missing. It scans raw records with the tolerant JSONL framer, so a missing blob is data and a malformed session becomes a finding. Recovery can use a raw read under the append lock because it only needs references.
+- Milestone 5 (2026-11-12): three new snapshots cover a reference-bearing message, a function-call output, and a compaction retained tail. Every pre-existing record snapshot stayed byte-identical because `content_id` is skipped when absent. The Python session-metrics loaders read records generically, so `just session-metrics-check` passed without changes; `content_id` and the `debug blobs` report are invisible to them.
 
 ## Decision Log
 
@@ -63,6 +64,9 @@ image; the legacy-inline test confirms hydration does not create a blob director
 
 Milestone 4 is complete. `SessionRecord::content_ids` is the shared traversal over message, function-call-output, and checkpoint-retained images. `BlobStore::recover_unreferenced` refuses a symlinked or non-directory root, removes only regular `.tmp-*` files and unreferenced digest-named files, keeps referenced and corrupt referenced files, and reports best-effort removal errors without failing the resume. `execute_persistence_plan` runs recovery only for `Append`, after the lock and torn-tail repair, and skips both the scan and the session read when no blob directory exists. `DataDir::blob_diagnostics` pairs every `.jsonl` file with its stem's `.blobs` directory, uses the tolerant framer to collect references, reports missing and corrupt references, unreferenced blobs, temporary files, malformed sessions, unsafe roots, and orphaned stores, and deduplicates global stored and referenced bytes by device and inode. `cake debug blobs [--json]` renders the read-only report, never deletes or
 creates a blob directory, and emits warning checks for every finding without printing payload bytes. Tests cover resume removal of an orphan and a temporary file while keeping a reference, read-only loads leaving orphans untouched, every diagnostics category, root and entry symlink handling, malformed sessions, orphaned stores, and fork byte deduplication. The end-to-end image resume test now seeds an orphan and a temporary file and proves the real resume removes both. `just cc-check` is clean after splitting the recovery and diagnostics walks below the complexity ceiling.
+
+Milestone 5 is complete. `docs/integrations.md` now describes the session-plus-blob layout, both image record forms, hydration and fail-closed behavior, the checkpoint ceiling counting references, fork hard links, append-time recovery, replay hydration, and the `debug blobs` text and JSON reports, including its seven check ids. `docs/security.md` records blob sensitivity, owner-only modes, no-follow validation, digest verification, the existing sessions-root grant, and the read-only diagnostic boundary. `docs/configuration.md` adds the data-root layout and a blob-diagnostics section, and `ARCHITECTURE.md` records the persistence boundary and a copy-with-blobs invariant. Three new snapshots cover a message, a function-call output, and a compaction retained tail; existing snapshots are unchanged. `docs/adr/index.md` remains generated and gitignored. Verification passed: `just docs-check`, `just session-metrics-check`, `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+`cargo test` (2180 unit tests plus every integration suite), `just check` (2180 tests, CC gate 2204 functions with 0 over, structural and script suites), rustdoc with `-D warnings`, and `git diff --check`. Linux execution was unavailable; macOS exercised the shared Unix store path, and Linux remains a CI responsibility.
 
 ## Context and Orientation
 

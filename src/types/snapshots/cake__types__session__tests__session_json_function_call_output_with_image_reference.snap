@@ -1,0 +1,16 @@
+---
+source: src/types/session_tests.rs
+expression: json
+---
+{
+  "call_id": "call-1",
+  "images": [
+    {
+      "content_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "media_type": "image/png"
+    }
+  ],
+  "output": "ReadImage /tmp/red.png (69 bytes, image/png)",
+  "timestamp": "2026-05-10T00:00:01Z",
+  "type": "function_call_output"
+}
