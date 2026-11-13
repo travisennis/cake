@@ -22,7 +22,7 @@ This is task 145a, the follow-up anticipated by ADR 061. It is a storage change 
 - [x] (2026-11-13) Milestone 2: prove the writer, checkpoint, replay, and legacy-inline paths with unit and integration tests.
 - [x] (2026-11-13) Milestone 3: include output references in fork hard links, resume recovery, and `cake debug blobs`.
 - [x] (2026-11-13) Milestone 3: prove a fork shares output inodes, recovery removes only unreferenced output blobs, and diagnostics report missing/corrupt output references.
-- [ ] Milestone 4: keep the session-metrics tooling truthful by resolving externalized output text from the session blob directory.
+- [x] (2026-11-13) Milestone 4: keep the session-metrics tooling truthful by resolving externalized output text from the session blob directory.
 - [ ] Milestone 5: update `docs/integrations.md`, `docs/security.md`, `docs/configuration.md`, `ARCHITECTURE.md`, the ADR amendment, and record snapshots.
 - [ ] Milestone 5: run the task verification commands and the full gate.
 
@@ -35,6 +35,7 @@ This is task 145a, the follow-up anticipated by ADR 061. It is a storage change 
 - The session-metrics Python loader reads `function_call_output.output` directly for failure classification and output sizes. Without a change it would treat every externalized output as empty and silently lose the failure taxonomy. The loader needs to resolve a `content_id` from the sibling `.blobs` directory.
 - Milestone 2 needed no new persistence wiring: `append_record`, `commit_checkpoint`, `cake sessions checkpoint`, `DataDir::load_session`, and replay already route through the shared `BlobStore` helpers, so output text followed the image path. The work was proving it with a real-binary run, a writer unit test, a checkpoint-verb test, and a legacy-inline fixture. The real-binary suite sets `CAKE_GATE=off` because the default command-policy gate is not installed in the test environment; otherwise Bash fails closed with `script_evidence` before producing an output.
 - Milestone 3 likewise needed no new production traversal: `prepare_fork_seed_records` and `collect_record_content_ids` already consume `SessionRecord::content_ids`, so output references followed images through fork, recovery, and diagnostics. The work was output-specific proof and payload wording. The `debug blobs` integration suite is `tests/debug_blobs.rs`, not `tests/debug_session.rs` as the original milestone criterion said; that criterion is corrected below.
+- `Session` already carries the transcript path, so its sibling blob directory needs no loader state: `Session.blob_dir` derives `{stem}.blobs` and `Session.tool_calls` passes it to `pair_tool_calls`. Transcript tool-output sizes are not reported today (the size tables use telemetry `output_bytes`), so the Milestone 4 proof asserts the resolved `.output` byte length rather than adding a report column.
 
 ## Decision Log
 

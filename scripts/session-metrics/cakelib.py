@@ -154,13 +154,21 @@ class Session:
     _tool_calls: list[ToolCall] | None = field(default=None, repr=False)
     _task_ts_cache: dict[str, datetime] | None = field(default=None, repr=False)
 
+    @property
+    def blob_dir(self) -> Path | None:
+        """The session's sibling content-addressed blob directory, if known."""
+        if self.path is None:
+            return None
+        path = Path(self.path)
+        return path.parent / f"{path.stem}.blobs"
+
     def by_type(self, *types: str) -> list[dict]:
         return [r for r in self.records if r.get("type") in types]
 
     @property
     def tool_calls(self) -> list[ToolCall]:
         if self._tool_calls is None:
-            self._tool_calls = pair_tool_calls(self.records)
+            self._tool_calls = pair_tool_calls(self.records, self.blob_dir)
         return self._tool_calls
 
     # -- window attribution -------------------------------------------------
@@ -704,6 +712,7 @@ def judge_event_outcome(event: dict) -> str:
 ERROR_PREFIX = "Error"
 HOOK_BLOCKED_PREFIX = "Hook blocked tool execution"
 SANDBOX_BLOCKED_MARKER = "[Sandbox restriction]"
+EXTERNALIZED_OUTPUT_UNAVAILABLE = "externalized tool output unavailable"
 
 # The opening of the `[Sandbox restriction]` notice line `bash.rs`'s
 # `compose_text_output` appends after a filesystem denial: the marker plus the
@@ -767,8 +776,54 @@ def is_tool_failure(name: str, output: str) -> bool:
     )
 
 
-def pair_tool_calls(records: list[dict]) -> list[ToolCall]:
-    """Pair function_call records with their function_call_output by call_id."""
+def _valid_content_id(value: object) -> bool:
+    """Whether `value` is a lowercase hexadecimal SHA-256 digest."""
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(ch in "0123456789abcdef" for ch in value)
+    )
+
+
+def load_externalized_output(
+    blob_dir: Path | None, content_id: object
+) -> tuple[str | None, str | None]:
+    """Read a referenced tool-output blob, verifying its digest and UTF-8.
+
+    Returns `(text, None)` on success or `(None, reason)` when the blob cannot
+    be used. The reason is a bounded label; exception text and payload bytes
+    never enter it. A content id is validated before it joins the blob path so
+    a malformed record cannot read outside the session's blob directory.
+    """
+    if not _valid_content_id(content_id):
+        return None, "invalid content id"
+    if blob_dir is None:
+        return None, "no blob directory"
+    path = Path(blob_dir) / content_id
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        return None, "missing blob"
+    except OSError:
+        return None, "unreadable blob"
+    if hashlib.sha256(data).hexdigest() != content_id:
+        return None, "blob digest mismatch"
+    try:
+        return data.decode("utf-8"), None
+    except UnicodeDecodeError:
+        return None, "blob is not UTF-8"
+
+
+def pair_tool_calls(
+    records: list[dict], blob_dir: Path | None = None
+) -> list[ToolCall]:
+    """Pair function_call records with their function_call_output by call_id.
+
+    When an output record carries a `content_id` and empty inline text, its
+    bytes are read from `blob_dir` after SHA-256 and UTF-8 verification. An
+    unavailable blob keeps the call and its failure visible instead of pairing
+    it as an empty success.
+    """
     pending: dict[str, dict] = {}
     calls: list[ToolCall] = []
     seq = 0
@@ -781,6 +836,18 @@ def pair_tool_calls(records: list[dict]) -> list[ToolCall]:
             if call is None:
                 continue
             output = rec.get("output") or ""
+            unavailable = False
+            if not output and rec.get("content_id") is not None:
+                resolved, reason = load_externalized_output(
+                    blob_dir, rec.get("content_id")
+                )
+                if resolved is None:
+                    output = (
+                        f"{ERROR_PREFIX}: {EXTERNALIZED_OUTPUT_UNAVAILABLE} ({reason})"
+                    )
+                    unavailable = True
+                else:
+                    output = resolved
             name = call.get("name", "unknown")
             calls.append(ToolCall(
                 seq=seq,
@@ -788,7 +855,7 @@ def pair_tool_calls(records: list[dict]) -> list[ToolCall]:
                 call_id=call.get("call_id", ""),
                 arguments=call.get("arguments", ""),
                 output=output,
-                ok=not is_tool_failure(name, output),
+                ok=not unavailable and not is_tool_failure(name, output),
                 timestamp=call.get("timestamp"),
             ))
             seq += 1
@@ -815,6 +882,8 @@ def classify_tool_error(name: str, output: str) -> str:
         return "duplicate-mutation guard"
     if HOOK_BLOCKED_PREFIX in first:
         return "hook-blocked"
+    if EXTERNALIZED_OUTPUT_UNAVAILABLE in first:
+        return "externalized-output-unavailable"
     if sandbox_notice(name, output):
         return "sandbox-blocked"
     if "BLOCKED" in first:
