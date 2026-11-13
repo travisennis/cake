@@ -18,8 +18,8 @@ This is task 145a, the follow-up anticipated by ADR 061. It is a storage change 
 - [x] (2026-11-12) Drafted this ExecPlan and the ADR 061 amendment before changing code.
 - [x] (2026-11-13) Milestone 1: add `FunctionCallOutputData.content_id`, extend the shared content-id traversal and stripping projection, and add output externalization and hydration to `BlobStore`.
 - [x] (2026-11-13) Milestone 1: prove threshold boundaries, both-field verification, reference-only hydration, empty output, missing/corrupt blob rejection, and UTF-8 failure with unit tests.
-- [ ] Milestone 2: externalize output text in `SessionWriter::append_record` and in `SessionWriter::commit_checkpoint`/`cake sessions checkpoint`, and hydrate it on provider-bound loads and replay.
-- [ ] Milestone 2: prove the writer, checkpoint, replay, and legacy-inline paths with unit and integration tests.
+- [x] (2026-11-13) Milestone 2: externalize output text in `SessionWriter::append_record` and in `SessionWriter::commit_checkpoint`/`cake sessions checkpoint`, and hydrate it on provider-bound loads and replay.
+- [x] (2026-11-13) Milestone 2: prove the writer, checkpoint, replay, and legacy-inline paths with unit and integration tests.
 - [ ] Milestone 3: include output references in fork hard links, resume recovery, and `cake debug blobs`.
 - [ ] Milestone 3: prove a fork shares output inodes, recovery removes only unreferenced output blobs, and diagnostics report missing/corrupt output references.
 - [ ] Milestone 4: keep the session-metrics tooling truthful by resolving externalized output text from the session blob directory.
@@ -33,6 +33,7 @@ This is task 145a, the follow-up anticipated by ADR 061. It is a storage change 
 - Output externalization invalidated the fixture in `flush_failure_with_an_oversized_record_leaves_no_malformed_line`: its 128 KiB retained tool output now serialized as a reference, so the write no longer exceeded `BufWriter`'s capacity. The fixture now retains a 128 KiB message, which stays inline and preserves the direct-write fault path.
 - `Session::append_records` writes seed records directly and has no `BlobStore`, so it cannot externalize output text. The only seed path that can carry a tool output today is a fork, and `create_seeded_session_file` already calls `prepare_fork_seed_records` first. The plan keeps that ordering and adds a regression test rather than widening `Session::append_records`.
 - The session-metrics Python loader reads `function_call_output.output` directly for failure classification and output sizes. Without a change it would treat every externalized output as empty and silently lose the failure taxonomy. The loader needs to resolve a `content_id` from the sibling `.blobs` directory.
+- Milestone 2 needed no new persistence wiring: `append_record`, `commit_checkpoint`, `cake sessions checkpoint`, `DataDir::load_session`, and replay already route through the shared `BlobStore` helpers, so output text followed the image path. The work was proving it with a real-binary run, a writer unit test, a checkpoint-verb test, and a legacy-inline fixture. The real-binary suite sets `CAKE_GATE=off` because the default command-policy gate is not installed in the test environment; otherwise Bash fails closed with `script_evidence` before producing an output.
 
 ## Decision Log
 

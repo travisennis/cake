@@ -121,7 +121,7 @@ impl CmdRunner for ReplayCommand {
             .map_err(|error| {
                 fail(ReplayError::Corrupt(
                     uuid.to_string(),
-                    format!("failed to hydrate session images: {error:#}"),
+                    format!("failed to hydrate session payloads: {error:#}"),
                 ))
             })?;
         emit_records(records)

@@ -481,6 +481,86 @@ fn stdin_payload_just_under_the_cap_is_accepted_after_externalization() {
 }
 
 #[test]
+fn stdin_payload_with_a_retained_output_is_accepted_after_externalization() {
+    let (dd, _tmp) = make_data_dir();
+    let path = session_path(&dd);
+    basic_session(&path, Some("gpt-test"));
+    let output_text = "o".repeat(20 * 1024);
+    let mut large = payload();
+    large["retained"] = json!([
+        {
+            "type": "function_call",
+            "id": "fc-output",
+            "call_id": "call-output",
+            "name": "Bash",
+            "arguments": "{\"command\":\"printf output\"}"
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call-output",
+            "output": output_text
+        }
+    ]);
+    let input = payload_bytes(&large);
+    assert!(
+        input.len() < usize::try_from(MAX_PAYLOAD_BYTES).expect("payload cap fits usize"),
+        "the test payload should be under the stdin cap"
+    );
+
+    let outcome = append_checkpoint(&dd, session_uuid(), &input)
+        .expect("externalization must accept a retained output above the threshold");
+    assert_eq!(outcome.retained_count, 2);
+
+    let raw = Session::load(&path).expect("raw session load");
+    let checkpoint = raw.context_seed().checkpoint.expect("stored checkpoint");
+    let RetainedConversationRecord::FunctionCallOutput(stored) = &checkpoint.retained[1].record
+    else {
+        panic!("retained output shape");
+    };
+    assert!(stored.output.is_empty());
+    let content_id = stored
+        .content_id
+        .as_deref()
+        .expect("stored output content id");
+    assert_eq!(content_id.len(), 64);
+
+    let mut record_bytes = serde_json::to_vec(&SessionRecord::Compaction(checkpoint.clone()))
+        .expect("serialize stored checkpoint");
+    record_bytes.push(b'\n');
+    assert!(record_bytes.len() <= MAX_CHECKPOINT_RECORD_BYTES);
+
+    let blobs: Vec<_> = std::fs::read_dir(dd.session_blob_dir(session_uuid()))
+        .expect("blob directory")
+        .collect();
+    assert_eq!(blobs.len(), 1, "one output should store one blob");
+    let blob_path = blobs[0].as_ref().expect("blob entry").path();
+    assert_eq!(
+        blob_path.file_name().and_then(|name| name.to_str()),
+        Some(content_id)
+    );
+    assert_eq!(
+        std::fs::read(&blob_path).expect("blob bytes"),
+        output_text.as_bytes()
+    );
+
+    let hydrated = dd
+        .load_session(session_uuid())
+        .expect("hydrate session")
+        .expect("session exists");
+    let restored = hydrated
+        .context_seed()
+        .checkpoint
+        .expect("hydrated checkpoint");
+    let RetainedConversationRecord::FunctionCallOutput(restored_output) =
+        &restored.retained[1].record
+    else {
+        panic!("hydrated retained output shape");
+    };
+    assert_eq!(restored_output.output, output_text);
+    assert_eq!(restored_output.content_id.as_deref(), Some(content_id));
+}
+
+#[test]
 fn an_oversized_record_is_an_input_error_that_writes_nothing() {
     let (dd, _tmp) = make_data_dir();
     let path = session_path(&dd);

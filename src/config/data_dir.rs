@@ -180,7 +180,7 @@ impl DataDir {
         self.sessions_dir().join(format!("{id}.blobs"))
     }
 
-    /// Returns the content-addressed image store for a session UUID.
+    /// Returns the content-addressed payload store for a session UUID.
     pub fn session_blob_store(&self, id: uuid::Uuid) -> BlobStore {
         BlobStore::new(self.session_blob_dir(id))
     }

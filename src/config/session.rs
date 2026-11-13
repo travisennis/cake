@@ -41,7 +41,7 @@ use crate::types::{
 #[derive(Clone)]
 pub struct SessionWriter {
     inner: Arc<Mutex<WriterState>>,
-    /// The owning session's image store. Every non-checkpoint append
+    /// The owning session's payload store. Every non-checkpoint append
     /// externalizes a clone of the record against this store before writing.
     blobs: Arc<BlobStore>,
     /// Test-only fault injected at the next checkpoint commit stage.
@@ -101,7 +101,7 @@ pub enum WriterFault {
 }
 
 impl SessionWriter {
-    /// Create a writer that owns the locked append handle and image store.
+    /// Create a writer that owns the locked append handle and payload store.
     pub fn new(file: File, blobs: Arc<BlobStore>) -> Self {
         Self {
             inner: Arc::new(Mutex::new(WriterState {
@@ -137,9 +137,9 @@ impl SessionWriter {
     /// Structural validation runs first and leaves the writer untouched on a
     /// caller error. The whole write then holds the shared mutex and the
     /// advisory lock through externalization, serialization, the newline, the
-    /// flush, and `sync_data`. Retained images are cloned and externalized
+    /// flush, and `sync_data`. Retained payloads are cloned and externalized
     /// before [`CompactionData::to_record_bytes`] measures the record, so the
-    /// ceiling applies to references rather than image bytes. A blob,
+    /// ceiling applies to references rather than payload bytes. A blob,
     /// serialization, or size failure is an append failure that terminally
     /// fails every clone.
     pub fn commit_checkpoint(&self, checkpoint: &CompactionData) -> anyhow::Result<()> {
@@ -2172,6 +2172,54 @@ mod tests {
             hydrated.images[0].data_base64,
             base64::engine::general_purpose::STANDARD.encode(bytes)
         );
+    }
+
+    #[test]
+    fn writer_externalizes_large_tool_output_records_and_hydration_restores_the_payload() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let session = make_test_session();
+        let file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
+        let writer = test_writer(&dir, file);
+        let output = "x".repeat(20 * 1024);
+        let record = SessionRecord::FunctionCallOutput(FunctionCallOutputData {
+            call_id: "call-1".to_string(),
+            output: output.clone(),
+            content_id: None,
+            replay: None,
+            timestamp: None,
+            images: Vec::new(),
+        });
+
+        writer.append_record(&record).expect("append output record");
+        drop(writer);
+
+        let raw = Session::load(&path).expect("raw session load");
+        let SessionRecord::FunctionCallOutput(stored) = &raw.records[1] else {
+            panic!("function call output shape");
+        };
+        assert!(stored.output.is_empty());
+        let id = stored.content_id.as_deref().expect("persisted content id");
+        assert_eq!(
+            fs::read(dir.path().join("blobs").join(id)).expect("blob file"),
+            output.as_bytes()
+        );
+        let SessionRecord::FunctionCallOutput(live) = &record else {
+            panic!("live function call output shape");
+        };
+        assert_eq!(
+            live.output, output,
+            "the live record keeps its text for the next provider request"
+        );
+
+        let mut hydrated = raw;
+        BlobStore::new(dir.path().join("blobs"))
+            .hydrate_session(&session.id.to_string(), &mut hydrated.records)
+            .expect("hydrate through the writer's store");
+        let SessionRecord::FunctionCallOutput(hydrated) = &hydrated.records[1] else {
+            panic!("hydrated function call output shape");
+        };
+        assert_eq!(hydrated.output, output);
     }
 
     #[expect(
