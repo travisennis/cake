@@ -1,0 +1,50 @@
+---
+source: src/types/session_tests.rs
+expression: json
+---
+{
+  "checkpoint_id": "checkpoint-output",
+  "checkpoint_version": 1,
+  "estimated_input": {
+    "after_tokens": 40,
+    "basis": "content_class",
+    "before_tokens": 100
+  },
+  "model": {
+    "model": "glm-5.1",
+    "model_config": "test"
+  },
+  "retained": [
+    {
+      "content": "Run the command.",
+      "origin": "user",
+      "pin": {
+        "kind": "user_input"
+      },
+      "role": "user",
+      "type": "message"
+    },
+    {
+      "arguments": "{}",
+      "call_id": "call-1",
+      "id": "fc-call-1",
+      "name": "Read",
+      "type": "function_call"
+    },
+    {
+      "call_id": "call-1",
+      "content_id": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "output": "",
+      "replay": "safe",
+      "timestamp": "2026-05-10T00:00:02Z",
+      "type": "function_call_output"
+    }
+  ],
+  "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "summary": "The assistant ran a command and retained its large output.",
+  "summary_instruction_version": 1,
+  "task_id": "550e8400-e29b-41d4-a716-446655440001",
+  "timestamp": "2026-05-10T12:34:56Z",
+  "trigger": "threshold",
+  "type": "compaction"
+}

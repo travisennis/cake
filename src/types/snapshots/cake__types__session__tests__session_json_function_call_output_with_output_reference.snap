@@ -1,0 +1,12 @@
+---
+source: src/types/session_tests.rs
+expression: json
+---
+{
+  "call_id": "call-1",
+  "content_id": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+  "output": "",
+  "replay": "safe",
+  "timestamp": "2026-05-10T00:00:01Z",
+  "type": "function_call_output"
+}

@@ -160,7 +160,7 @@ A fork hard-links every digest its seed records reference, images and outputs al
 
 ### More Information
 
-- Task 145a and `docs/exec-plans/active/externalize-large-tool-outputs.md` for the delivery plan, measured threshold evidence, and verification.
+- Task 145a and `docs/exec-plans/completed/externalize-large-tool-outputs.md` for the delivery plan, measured threshold evidence, and verification.
 - `scripts/session-metrics/cakelib.py` resolves output references from the sibling `.blobs` directory and classifies an unavailable reference as `externalized-output-unavailable`.
 - The original image decision above remains in force; this amendment only widens the payload kinds that can use the same store.
 - Cake task 034f consumes the reference path for retained output text; it does not depend on the threshold value.

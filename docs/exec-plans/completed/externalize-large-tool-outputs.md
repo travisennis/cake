@@ -24,8 +24,8 @@ This is task 145a, the follow-up anticipated by ADR 061. It is a storage change 
 - [x] (2026-11-13) Milestone 3: prove a fork shares output inodes, recovery removes only unreferenced output blobs, and diagnostics report missing/corrupt output references.
 - [x] (2026-11-13) Milestone 4: keep the session-metrics tooling truthful by resolving externalized output text from the session blob directory.
 - [x] (2026-11-13) Milestone 5: update `docs/integrations.md`, `docs/security.md`, `docs/configuration.md`, `ARCHITECTURE.md`, the ADR amendment, and the compaction plan's 16 KiB reference.
-- [ ] Milestone 5: add record snapshots for a reference-bearing `function_call_output` and a checkpoint retained tail with an output reference.
-- [ ] Milestone 5: run the task verification commands and the full gate.
+- [x] (2026-11-13) Milestone 5: add record snapshots for a reference-bearing `function_call_output` and a checkpoint retained tail with an output reference.
+- [x] (2026-11-13) Milestone 5: run the task verification commands and the full gate.
 
 ## Surprises & Discoveries
 
@@ -53,7 +53,23 @@ This is task 145a, the follow-up anticipated by ADR 061. It is a storage change 
 
 ## Outcomes & Retrospective
 
-Not started. The only delivered artifacts are this plan and the ADR 061 amendment. No production code, session record, or test has changed yet.
+Delivered on 2026-11-13. Large UTF-8 tool outputs (16,384 bytes or more) persist once in the session blob directory: a `function_call_output` carries `"output": ""` beside a 64-character lowercase `content_id`, while shorter and legacy inline outputs stay unchanged. The shared content-id traversal covers top-level and checkpoint-retained outputs, so hydration, replay stripping, fork hard links, append-time recovery, and `cake debug blobs` see both payload kinds. Writer and checkpoint commits externalize retained output before measuring the eight-MiB record, and provider-bound loads verify the digest and UTF-8 or fail closed naming the session and digest. The session-metrics loader resolves output references and reports `externalized-output-unavailable` when a blob is invalid, missing, unreadable, or non-UTF-8. Documentation and the ADR 061 amendment describe the inclusive 16 KiB boundary and the shared blob contract.
+
+The two new record snapshots are `session_json_function_call_output_with_output_reference` and `session_json_compaction_with_output_reference`; both prove `output` remains present and empty beside `content_id`. Every existing snapshot is unchanged, confirming that absent references keep the pre-blob shape.
+
+Verification from `/Users/travisennis/Projects/cake/cake` on 2026-11-13:
+
+- `cargo test session`: 337 unit tests passed, 0 failed, 0 ignored.
+- `cargo test checkpoint`: 67 unit tests passed, 0 failed, 0 ignored.
+- `cargo test replay`: 30 unit tests and 16 replay integration tests passed; the three output-reference replay tests in `tests/session_tool_outputs.rs` also passed.
+- `cargo test --test session_images`: 5 passed, 0 failed.
+- `cargo test --test debug_session`: 28 passed, 0 failed.
+- `just session-metrics-check`: 184 tests passed, including the eight externalized-output tests.
+- `just docs-check`: clean.
+- `just check`: 2,193 unit tests and 328 integration tests across 22 binaries passed; the CC gate checked 2,207 functions with 13 grandfathered and 0 over the limit, and every structural and script fixture suite passed.
+- `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `git diff --check` are clean. No paid model calls were made.
+
+Residual risk: this host is macOS, so Linux-only behavior was not exercised locally; CI remains responsible for the Linux suite.
 
 ## Context and Orientation
 

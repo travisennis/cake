@@ -95,6 +95,10 @@ fn referenced_image() -> ImagePart {
     }
 }
 
+fn referenced_output_id() -> String {
+    "fedcba9876543210".repeat(4)
+}
+
 #[test]
 fn task_outcome_serializes_canonical_task_complete_fields() {
     let record = StreamRecord::TaskComplete(TaskCompleteData {
@@ -1220,6 +1224,28 @@ fn snapshot_session_json_function_call_output_with_image_reference() {
 }
 
 #[test]
+fn snapshot_session_json_function_call_output_with_output_reference() {
+    let content_id = referenced_output_id();
+    let record = SessionRecord::FunctionCallOutput(FunctionCallOutputData {
+        call_id: "call-1".to_string(),
+        output: String::new(),
+        content_id: Some(content_id.clone()),
+        replay: Some(ReplaySafety::Safe),
+        timestamp: Some(timestamp_at("2026-05-10T00:00:01Z")),
+        images: Vec::new(),
+    });
+    let json = session_record_json(record);
+    assert_eq!(json["output"], "");
+    assert_eq!(json["content_id"].as_str(), Some(content_id.as_str()));
+    serde_json::from_value::<SessionRecord>(json.clone())
+        .expect("the output-reference snapshot is a valid, loadable record");
+    insta::assert_json_snapshot!(
+        "session_json_function_call_output_with_output_reference",
+        json
+    );
+}
+
+#[test]
 fn snapshot_session_json_compaction() {
     let json = session_record_json(SessionRecord::Compaction(CompactionData {
         checkpoint_version: CHECKPOINT_VERSION,
@@ -1381,6 +1407,45 @@ fn snapshot_session_json_compaction_with_image_references() {
         .expect("the image checkpoint snapshot is a valid, loadable record");
 
     insta::assert_json_snapshot!("session_json_compaction_with_image_references", json);
+}
+
+#[test]
+fn snapshot_session_json_compaction_with_output_reference() {
+    let content_id = referenced_output_id();
+    let mut exchange = test_support::exchange("call-1", "");
+    let RetainedConversationRecord::FunctionCallOutput(output) = &mut exchange[1].record else {
+        panic!("retained output shape");
+    };
+    output.content_id = Some(content_id.clone());
+    output.replay = Some(ReplaySafety::Safe);
+    output.timestamp = Some(timestamp_at("2026-05-10T00:00:02Z"));
+
+    let retained = std::iter::once(test_support::as_user_input(test_support::message(
+        Role::User,
+        "Run the command.",
+    )))
+    .chain(exchange)
+    .collect();
+    let mut checkpoint = test_support::checkpoint(
+        "checkpoint-output",
+        "The assistant ran a command and retained its large output.",
+        retained,
+    );
+    checkpoint.timestamp = fixed_timestamp();
+    checkpoint
+        .validate()
+        .expect("the output-reference checkpoint is valid");
+
+    let json = session_record_json(SessionRecord::Compaction(checkpoint));
+    let retained_output = &json["retained"][2];
+    assert_eq!(retained_output["output"], "");
+    assert_eq!(
+        retained_output["content_id"].as_str(),
+        Some(content_id.as_str())
+    );
+    serde_json::from_value::<SessionRecord>(json.clone())
+        .expect("the output-reference checkpoint snapshot is valid and loadable");
+    insta::assert_json_snapshot!("session_json_compaction_with_output_reference", json);
 }
 
 #[test]
