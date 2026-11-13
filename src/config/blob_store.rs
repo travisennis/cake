@@ -700,6 +700,9 @@ impl BlobStore {
             .with_context(|| format!("{context} has an invalid content id"))?;
 
         if let Some(id) = declared {
+            let bytes = self
+                .read_verified(&id)
+                .with_context(|| format!("{context} content id '{id}'"))?;
             if !data.output.is_empty() {
                 let computed = ContentId::from_bytes(data.output.as_bytes());
                 anyhow::ensure!(
@@ -707,8 +710,8 @@ impl BlobStore {
                     "{context} content id '{id}' does not match its inline bytes (found '{computed}')"
                 );
             }
-            self.read_verified(&id)
-                .with_context(|| format!("{context} content id '{id}'"))?;
+            std::str::from_utf8(&bytes)
+                .with_context(|| format!("{context} content id '{id}' is not valid UTF-8"))?;
             data.output.clear();
             data.content_id = Some(id.as_str().to_owned());
             return Ok(());
@@ -2339,6 +2342,32 @@ mod tests {
         assert!(text.contains(missing.as_str()), "{text}");
         assert!(text.contains("missing"), "{text}");
         assert_eq!(fs::read_dir(store.root()).expect("read root").count(), 1);
+    }
+
+    #[test]
+    fn externalize_output_rejects_corrupt_and_non_utf8_references() {
+        let (store, _temporary) = new_store();
+
+        let payload = "corrupt output payload";
+        let corrupt = store.put(payload.as_bytes()).expect("corrupt candidate");
+        fs::write(store.root().join(corrupt.as_str()), b"tampered").expect("replace blob bytes");
+        let record = SessionRecord::FunctionCallOutput(output_data("", Some(corrupt.clone())));
+        let error = store
+            .externalize_record(&record)
+            .expect_err("corrupt reference must fail");
+        let text = format!("{error:#}");
+        assert!(text.contains(corrupt.as_str()), "{text}");
+        assert!(text.contains("digest mismatch"), "{text}");
+        assert!(!text.contains(payload), "{text}");
+
+        let non_utf8 = store.put(&[0xff, 0xfe]).expect("non-UTF-8 blob");
+        let record = SessionRecord::FunctionCallOutput(output_data("", Some(non_utf8.clone())));
+        let error = store
+            .externalize_record(&record)
+            .expect_err("non-UTF-8 reference must fail");
+        let text = format!("{error:#}");
+        assert!(text.contains(non_utf8.as_str()), "{text}");
+        assert!(text.contains("not valid UTF-8"), "{text}");
     }
 
     #[test]

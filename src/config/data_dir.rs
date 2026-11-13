@@ -230,6 +230,9 @@ impl DataDir {
     /// The most recent session is determined by the session creation timestamp
     /// in the first JSONL record (no symlink needed).
     ///
+    /// Records are written raw: this test-only helper does not externalize
+    /// image or output payloads, so existing references are stored as-is.
+    ///
     /// # Examples
     ///
     /// ```ignore

@@ -384,7 +384,7 @@ impl Session {
 
     /// Loads a v4 append-only session from a JSONL file as raw records.
     ///
-    /// Image references are not resolved here. Callers that build provider
+    /// Payload references are not resolved here. Callers that build provider
     /// input must hydrate through [`crate::config::DataDir`] or
     /// [`crate::config::BlobStore::hydrate_session`] first.
     ///
@@ -404,7 +404,7 @@ impl Session {
     /// such as the checkpoint append command --- uses this instead, so the
     /// identity check, the derived boundary, and the append all happen under
     /// one advisory lock without opening a second handle. The handle is rewound
-    /// to the start of the file before it is read. Image references are not
+    /// to the start of the file before it is read. Payload references are not
     /// resolved here; provider-bound callers must hydrate first.
     pub fn load_from_append_handle(file: &File, path: &Path) -> anyhow::Result<Self> {
         let mut reader = file;
