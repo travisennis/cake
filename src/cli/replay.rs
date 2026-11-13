@@ -130,11 +130,17 @@ impl CmdRunner for ReplayCommand {
 
 fn emit_records(records: Vec<SessionRecord>) -> anyhow::Result<()> {
     // Replay mirrors the live stream vocabulary and preserves physical record
-    // order. `turn_usage` records are emitted verbatim, including records
-    // written before the optional context-budget fields existed. References
-    // are stripped after hydration so stream consumers never see the blob
-    // shape.
+    // order. Main-agent `turn_usage` records are emitted verbatim, including
+    // records written before the optional context-budget fields existed.
+    // Compaction-purpose usage stays session/telemetry audit data and is
+    // omitted, matching the live stream. References are stripped after
+    // hydration so stream consumers never see the blob shape.
     for record in records {
+        if let SessionRecord::TurnUsage(data) = &record
+            && data.purpose == Some(crate::types::TurnUsagePurpose::Compaction)
+        {
+            continue;
+        }
         let mut stream = StreamRecord::from(record);
         stream.strip_content_ids();
         emit(&stream)?;

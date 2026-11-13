@@ -28,8 +28,8 @@ use crate::session_telemetry::{
 };
 use crate::types::{
     ApiAttemptTerminalClass, ConversationItem, ReplaySafety, ReportedUsage, Role, SessionRecord,
-    StreamRecord, TaskCompleteData, TaskOutcome, TaskStartData, TurnUsageData, Usage,
-    UsagePresence,
+    StreamRecord, TaskCompleteData, TaskOutcome, TaskStartData, TurnUsageData, TurnUsagePurpose,
+    Usage, UsagePresence,
 };
 
 /// Result of a single API turn (one request/response cycle).
@@ -61,6 +61,28 @@ pub(super) struct TurnUsageSettlement {
     pub(super) model: String,
     pub(super) provider_request_id: Option<String>,
     pub(super) response_model: Option<String>,
+    pub(super) purpose: Option<TurnUsagePurpose>,
+    pub(super) compaction_id: Option<String>,
+    pub(super) summary_step: Option<u32>,
+}
+
+/// Purpose metadata attached to every attempt of one compaction summary
+/// request. `None` on the runner call means a main-agent attempt.
+#[derive(Debug, Clone, Default)]
+pub(super) struct AttemptPurpose {
+    pub(super) purpose: Option<TurnUsagePurpose>,
+    pub(super) compaction_id: Option<String>,
+    pub(super) summary_step: Option<u32>,
+}
+
+impl AttemptPurpose {
+    pub(super) fn compaction(checkpoint_id: &str, summary_step: u32) -> Self {
+        Self {
+            purpose: Some(TurnUsagePurpose::Compaction),
+            compaction_id: Some(checkpoint_id.to_string()),
+            summary_step: Some(summary_step),
+        }
+    }
 }
 
 pub(super) fn record_turn_usage(
@@ -80,22 +102,30 @@ pub(super) fn record_turn_usage(
         model,
         provider_request_id,
         response_model,
+        purpose,
+        compaction_id,
+        summary_step,
     } = settlement;
     accumulate_usage(total_usage, Some(&usage.usage));
-    *last_usage = Some(usage.usage);
+    let is_compaction = matches!(purpose, Some(TurnUsagePurpose::Compaction));
+    if !is_compaction {
+        *last_usage = Some(usage.usage);
+    }
 
     // A context fraction is only meaningful when the provider reported every
     // counter and the model configures a window. A partial report would
     // otherwise read as a measured context size the provider never gave us.
+    // Summary attempts never describe the main-agent context.
     let budget = match context_window {
-        Some(window) if usage.presence == UsagePresence::Complete => Some((
+        Some(window) if !is_compaction && usage.presence == UsagePresence::Complete => Some((
             window,
             u64::from(window).saturating_sub(usage.usage.input_tokens),
         )),
         _ => None,
     };
 
-    let legacy_shape = attempt == 1 && terminal_class == ApiAttemptTerminalClass::Completed;
+    let legacy_shape =
+        !is_compaction && attempt == 1 && terminal_class == ApiAttemptTerminalClass::Completed;
     let data = TurnUsageData {
         session_id: session_id.to_string(),
         task_id: task_id.to_string(),
@@ -110,11 +140,16 @@ pub(super) fn record_turn_usage(
         provider_request_id,
         context_window: budget.map(|(window, _)| window),
         remaining_context_tokens: budget.map(|(_, remaining)| remaining),
+        purpose,
+        compaction_id,
+        summary_step,
     };
     if let Err(error) = observer.persist_record(&SessionRecord::TurnUsage(data.clone())) {
         tracing::warn!(target: "cake", %error, "Failed to persist per-attempt usage");
     }
-    observer.stream_audit_record(&StreamRecord::TurnUsage(data));
+    if !is_compaction {
+        observer.stream_audit_record(&StreamRecord::TurnUsage(data));
+    }
 }
 
 struct AgentTelemetry {

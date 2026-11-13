@@ -1628,6 +1628,9 @@ fn snapshot_session_json_turn_usage() {
         provider_request_id: Some("resp-fail".to_string()),
         context_window: None,
         remaining_context_tokens: None,
+        purpose: None,
+        compaction_id: None,
+        summary_step: None,
     });
 
     insta::assert_json_snapshot!("session_json_turn_usage", session_record_json(record));
@@ -1660,6 +1663,9 @@ fn snapshot_stream_record_json_turn_usage_with_context_budget() {
         provider_request_id: Some("resp-ok".to_string()),
         context_window: Some(2000),
         remaining_context_tokens: Some(800),
+        purpose: None,
+        compaction_id: None,
+        summary_step: None,
     };
 
     insta::assert_json_snapshot!(
@@ -1684,6 +1690,9 @@ fn turn_usage_stream_and_session_records_share_the_same_shape() {
         provider_request_id: None,
         context_window: Some(1000),
         remaining_context_tokens: Some(1000),
+        purpose: None,
+        compaction_id: None,
+        summary_step: None,
     };
     let stream = serde_json::to_value(StreamRecord::TurnUsage(data.clone())).unwrap();
     let session = serde_json::to_value(SessionRecord::TurnUsage(data)).unwrap();
@@ -1728,6 +1737,9 @@ fn legacy_turn_usage_shape_deserializes_without_attempt_metadata() {
             provider_request_id: None,
             context_window: None,
             remaining_context_tokens: None,
+            purpose: None,
+            compaction_id: None,
+            summary_step: None,
             ..
         })
     ));
@@ -1749,6 +1761,9 @@ fn turn_usage_without_provider_metadata_keeps_legacy_shape() {
         provider_request_id: None,
         context_window: None,
         remaining_context_tokens: None,
+        purpose: None,
+        compaction_id: None,
+        summary_step: None,
     });
     let json = session_record_json(record);
 
@@ -1778,6 +1793,9 @@ fn turn_usage_without_attempt_metadata_keeps_legacy_shape() {
         provider_request_id: None,
         context_window: None,
         remaining_context_tokens: None,
+        purpose: None,
+        compaction_id: None,
+        summary_step: None,
     });
     let json = session_record_json(record);
 

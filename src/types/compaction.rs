@@ -551,6 +551,188 @@ fn validate_complete_pairing(retained: &[RetainedRecord]) -> anyhow::Result<()> 
     Ok(())
 }
 
+/// Characters per token for ordinary prose.
+///
+/// The estimator is deterministic and tokenizer-free. These ratios are
+/// deliberately conservative: the safety margin below is applied after the
+/// content-class conversion, so an estimate errs toward triggering early.
+pub const PROSE_CHARS_PER_TOKEN: u64 = 4;
+/// Characters per token for JSON, source code, and other dense text.
+pub const CODE_CHARS_PER_TOKEN: u64 = 3;
+/// Characters per token for base64 or opaque replay bytes.
+pub const OPAQUE_CHARS_PER_TOKEN: u64 = 2;
+/// Fixed provider-cost allowance for one inline image.
+///
+/// An image's token cost tracks its dimensions, not its base64 length, so the
+/// bytes are never counted as text.
+pub const IMAGE_TOKEN_COST: u64 = 1_500;
+/// Fixed structural overhead for one conversation item.
+pub const ITEM_STRUCTURE_TOKENS: u64 = 8;
+/// Safety multiplier numerator and denominator (one quarter).
+pub const ESTIMATE_MARGIN_NUMERATOR: u64 = 5;
+pub const ESTIMATE_MARGIN_DENOMINATOR: u64 = 4;
+
+/// The content classes the estimator distinguishes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContentClass {
+    Prose,
+    Code,
+    Opaque,
+}
+
+impl ContentClass {
+    /// Characters per token for this class.
+    pub const fn chars_per_token(self) -> u64 {
+        match self {
+            Self::Prose => PROSE_CHARS_PER_TOKEN,
+            Self::Code => CODE_CHARS_PER_TOKEN,
+            Self::Opaque => OPAQUE_CHARS_PER_TOKEN,
+        }
+    }
+}
+
+/// Classify text for the deterministic content-class estimator.
+///
+/// The rules are intentionally simple and stable: valid JSON is code, heavily
+/// punctuated or indented text is code, and long runs from the base64 alphabet
+/// are opaque. Everything else is prose. No tokenizer or model registry is
+/// consulted.
+pub fn classify_text(text: &str) -> ContentClass {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return ContentClass::Prose;
+    }
+    if is_opaque_text(trimmed) {
+        return ContentClass::Opaque;
+    }
+    if is_json_document(trimmed) {
+        return ContentClass::Code;
+    }
+    if is_dense_code(text) {
+        ContentClass::Code
+    } else {
+        ContentClass::Prose
+    }
+}
+
+fn is_opaque_text(trimmed: &str) -> bool {
+    trimmed.len() >= 256
+        && trimmed.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=' | b'\n' | b'\r')
+        })
+}
+
+fn is_json_document(trimmed: &str) -> bool {
+    (trimmed.starts_with('{') || trimmed.starts_with('['))
+        && serde_json::from_str::<serde_json::Value>(trimmed).is_ok()
+}
+
+fn is_dense_code(text: &str) -> bool {
+    let mut punctuation = 0_u64;
+    let mut indented_lines = 0_u64;
+    let mut lines = 0_u64;
+    for line in text.lines() {
+        lines = lines.saturating_add(1);
+        if line.starts_with("  ") || line.starts_with('\t') {
+            indented_lines = indented_lines.saturating_add(1);
+        }
+    }
+    for byte in text.bytes() {
+        if matches!(
+            byte,
+            b'{' | b'}' | b'[' | b']' | b'(' | b')' | b';' | b'=' | b'<' | b'>'
+        ) {
+            punctuation = punctuation.saturating_add(1);
+        }
+    }
+    let chars = u64::try_from(text.chars().count()).unwrap_or(u64::MAX);
+    let dense_punctuation = punctuation.saturating_mul(10) >= chars;
+    let dense_indentation = lines > 0 && indented_lines.saturating_mul(5) >= lines;
+    dense_punctuation || dense_indentation
+}
+
+/// Estimate the token cost of text, before the safety margin.
+fn raw_text_tokens(text: &str, class: ContentClass) -> u64 {
+    let chars = u64::try_from(text.chars().count()).unwrap_or(u64::MAX);
+    let ratio = class.chars_per_token();
+    chars.saturating_add(ratio.saturating_sub(1)) / ratio
+}
+
+/// Apply the documented safety margin with saturating arithmetic.
+const fn with_estimate_margin(tokens: u64) -> u64 {
+    tokens
+        .saturating_mul(ESTIMATE_MARGIN_NUMERATOR)
+        .saturating_add(ESTIMATE_MARGIN_DENOMINATOR.saturating_sub(1))
+        / ESTIMATE_MARGIN_DENOMINATOR
+}
+
+/// Estimate the token cost of text using its content class and the margin.
+pub fn estimate_text_tokens(text: &str) -> u64 {
+    with_estimate_margin(raw_text_tokens(text, classify_text(text)))
+}
+
+/// Estimate the token cost of one conversation item.
+///
+/// Inline image bytes are replaced by a flat per-image cost; encrypted
+/// reasoning and opaque replay bytes use the opaque ratio.
+pub fn estimate_item_tokens(item: &ConversationItem) -> u64 {
+    let content = match item {
+        ConversationItem::Message {
+            content, images, ..
+        } => raw_text_tokens(content, classify_text(content))
+            .saturating_add(image_tokens(images.len())),
+        ConversationItem::FunctionCall {
+            name, arguments, ..
+        } => raw_text_tokens(name, ContentClass::Prose)
+            .saturating_add(raw_text_tokens(arguments, ContentClass::Code)),
+        ConversationItem::FunctionCallOutput { output, images, .. } => {
+            raw_text_tokens(output, classify_text(output))
+                .saturating_add(image_tokens(images.len()))
+        },
+        ConversationItem::Reasoning {
+            summary,
+            encrypted_content,
+            content,
+            ..
+        } => {
+            let summary_tokens = summary.as_ref().map_or(0, |parts| {
+                parts.iter().fold(0_u64, |total, part| {
+                    total.saturating_add(raw_text_tokens(&part.text, ContentClass::Prose))
+                })
+            });
+            let content_tokens = content.as_ref().map_or(0, |parts| {
+                parts.iter().fold(0_u64, |total, part| {
+                    let text = part.text.as_deref().unwrap_or_default();
+                    total.saturating_add(raw_text_tokens(text, classify_text(text)))
+                })
+            });
+            let encrypted_tokens = encrypted_content
+                .as_deref()
+                .map_or(0, |value| raw_text_tokens(value, ContentClass::Opaque));
+            summary_tokens
+                .saturating_add(content_tokens)
+                .saturating_add(encrypted_tokens)
+        },
+    };
+    with_estimate_margin(content.saturating_add(ITEM_STRUCTURE_TOKENS))
+}
+
+/// Estimate the token cost of a list of conversation items.
+pub fn estimate_items_tokens(items: &[ConversationItem]) -> u64 {
+    items.iter().fold(0_u64, |total, item| {
+        total.saturating_add(estimate_item_tokens(item))
+    })
+}
+
+/// The flat token allowance for `count` images.
+pub const fn image_tokens(count: usize) -> u64 {
+    if count as u64 > u64::MAX / IMAGE_TOKEN_COST {
+        u64::MAX
+    } else {
+        IMAGE_TOKEN_COST * count as u64
+    }
+}
+
 /// Raw history and the latest checkpoint, as restore reads them from a session.
 ///
 /// `messages` is the full raw conversation. `boundary` is the conversation-item

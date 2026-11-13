@@ -14,7 +14,7 @@ use crate::clients::retry::{RequestOverrides, RetryReason, RetryStatus};
 use crate::config::model::{ApiType, ModelProvider, ReasoningEffort};
 use crate::types::ProviderIdentity;
 use crate::types::provider_identity::ProviderRequestShape;
-use crate::types::{ApiAttemptTerminalClass, Usage, UsagePresence};
+use crate::types::{ApiAttemptTerminalClass, TurnUsagePurpose, Usage, UsagePresence};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -284,6 +284,15 @@ pub struct ApiAttemptTelemetry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phase: Option<ApiAttemptPhase>,
     pub request_overrides: RequestOverridesSnapshot,
+    /// Why this attempt ran. Absent on historical and main-agent records.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<TurnUsagePurpose>,
+    /// The checkpoint a compaction-purpose attempt belongs to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compaction_id: Option<String>,
+    /// The logical summary request within a compaction operation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary_step: Option<u32>,
 }
 
 /// Historical terminal outcome of one in-process judge provider attempt.
@@ -1312,6 +1321,9 @@ mod tests {
                 reasoning_max_tokens: None,
                 context_overflow_retry_used: false,
             },
+            purpose: None,
+            compaction_id: None,
+            summary_step: None,
         }
     }
 

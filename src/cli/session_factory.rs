@@ -846,6 +846,9 @@ mod tests {
                     provider_request_id: None,
                     context_window: None,
                     remaining_context_tokens: None,
+                    purpose: None,
+                    compaction_id: None,
+                    summary_step: None,
                 },
             ));
 
@@ -2176,6 +2179,9 @@ mod tests {
                 provider_request_id: None,
                 context_window: None,
                 remaining_context_tokens: None,
+                purpose: None,
+                compaction_id: None,
+                summary_step: None,
             }),
             SessionRecord::SkillActivated {
                 session_id,
@@ -2349,6 +2355,9 @@ mod tests {
                 provider_request_id: None,
                 context_window: None,
                 remaining_context_tokens: None,
+                purpose: None,
+                compaction_id: None,
+                summary_step: None,
             }),
         ];
 

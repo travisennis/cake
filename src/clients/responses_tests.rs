@@ -1994,3 +1994,38 @@ fn build_response_request_composes_user_agent_with_codex_auth() {
         Some("cake_cli_rs")
     );
 }
+
+#[test]
+fn build_request_json_sends_the_configured_output_cap() {
+    let mut config = request_config("https://api.example.com/v1", ApiType::Responses);
+    config.model_config.max_output_tokens = Some(8_000);
+    let bytes = super::build_request_json(
+        &config,
+        &[],
+        &[],
+        &crate::clients::retry::RequestOverrides::default(),
+        None,
+    )
+    .expect("build request");
+    let wire: serde_json::Value = serde_json::from_slice(&bytes).expect("parse request");
+    assert_eq!(wire["max_output_tokens"], 8_000);
+}
+
+#[test]
+fn build_request_json_omits_the_output_cap_for_codex() {
+    let mut config = request_config("https://chatgpt.com/backend-api/codex", ApiType::Responses);
+    config.model_config.max_output_tokens = Some(8_000);
+    let bytes = super::build_request_json(
+        &config,
+        &[],
+        &[],
+        &crate::clients::retry::RequestOverrides::default(),
+        None,
+    )
+    .expect("build request");
+    let wire: serde_json::Value = serde_json::from_slice(&bytes).expect("parse request");
+    assert!(
+        wire.get("max_output_tokens").is_none(),
+        "the Codex adapter drops the cap: {wire}"
+    );
+}

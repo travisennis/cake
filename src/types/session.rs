@@ -479,6 +479,21 @@ pub enum ApiAttemptTerminalClass {
     ResponseFailed,
 }
 
+/// The purpose of one `turn_usage` record.
+///
+/// Historical records have no purpose and mean [`Self::Main`]. Compaction
+/// summary attempts are audit data: they count toward task usage and cost, but
+/// never describe the main-agent context, seed a resume, or appear in a
+/// stream-json `turn_usage` event.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnUsagePurpose {
+    /// A main-agent provider request whose measurement describes the context.
+    Main,
+    /// A compaction summary request; audit only, never a context measurement.
+    Compaction,
+}
+
 /// Token usage for one main-agent provider attempt.
 ///
 /// Persisted to the session file and, for main-agent attempts, emitted to
@@ -542,6 +557,16 @@ pub struct TurnUsageData {
     /// zero rather than going negative.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remaining_context_tokens: Option<u64>,
+    /// Why this attempt ran. Absent on historical and main-agent records, which
+    /// both mean [`TurnUsagePurpose::Main`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<TurnUsagePurpose>,
+    /// The checkpoint a compaction-purpose attempt belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction_id: Option<String>,
+    /// The 1-based logical summary request within a compaction operation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_step: Option<u32>,
 }
 
 /// Shared data for `HookEvent` records in both `StreamRecord` and `SessionRecord`.

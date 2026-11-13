@@ -23,7 +23,7 @@ pub use provider_identity::ProviderIdentity;
 pub use session::{
     ApiAttemptTerminalClass, CutOffError, GitState, HookEventData, LimitExceededError,
     ReplayErrorKind, ReplaySafety, SessionRecord, StreamRecord, TaskCompleteData, TaskOutcome,
-    TaskStartData, TurnUsageData,
+    TaskStartData, TurnUsageData, TurnUsagePurpose,
 };
 #[doc(inline)]
 pub use usage::{InputTokensDetails, OutputTokensDetails, ReportedUsage, Usage, UsagePresence};

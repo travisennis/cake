@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use tokio::time::sleep;
 use tracing::debug;
 
-use crate::clients::agent::{TurnResult, TurnUsageSettlement};
+use crate::clients::agent::{AttemptPurpose, TurnResult, TurnUsageSettlement};
 use crate::clients::backend::{
     Backend, FinalOutputConstraint, ResponseDecodeError, ResponseParseError,
 };
@@ -22,7 +22,9 @@ use crate::session_telemetry::{
     CompensationEventTelemetry, CompensationKind, RequestOverridesSnapshot,
     RetryScheduledTelemetry, RetryWaitTelemetry,
 };
-use crate::types::{ApiAttemptTerminalClass, ConversationItem, ReportedUsage, UsagePresence};
+use crate::types::{
+    ApiAttemptTerminalClass, ConversationItem, ReportedUsage, TurnUsagePurpose, UsagePresence,
+};
 
 pub(super) fn build_http_client(disable_connection_reuse: bool) -> reqwest::Client {
     let mut builder = reqwest::Client::builder().connect_timeout(Duration::from_secs(10));
@@ -77,10 +79,15 @@ struct InFlightAttempt<'a, F: FnMut(AgentRunnerTelemetryEvent)> {
     status_code: Option<u16>,
     history_items: usize,
     request_overrides: RequestOverridesSnapshot,
+    attempt_purpose: Option<AttemptPurpose>,
     closed: bool,
 }
 
 impl<'a, F: FnMut(AgentRunnerTelemetryEvent)> InFlightAttempt<'a, F> {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the attempt identity threads provider, timing, and purpose"
+    )]
     fn new(
         reporter: &'a mut F,
         task_id: uuid::Uuid,
@@ -89,6 +96,7 @@ impl<'a, F: FnMut(AgentRunnerTelemetryEvent)> InFlightAttempt<'a, F> {
         attempt: u32,
         history_items: usize,
         request_overrides: &RequestOverrides,
+        attempt_purpose: Option<AttemptPurpose>,
     ) -> Self {
         let started_at = Utc::now();
         let total_start = Instant::now();
@@ -110,6 +118,7 @@ impl<'a, F: FnMut(AgentRunnerTelemetryEvent)> InFlightAttempt<'a, F> {
             status_code: None,
             history_items,
             request_overrides: RequestOverridesSnapshot::from(request_overrides),
+            attempt_purpose,
             closed: false,
         };
         attempt.report_in_flight();
@@ -172,6 +181,18 @@ impl<'a, F: FnMut(AgentRunnerTelemetryEvent)> InFlightAttempt<'a, F> {
     fn report(&mut self, event: AgentRunnerTelemetryEvent) {
         (self.reporter)(event);
     }
+
+    fn purpose_fields(&self) -> (Option<TurnUsagePurpose>, Option<String>, Option<u32>) {
+        self.attempt_purpose
+            .as_ref()
+            .map_or((None, None, None), |purpose| {
+                (
+                    purpose.purpose,
+                    purpose.compaction_id.clone(),
+                    purpose.summary_step,
+                )
+            })
+    }
 }
 
 impl<F: FnMut(AgentRunnerTelemetryEvent)> Drop for InFlightAttempt<'_, F> {
@@ -187,6 +208,7 @@ impl<F: FnMut(AgentRunnerTelemetryEvent)> Drop for InFlightAttempt<'_, F> {
         let history_items = self.history_items;
         let status_code = self.status_code;
         let request_overrides = self.request_overrides.clone();
+        let (purpose, compaction_id, summary_step) = self.purpose_fields();
         self.closed = true;
         (self.reporter)(AgentRunnerTelemetryEvent::ApiAttempt(ApiAttemptTelemetry {
             turn_index: self.turn_index,
@@ -211,6 +233,9 @@ impl<F: FnMut(AgentRunnerTelemetryEvent)> Drop for InFlightAttempt<'_, F> {
             responses_failed: None,
             phase: Some(phase),
             request_overrides,
+            purpose,
+            compaction_id,
+            summary_step,
         }));
     }
 }
@@ -274,7 +299,7 @@ impl AgentRunner {
 
     #[expect(
         clippy::too_many_arguments,
-        reason = "a turn naturally threads config, identity, history, tools, and constraint"
+        reason = "a provider turn naturally threads config, identity, history, purpose, and callbacks"
     )]
     pub(super) async fn complete_turn<'a>(
         &self,
@@ -285,6 +310,7 @@ impl AgentRunner {
         history: &'a [ConversationItem],
         tools: &'a [Tool],
         constraint: Option<FinalOutputConstraint<'a>>,
+        attempt_purpose: Option<AttemptPurpose>,
         next_attempt: &mut u32,
         mut report_telemetry: impl FnMut(AgentRunnerTelemetryEvent),
         mut settle_usage: impl FnMut(TurnUsageSettlement),
@@ -311,6 +337,7 @@ impl AgentRunner {
                 attempt,
                 history.len(),
                 &request_overrides,
+                attempt_purpose.clone(),
             );
             let request_result = self
                 .send_with_stall_deadline(
@@ -393,6 +420,10 @@ impl AgentRunner {
         clippy::too_many_arguments,
         reason = "the accepted-body phase threads identity, timing, attempt, and telemetry"
     )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "accepted-body accounting and retry classification belong to one attempt"
+    )]
     async fn handle_success_response<F>(
         &self,
         response: reqwest::Response,
@@ -450,6 +481,7 @@ impl AgentRunner {
         let settled_model = in_flight.model.clone();
         let settled_provider_request_id = provider_request_id.clone();
         let settled_response_model = response_model.clone();
+        let (purpose, compaction_id, summary_step) = in_flight.purpose_fields();
 
         in_flight.finish(ApiAttemptTelemetry {
             turn_index,
@@ -471,6 +503,9 @@ impl AgentRunner {
             responses_failed,
             phase,
             request_overrides: RequestOverridesSnapshot::from(&*request_overrides),
+            purpose,
+            compaction_id: compaction_id.clone(),
+            summary_step,
         });
 
         if let Some(usage) = usage {
@@ -482,6 +517,9 @@ impl AgentRunner {
                 model: settled_model,
                 provider_request_id: settled_provider_request_id,
                 response_model: settled_response_model,
+                purpose,
+                compaction_id,
+                summary_step,
             });
         }
 
@@ -625,6 +663,7 @@ impl AgentRunner {
         let error =
             http_failure_telemetry_text(failure.status, &failure.body, body_read_failure.as_ref());
         let attempt = in_flight.attempt;
+        let (purpose, compaction_id, summary_step) = in_flight.purpose_fields();
         in_flight.finish(ApiAttemptTelemetry {
             turn_index,
             attempt,
@@ -645,6 +684,9 @@ impl AgentRunner {
             responses_failed: None,
             phase: Some(in_flight.phase),
             request_overrides: RequestOverridesSnapshot::from(&*request_overrides),
+            purpose,
+            compaction_id: compaction_id.clone(),
+            summary_step,
         });
         if let Some(usage) = usage {
             settle_usage(TurnUsageSettlement {
@@ -655,6 +697,9 @@ impl AgentRunner {
                 model: in_flight.model.clone(),
                 provider_request_id: None,
                 response_model: None,
+                purpose,
+                compaction_id,
+                summary_step,
             });
         }
 
@@ -734,6 +779,7 @@ impl AgentRunner {
             ApiAttemptTerminalClass::Transport
         };
         let attempt = in_flight.attempt;
+        let (purpose, compaction_id, summary_step) = in_flight.purpose_fields();
         in_flight.finish(ApiAttemptTelemetry {
             turn_index,
             attempt,
@@ -754,6 +800,9 @@ impl AgentRunner {
             responses_failed: None,
             phase: Some(in_flight.phase),
             request_overrides: RequestOverridesSnapshot::from(&*request_overrides),
+            purpose,
+            compaction_id,
+            summary_step,
         });
 
         self.schedule_transport_retry(

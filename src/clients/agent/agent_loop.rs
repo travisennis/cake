@@ -982,6 +982,7 @@ impl Agent {
                 &history,
                 tool_definitions,
                 constraint,
+                None,
                 next_attempt,
                 |event| {
                     if let Some(sink) = &runner_telemetry {

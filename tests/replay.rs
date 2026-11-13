@@ -261,6 +261,57 @@ fn replay_emits_complete_transcript_in_order() {
 }
 
 #[test]
+fn replay_omits_compaction_purpose_turn_usage() {
+    let env = cake_env();
+    let mut records = session_fixture();
+    records.insert(
+        5,
+        serde_json::json!({
+            "type": "turn_usage",
+            "session_id": SESSION_ID,
+            "task_id": TASK_ID,
+            "turn": 1,
+            "usage": {
+                "input_tokens": 500,
+                "input_tokens_details": { "cached_tokens": 0 },
+                "output_tokens": 50,
+                "output_tokens_details": { "reasoning_tokens": 0 },
+                "total_tokens": 550,
+            },
+            "timestamp": "2026-08-14T12:00:02Z",
+            "usage_presence": "complete",
+            "purpose": "compaction",
+            "compaction_id": "checkpoint-1",
+            "summary_step": 1,
+        }),
+    );
+    let lines: Vec<String> = records.iter().map(ToString::to_string).collect();
+    fs::write(session_path(&env, SESSION_ID), lines.join("\n") + "\n")
+        .expect("failed to write session fixture");
+
+    let output = env
+        .command()
+        .args(["--output-format", "stream-json", "replay", SESSION_ID])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute command");
+    assert!(output.status.success());
+
+    let records = parse_stream(&output.stdout);
+    assert!(
+        !records
+            .iter()
+            .any(|record| { record["type"] == "turn_usage" && record["purpose"] == "compaction" })
+    );
+    assert!(
+        records
+            .iter()
+            .any(|record| { record["type"] == "turn_usage" && record["context_window"] == 100 })
+    );
+}
+
+#[test]
 fn replay_exits_cleanly_when_consumer_closes_stdout() {
     let env = cake_env();
     write_large_fixture(&env);

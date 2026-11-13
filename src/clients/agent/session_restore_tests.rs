@@ -130,6 +130,9 @@ fn turn_usage(task_id: &str, turn: u32, input: u64, output: u64, offset: i64) ->
         provider_request_id: None,
         context_window: None,
         remaining_context_tokens: None,
+        purpose: None,
+        compaction_id: None,
+        summary_step: None,
     })
 }
 

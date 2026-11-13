@@ -2285,3 +2285,19 @@ fn build_chat_request_composes_user_agent_with_openrouter_attribution() {
     assert!(request.headers().get("X-Title").is_some());
     assert_eq!(bearer_authorization(&request), Some("Bearer test-key"));
 }
+
+#[test]
+fn build_request_json_sends_the_configured_output_cap() {
+    let mut config = request_config("https://api.example.com/v1", ApiType::ChatCompletions);
+    config.model_config.max_output_tokens = Some(8_000);
+    let bytes = super::build_request_json(
+        &config,
+        &[],
+        &[] as &[Tool],
+        &crate::clients::retry::RequestOverrides::default(),
+        None,
+    )
+    .expect("build request");
+    let wire: serde_json::Value = serde_json::from_slice(&bytes).expect("parse request");
+    assert_eq!(wire["max_completion_tokens"], 8_000);
+}

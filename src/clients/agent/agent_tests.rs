@@ -5684,3 +5684,104 @@ async fn list_change_reconciles_deferred_and_active_mcp_tools() {
 
     server.shutdown().await;
 }
+
+#[test]
+fn compaction_usage_is_audited_without_becoming_the_context_basis() {
+    let mut observer = AgentObserver::default();
+    let streamed = Arc::new(Mutex::new(Vec::<String>::new()));
+    let persisted = Arc::new(Mutex::new(Vec::<SessionRecord>::new()));
+    let streamed_sink = Arc::clone(&streamed);
+    observer.set_streaming_json(move |json| {
+        streamed_sink.lock().unwrap().push(json.to_string());
+    });
+    let persist_sink = Arc::clone(&persisted);
+    observer.set_persist_callback(move |record| {
+        persist_sink.lock().unwrap().push(record.clone());
+        Ok(())
+    });
+
+    let mut total = Usage::default();
+    let mut last_usage = None;
+    record_turn_usage(
+        &mut observer,
+        &mut total,
+        &mut last_usage,
+        uuid::Uuid::nil(),
+        uuid::Uuid::nil(),
+        Some(100_000),
+        TurnUsageSettlement {
+            turn_index: 1,
+            attempt: 1,
+            terminal_class: ApiAttemptTerminalClass::Completed,
+            usage: ReportedUsage::new(
+                Usage {
+                    input_tokens: 500,
+                    output_tokens: 50,
+                    total_tokens: 550,
+                    ..Usage::default()
+                },
+                UsagePresence::Complete,
+            ),
+            model: "test-model".to_string(),
+            provider_request_id: None,
+            response_model: None,
+            purpose: Some(TurnUsagePurpose::Compaction),
+            compaction_id: Some("checkpoint-1".to_string()),
+            summary_step: Some(1),
+        },
+    );
+
+    assert!(last_usage.is_none(), "summary usage is not a context basis");
+    assert_eq!(
+        total.input_tokens, 500,
+        "summary usage still counts as cost"
+    );
+    let records = persisted.lock().unwrap();
+    let SessionRecord::TurnUsage(data) = &records[0] else {
+        panic!("expected a turn_usage record");
+    };
+    assert_eq!(data.purpose, Some(TurnUsagePurpose::Compaction));
+    assert_eq!(data.compaction_id.as_deref(), Some("checkpoint-1"));
+    assert_eq!(data.summary_step, Some(1));
+    assert!(data.context_window.is_none());
+    drop(records);
+    assert!(streamed.lock().unwrap().is_empty());
+
+    record_turn_usage(
+        &mut observer,
+        &mut total,
+        &mut last_usage,
+        uuid::Uuid::nil(),
+        uuid::Uuid::nil(),
+        Some(100_000),
+        TurnUsageSettlement {
+            turn_index: 2,
+            attempt: 1,
+            terminal_class: ApiAttemptTerminalClass::Completed,
+            usage: ReportedUsage::new(
+                Usage {
+                    input_tokens: 2_000,
+                    output_tokens: 10,
+                    total_tokens: 2_010,
+                    ..Usage::default()
+                },
+                UsagePresence::Complete,
+            ),
+            model: "test-model".to_string(),
+            provider_request_id: None,
+            response_model: None,
+            purpose: None,
+            compaction_id: None,
+            summary_step: None,
+        },
+    );
+
+    assert_eq!(last_usage.unwrap().input_tokens, 2_000);
+    assert!(
+        streamed
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|json| json.contains("\"turn_usage\""))
+    );
+}

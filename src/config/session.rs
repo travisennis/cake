@@ -350,7 +350,20 @@ impl Session {
     /// first new provider request.
     pub fn last_turn_usage(&self) -> Option<Usage> {
         self.records.iter().rev().find_map(|record| match record {
-            SessionRecord::TurnUsage(TurnUsageData { usage, .. }) => Some(*usage),
+            SessionRecord::TurnUsage(TurnUsageData {
+                usage,
+                purpose: None | Some(crate::types::TurnUsagePurpose::Main),
+                usage_presence,
+                ..
+            }) if !matches!(
+                usage_presence,
+                Some(
+                    crate::types::UsagePresence::Partial | crate::types::UsagePresence::Unreported
+                )
+            ) =>
+            {
+                Some(*usage)
+            },
             _ => None,
         })
     }
@@ -936,6 +949,9 @@ mod tests {
             provider_request_id: None,
             context_window: None,
             remaining_context_tokens: None,
+            purpose: None,
+            compaction_id: None,
+            summary_step: None,
         })
     }
 
@@ -951,6 +967,28 @@ mod tests {
 
         let last = session.last_turn_usage().unwrap();
         assert_eq!(last.input_tokens, 2000);
+    }
+
+    #[test]
+    fn last_turn_usage_skips_compaction_purpose_records() {
+        let mut session = make_test_session();
+        session.records.push(meta_record(&session));
+        session.records.push(task_start(&session, "task-1"));
+        session.records.push(turn_usage(&session, "task-1", 1));
+        let mut summary = turn_usage(&session, "task-1", 1);
+        if let SessionRecord::TurnUsage(data) = &mut summary {
+            data.purpose = Some(crate::types::TurnUsagePurpose::Compaction);
+            data.usage.input_tokens = 999_999;
+        }
+        session.records.push(summary);
+        let mut partial = turn_usage(&session, "task-1", 2);
+        if let SessionRecord::TurnUsage(data) = &mut partial {
+            data.usage_presence = Some(crate::types::UsagePresence::Partial);
+            data.usage.input_tokens = 777_777;
+        }
+        session.records.push(partial);
+
+        assert_eq!(session.last_turn_usage().unwrap().input_tokens, 1000);
     }
 
     #[test]

@@ -129,6 +129,20 @@ impl Backend {
         }
     }
 
+    /// Whether this backend preserves an explicit output-token cap after its
+    /// final request transformation.
+    ///
+    /// The Codex Responses adapter strips `max_output_tokens`, so a bounded
+    /// summary cannot be sent there.
+    pub(super) fn supports_generation_cap(self, config: &ResolvedModelConfig) -> bool {
+        match self {
+            Self::ChatCompletions => true,
+            Self::Responses => {
+                !crate::auth::is_chatgpt_codex_backend(&config.model_config.base_url)
+            },
+        }
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "a provider turn threads identity, history, tools, and overrides"
