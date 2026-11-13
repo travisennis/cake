@@ -249,7 +249,7 @@ Milestone 5:
 
 ```
 git add docs/adr/061-content-address-session-images-in-per-session-blob-directories.md \
-  docs/exec-plans/active/content-address-session-images.md \
+  docs/exec-plans/completed/content-address-session-images.md \
   docs/integrations.md docs/security.md docs/configuration.md ARCHITECTURE.md
 just docs-check
 just session-metrics-check

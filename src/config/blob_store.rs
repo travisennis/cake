@@ -8,7 +8,7 @@
 //!
 //! The store deliberately has no cross-session lock or sweep. The session's
 //! append lock serializes writers, and recovery is scoped to one session. See
-//! ADR 061 and `docs/exec-plans/active/content-address-session-images.md`.
+//! ADR 061 and `docs/exec-plans/completed/content-address-session-images.md`.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
