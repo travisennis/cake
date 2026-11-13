@@ -23,7 +23,8 @@ This is task 145a, the follow-up anticipated by ADR 061. It is a storage change 
 - [x] (2026-11-13) Milestone 3: include output references in fork hard links, resume recovery, and `cake debug blobs`.
 - [x] (2026-11-13) Milestone 3: prove a fork shares output inodes, recovery removes only unreferenced output blobs, and diagnostics report missing/corrupt output references.
 - [x] (2026-11-13) Milestone 4: keep the session-metrics tooling truthful by resolving externalized output text from the session blob directory.
-- [ ] Milestone 5: update `docs/integrations.md`, `docs/security.md`, `docs/configuration.md`, `ARCHITECTURE.md`, the ADR amendment, and record snapshots.
+- [x] (2026-11-13) Milestone 5: update `docs/integrations.md`, `docs/security.md`, `docs/configuration.md`, `ARCHITECTURE.md`, the ADR amendment, and the compaction plan's 16 KiB reference.
+- [ ] Milestone 5: add record snapshots for a reference-bearing `function_call_output` and a checkpoint retained tail with an output reference.
 - [ ] Milestone 5: run the task verification commands and the full gate.
 
 ## Surprises & Discoveries

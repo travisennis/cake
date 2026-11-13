@@ -137,7 +137,11 @@ Externalize a `function_call_output` when its UTF-8 text length is at least 16 K
 
 The record shape is an optional lowercase 64-character `content_id` beside the existing `output` field. An externalized record serializes `"output": ""` and the reference, so the field set stays stable for stream consumers and older readers that ignore unknown optional fields. A record carries either non-empty inline text or a reference, never both. An empty output with no reference is a valid empty tool result, because tools such as Bash can legitimately return no text. New writers never persist both forms.
 
+The boundary is inclusive: 16,384 bytes externalizes, while 16,383 bytes stays inline. An existing `content_id` is always honored even if a later policy change would leave the same text inline, because the record already depends on that blob.
+
 Publication is payload-before-marker, exactly as for images: write and verify the blob, then append the record. Hydration reads the blob, verifies the digest, and restores the text before request construction. A record with both an inline value and an id must have inline bytes that hash to the id. A missing, unreadable, non-regular, mismatched, or non-UTF-8 blob fails the load before any provider request with the session id and digest; Cake never substitutes empty text. Stream-json and replay keep their pre-blob shape: live stream records are serialized before persistence, and replay hydrates then omits `content_id`.
+
+An offline reader of the raw JSONL, such as the session-metrics report, must resolve the same reference after verifying the digest and UTF-8. When it cannot, it reports the output as unavailable rather than treating the empty inline field as a successful empty result.
 
 `SessionWriter::append_record` externalizes ordinary records under its lock. `SessionWriter::commit_checkpoint` and `cake sessions checkpoint` externalize retained output text before the eight-MiB measurement, so a checkpoint counts a digest rather than the text. The checkpoint verb's eight-MiB stdin cap is unchanged: a payload at the cap can produce a smaller record, but a payload above the cap is still rejected.
 
@@ -157,5 +161,6 @@ A fork hard-links every digest its seed records reference, images and outputs al
 ### More Information
 
 - Task 145a and `docs/exec-plans/active/externalize-large-tool-outputs.md` for the delivery plan, measured threshold evidence, and verification.
+- `scripts/session-metrics/cakelib.py` resolves output references from the sibling `.blobs` directory and classifies an unavailable reference as `externalized-output-unavailable`.
 - The original image decision above remains in force; this amendment only widens the payload kinds that can use the same store.
 - Cake task 034f consumes the reference path for retained output text; it does not depend on the threshold value.

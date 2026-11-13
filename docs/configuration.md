@@ -606,16 +606,16 @@ The current-configuration context reuses `cake debug config` and includes only t
 
 `--export` writes the same redacted diagnostic document as `--json` to a new local file. It refuses an existing file, a symlink, a missing parent, or a source transcript or telemetry path, and creates the export with mode `0600`. The document contains no prompts, assistant text, tool output, hook commands or output, provider payloads or URLs, credentials, or log bodies. It is never uploaded.
 
-## Image blob diagnostics
+## Payload blob diagnostics
 
-Inspect stored image payloads without resuming a session or deleting anything:
+Inspect stored payload blobs, including image bytes and externalized tool-output text, without resuming a session or deleting anything:
 
 ```bash
 cake debug blobs
 cake debug blobs --json | jq '.data.blobs.totals'
 ```
 
-The report covers every session under the resolved sessions directory. It shows stored, referenced, and unreferenced blob counts and bytes, stale temporary files, missing and corrupt references, sessions without blob directories, and `.blobs` directories with no matching session file. Hard-linked fork blobs count once in the global byte totals. Every finding is a warning and the command exits `0`; only a report-level read failure is an error. The command never creates or removes a directory, follows a symlink, or prints image bytes. Resume-time recovery is the only path that removes unreferenced blobs and stale `.tmp-*` files.
+The report covers every session under the resolved sessions directory. It shows stored, referenced, and unreferenced blob counts and bytes, stale temporary files, missing and corrupt references, sessions without blob directories, and `.blobs` directories with no matching session file. Hard-linked fork blobs count once in the global byte totals. Every finding is a warning and the command exits `0`; only a report-level read failure is an error. The command never creates or removes a directory, follows a symlink, or prints payload bytes. Cake externalizes every newly persisted image and every tool output of at least 16 KiB of UTF-8 text; the threshold is a build constant, not a settings key. Resume-time recovery is the only path that removes unreferenced blobs and stale `.tmp-*` files.
 
 ## Data and diagnostics
 
@@ -626,7 +626,7 @@ The report covers every session under the resolved sessions directory. It shows 
 <data dir>/sessions/{session_id}.blobs/{sha256}
 ```
 
-The `.blobs` directory is created lazily when a session first stores an image. It is under the sessions root, so it needs no separate setting or sandbox grant. A reference-bearing session copied without its blob directory is incomplete and fails closed when the image is needed.
+The `.blobs` directory is created lazily when a session first stores an externalized payload, such as an image or a tool output of at least 16 KiB. It is under the sessions root, so it needs no separate setting or sandbox grant. A reference-bearing session copied without its blob directory is incomplete and fails closed when a referenced image or output is needed.
 
 Set `RUST_LOG=cake=debug` or `RUST_LOG=cake=trace` for verbose file logging. Normal command output is unchanged.
 
