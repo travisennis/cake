@@ -1,4 +1,4 @@
-//! Content-addressed image storage for one persisted session.
+//! Content-addressed payload storage for one persisted session.
 //!
 //! Each session owns a sibling `<uuid>.blobs` directory. A blob's name is the
 //! lowercase SHA-256 digest of its decoded bytes. Publication is write-once:
@@ -29,13 +29,21 @@ use crate::config::owner_only;
 use crate::config::session_jsonl::{FramedSessionLine, SessionFramer};
 use crate::types::ImagePart;
 use crate::types::compaction::{CompactionData, RetainedConversationRecord};
-use crate::types::session::SessionRecord;
+use crate::types::session::{FunctionCallOutputData, SessionRecord};
 
 /// Prefix reserved for temporary files inside a session blob directory.
 ///
 /// A digest is always 64 lowercase hexadecimal characters, so recovery can
 /// remove `.tmp-*` files without risking a published blob or an unknown file.
 const TEMP_PREFIX: &str = ".tmp-";
+
+/// Tool outputs at or above this size move to the session blob store.
+///
+/// A 2,597-session scan put 5,552 outputs at or above 16 KiB (140.5 MB, 25.4%
+/// of all output bytes); an 8 KiB cutoff would move 52%. The point matches
+/// `fx`'s `large_result_threshold_bytes`. See ADR 061's tool-output amendment
+/// and the `externalize-large-tool-outputs` `ExecPlan`.
+pub const TOOL_OUTPUT_EXTERNALIZATION_THRESHOLD_BYTES: usize = 16 * 1024;
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -99,7 +107,7 @@ impl AsRef<str> for ContentId {
     }
 }
 
-/// The content-addressed image store for one session.
+/// The content-addressed payload store for one session.
 #[derive(Clone, Debug)]
 pub struct BlobStore {
     root: PathBuf,
@@ -409,20 +417,23 @@ impl BlobStore {
         Ok(report)
     }
 
-    /// Return a copy of `record` whose message, function-call-output, and
-    /// checkpoint-retained images refer to blobs instead of carrying inline
-    /// bytes.
+    /// Return a copy of `record` whose message images, function-call-output
+    /// images, output text, and checkpoint-retained payloads refer to blobs
+    /// instead of carrying inline bytes.
     ///
     /// An image with neither inline bytes nor a content id is rejected. An
     /// image with both must name the digest of its inline bytes, and the blob
-    /// must already verify. The original record is unchanged, so a live
-    /// conversation can keep the bytes for the next provider request.
+    /// must already verify. An output at or above
+    /// [`TOOL_OUTPUT_EXTERNALIZATION_THRESHOLD_BYTES`] is published and
+    /// replaced by its content id; a shorter output stays inline unless it
+    /// already carries a reference. The original record is unchanged, so a
+    /// live conversation can keep the bytes for the next provider request.
     ///
     /// # Errors
     ///
-    /// Returns an error when an image cannot be decoded, its declared content
-    /// id does not match, its blob is missing or corrupt, or it has no payload
-    /// reference. Error text never includes image bytes.
+    /// Returns an error when a payload cannot be stored, its declared content
+    /// id does not match, its blob is missing or corrupt, or an image has no
+    /// payload reference. Error text never includes payload bytes.
     pub fn externalize_record(&self, record: &SessionRecord) -> anyhow::Result<SessionRecord> {
         let mut externalized = record.clone();
         match &mut externalized {
@@ -431,6 +442,7 @@ impl BlobStore {
             },
             SessionRecord::FunctionCallOutput(data) => {
                 self.externalize_images(&mut data.images, "function call output")?;
+                self.externalize_output(data, "function call output text")?;
             },
             SessionRecord::Compaction(checkpoint) => {
                 let externalized_checkpoint = self.externalize_checkpoint(checkpoint)?;
@@ -442,18 +454,20 @@ impl BlobStore {
     }
 
     /// Return a copy of `checkpoint` whose retained message and
-    /// function-call-output images refer to blobs instead of carrying inline
+    /// function-call-output payloads refer to blobs instead of carrying inline
     /// bytes.
     ///
     /// An image with neither inline bytes nor a content id is rejected. The
     /// original checkpoint is unchanged, so a live checkpoint can retain the
-    /// bytes it measured before persistence. Retained output text stays inline.
+    /// bytes it measured before persistence. Retained output text at or above
+    /// [`TOOL_OUTPUT_EXTERNALIZATION_THRESHOLD_BYTES`] is externalized; shorter
+    /// text stays inline unless it already carries a reference.
     ///
     /// # Errors
     ///
-    /// Returns an error when a retained image cannot be decoded, its declared
-    /// content id does not match, its blob is missing or corrupt, or it has no
-    /// payload reference. Error text never includes image bytes.
+    /// Returns an error when a retained payload cannot be stored, its declared
+    /// content id does not match, its blob is missing or corrupt, or an image
+    /// has no payload reference. Error text never includes payload bytes.
     pub fn externalize_checkpoint(
         &self,
         checkpoint: &CompactionData,
@@ -465,10 +479,16 @@ impl BlobStore {
                     &mut data.images,
                     &format!("checkpoint retained {retained_index} message"),
                 )?,
-                RetainedConversationRecord::FunctionCallOutput(data) => self.externalize_images(
-                    &mut data.images,
-                    &format!("checkpoint retained {retained_index} function call output"),
-                )?,
+                RetainedConversationRecord::FunctionCallOutput(data) => {
+                    self.externalize_images(
+                        &mut data.images,
+                        &format!("checkpoint retained {retained_index} function call output"),
+                    )?;
+                    self.externalize_output(
+                        data,
+                        &format!("checkpoint retained {retained_index} function call output text"),
+                    )?;
+                },
                 RetainedConversationRecord::Reasoning(_)
                 | RetainedConversationRecord::FunctionCall(_) => {},
             }
@@ -480,14 +500,16 @@ impl BlobStore {
     ///
     /// Every content id referenced by `records` is hard-linked from `source`
     /// and verified in this store. Images that remain inline in legacy seed
-    /// records are then externalized into this store. A missing or corrupt
-    /// parent blob fails before the caller creates the child session file.
+    /// records and outputs at or above
+    /// [`TOOL_OUTPUT_EXTERNALIZATION_THRESHOLD_BYTES`] are then externalized
+    /// into this store. A missing or corrupt parent blob fails before the
+    /// caller creates the child session file.
     ///
     /// # Errors
     ///
     /// Returns an error naming the record and digest when a reference is
-    /// invalid, a parent blob is missing or corrupt, or an inline image cannot
-    /// be stored or verified. Error text never includes image bytes.
+    /// invalid, a parent blob is missing or corrupt, or an inline payload
+    /// cannot be stored or verified. Error text never includes payload bytes.
     pub fn prepare_fork_seed_records(
         &self,
         source: &Self,
@@ -495,13 +517,10 @@ impl BlobStore {
     ) -> anyhow::Result<Vec<SessionRecord>> {
         let mut referenced = BTreeSet::new();
         for (record_index, record) in records.iter().enumerate() {
-            for (image_index, image) in record.image_parts().iter().enumerate() {
-                let Some(value) = image.content_id.as_deref() else {
-                    continue;
-                };
+            for (id_index, value) in record.content_ids().enumerate() {
                 let id = ContentId::parse(value).with_context(|| {
                     format!(
-                        "fork seed record {record_index} image {image_index} has an invalid content id"
+                        "fork seed record {record_index} content id {id_index} has an invalid content id"
                     )
                 })?;
                 referenced.insert(id);
@@ -524,18 +543,19 @@ impl BlobStore {
             .collect()
     }
 
-    /// Restore every referenced image in `records` from this store.
+    /// Restore every referenced payload in `records` from this store.
     ///
-    /// Walks message images, function-call-output images, and images retained
-    /// inside checkpoints. An image that carries both inline bytes and a
-    /// content id keeps its inline bytes after verifying that they hash to the
-    /// id. An image with neither is rejected before it can reach a provider.
+    /// Walks message images, function-call-output text and images, and payloads
+    /// retained inside checkpoints. A payload that carries both inline bytes
+    /// and a content id keeps its inline bytes after verifying that they hash
+    /// to the id. An image with neither is rejected before it can reach a
+    /// provider.
     ///
     /// # Errors
     ///
     /// Returns an error naming the session and digest when a reference is
-    /// invalid, missing, unreadable, non-regular, or mismatched. Error text
-    /// never includes image bytes.
+    /// invalid, missing, unreadable, non-regular, mismatched, or not valid
+    /// UTF-8. Error text never includes payload bytes.
     pub fn hydrate_session(
         &self,
         session_id: &str,
@@ -559,11 +579,19 @@ impl BlobStore {
                 &mut data.images,
                 &format!("record {record_index} message"),
             ),
-            SessionRecord::FunctionCallOutput(data) => self.hydrate_images(
-                session_id,
-                &mut data.images,
-                &format!("record {record_index} function call output"),
-            ),
+            SessionRecord::FunctionCallOutput(data) => {
+                self.hydrate_images(
+                    session_id,
+                    &mut data.images,
+                    &format!("record {record_index} function call output"),
+                )?;
+                self.hydrate_output(
+                    session_id,
+                    data,
+                    &format!("record {record_index} function call output text"),
+                )?;
+                Ok(())
+            },
             SessionRecord::Compaction(checkpoint) => {
                 self.hydrate_checkpoint(session_id, record_index, checkpoint)
             },
@@ -582,17 +610,24 @@ impl BlobStore {
                 RetainedConversationRecord::Message(data) => self.hydrate_images(
                     session_id,
                     &mut data.images,
-                    &format!(
-                        "record {record_index} checkpoint retained {retained_index} message"
-                    ),
+                    &format!("record {record_index} checkpoint retained {retained_index} message"),
                 )?,
-                RetainedConversationRecord::FunctionCallOutput(data) => self.hydrate_images(
-                    session_id,
-                    &mut data.images,
-                    &format!(
-                        "record {record_index} checkpoint retained {retained_index} function call output"
-                    ),
-                )?,
+                RetainedConversationRecord::FunctionCallOutput(data) => {
+                    self.hydrate_images(
+                        session_id,
+                        &mut data.images,
+                        &format!(
+                            "record {record_index} checkpoint retained {retained_index} function call output"
+                        ),
+                    )?;
+                    self.hydrate_output(
+                        session_id,
+                        data,
+                        &format!(
+                            "record {record_index} checkpoint retained {retained_index} function call output text"
+                        ),
+                    )?;
+                },
                 RetainedConversationRecord::Reasoning(_)
                 | RetainedConversationRecord::FunctionCall(_) => {},
             }
@@ -652,6 +687,44 @@ impl BlobStore {
         Ok(())
     }
 
+    fn externalize_output(
+        &self,
+        data: &mut FunctionCallOutputData,
+        context: &str,
+    ) -> anyhow::Result<()> {
+        let declared = data
+            .content_id
+            .as_deref()
+            .map(ContentId::parse)
+            .transpose()
+            .with_context(|| format!("{context} has an invalid content id"))?;
+
+        if let Some(id) = declared {
+            if !data.output.is_empty() {
+                let computed = ContentId::from_bytes(data.output.as_bytes());
+                anyhow::ensure!(
+                    id == computed,
+                    "{context} content id '{id}' does not match its inline bytes (found '{computed}')"
+                );
+            }
+            self.read_verified(&id)
+                .with_context(|| format!("{context} content id '{id}'"))?;
+            data.output.clear();
+            data.content_id = Some(id.as_str().to_owned());
+            return Ok(());
+        }
+
+        if data.output.len() < TOOL_OUTPUT_EXTERNALIZATION_THRESHOLD_BYTES {
+            return Ok(());
+        }
+        let id = self
+            .put(data.output.as_bytes())
+            .with_context(|| format!("failed to store {context}"))?;
+        data.output.clear();
+        data.content_id = Some(id.as_str().to_owned());
+        Ok(())
+    }
+
     fn hydrate_images(
         &self,
         session_id: &str,
@@ -697,6 +770,42 @@ impl BlobStore {
             image.data_base64 = base64::engine::general_purpose::STANDARD.encode(bytes);
             image.content_id = Some(id.as_str().to_owned());
         }
+        Ok(())
+    }
+
+    fn hydrate_output(
+        &self,
+        session_id: &str,
+        data: &mut FunctionCallOutputData,
+        context: &str,
+    ) -> anyhow::Result<()> {
+        let declared = data
+            .content_id
+            .as_deref()
+            .map(ContentId::parse)
+            .transpose()
+            .with_context(|| {
+                format!("session {session_id}: {context} has an invalid content id")
+            })?;
+        let Some(id) = declared else {
+            return Ok(());
+        };
+
+        if !data.output.is_empty() {
+            anyhow::ensure!(
+                id.matches(data.output.as_bytes()),
+                "session {session_id}: {context} inline bytes do not match content id '{id}'"
+            );
+            return Ok(());
+        }
+
+        let bytes = self.read_verified(&id).with_context(|| {
+            format!("session {session_id}: failed to hydrate {context} content id '{id}'")
+        })?;
+        data.output = String::from_utf8(bytes).with_context(|| {
+            format!("session {session_id}: {context} content id '{id}' is not valid UTF-8")
+        })?;
+        data.content_id = Some(id.as_str().to_owned());
         Ok(())
     }
 
@@ -2028,9 +2137,21 @@ mod tests {
         SessionRecord::FunctionCallOutput(FunctionCallOutputData {
             call_id: "call-1".to_string(),
             output: "ReadImage /tmp/image.png".to_string(),
+            content_id: None,
             replay: None,
             timestamp: None,
             images,
+        })
+    }
+
+    fn output_with_text(output: &str) -> SessionRecord {
+        SessionRecord::FunctionCallOutput(FunctionCallOutputData {
+            call_id: "call-1".to_string(),
+            output: output.to_string(),
+            content_id: None,
+            replay: None,
+            timestamp: None,
+            images: Vec::new(),
         })
     }
 
@@ -2039,6 +2160,7 @@ mod tests {
             record: RetainedConversationRecord::FunctionCallOutput(FunctionCallOutputData {
                 call_id: "call-1".to_string(),
                 output: "ReadImage /tmp/image.png".to_string(),
+                content_id: None,
                 replay: None,
                 timestamp: None,
                 images,
@@ -2047,6 +2169,17 @@ mod tests {
             source_task: None,
             origin: None,
             skill_read: None,
+        }
+    }
+
+    fn output_data(output: &str, content_id: Option<ContentId>) -> FunctionCallOutputData {
+        FunctionCallOutputData {
+            call_id: "call-1".to_string(),
+            output: output.to_string(),
+            content_id: content_id.map(|id| id.as_str().to_owned()),
+            replay: None,
+            timestamp: None,
+            images: Vec::new(),
         }
     }
 
@@ -2115,6 +2248,247 @@ mod tests {
         assert!(again.images[0].data_base64.is_empty());
         assert_eq!(again.images[0].content_id.as_deref(), Some(id.as_str()));
         assert_eq!(fs::read_dir(store.root()).expect("read root").count(), 1);
+    }
+
+    #[test]
+    fn externalize_output_threshold_is_inclusive_and_deduplicates() {
+        let (store, _temporary) = new_store();
+        let below = "b".repeat(TOOL_OUTPUT_EXTERNALIZATION_THRESHOLD_BYTES - 1);
+        let below_record = output_with_text(&below);
+        let externalized_below = store
+            .externalize_record(&below_record)
+            .expect("below-threshold output stays inline");
+        let SessionRecord::FunctionCallOutput(below_data) = &externalized_below else {
+            panic!("function call output shape");
+        };
+        assert_eq!(below_data.output, below);
+        assert_eq!(below_data.content_id, None);
+        assert!(!store.root().exists());
+
+        let at_threshold = "a".repeat(TOOL_OUTPUT_EXTERNALIZATION_THRESHOLD_BYTES);
+        let original = output_with_text(&at_threshold);
+        let first = store
+            .externalize_record(&original)
+            .expect("threshold output externalizes");
+        let second = store
+            .externalize_record(&output_with_text(&at_threshold))
+            .expect("identical output reuses the blob");
+        let SessionRecord::FunctionCallOutput(first_data) = &first else {
+            panic!("function call output shape");
+        };
+        let SessionRecord::FunctionCallOutput(second_data) = &second else {
+            panic!("function call output shape");
+        };
+        assert!(first_data.output.is_empty());
+        assert_eq!(first_data.content_id, second_data.content_id);
+        let id = ContentId::parse(first_data.content_id.as_deref().expect("content id"))
+            .expect("parse digest");
+        assert_eq!(
+            store.read_verified(&id).expect("stored output"),
+            at_threshold.as_bytes()
+        );
+        let SessionRecord::FunctionCallOutput(original_data) = &original else {
+            panic!("function call output shape");
+        };
+        assert_eq!(
+            original_data.output, at_threshold,
+            "externalization must not mutate the live record"
+        );
+        assert_eq!(fs::read_dir(store.root()).expect("read root").count(), 1);
+    }
+
+    #[test]
+    fn externalize_output_verifies_existing_references_and_inline_bytes() {
+        let (store, _temporary) = new_store();
+        let text = "existing output";
+        let id = store.put(text.as_bytes()).expect("put output");
+
+        let both = SessionRecord::FunctionCallOutput(output_data(text, Some(id.clone())));
+        let externalized = store.externalize_record(&both).expect("verify both fields");
+        let SessionRecord::FunctionCallOutput(data) = &externalized else {
+            panic!("function call output shape");
+        };
+        assert!(data.output.is_empty());
+        assert_eq!(data.content_id.as_deref(), Some(id.as_str()));
+
+        let reference_only = SessionRecord::FunctionCallOutput(output_data("", Some(id.clone())));
+        let externalized = store
+            .externalize_record(&reference_only)
+            .expect("reference-only output verifies");
+        let SessionRecord::FunctionCallOutput(data) = &externalized else {
+            panic!("function call output shape");
+        };
+        assert!(data.output.is_empty());
+        assert_eq!(data.content_id.as_deref(), Some(id.as_str()));
+
+        let mismatched =
+            SessionRecord::FunctionCallOutput(output_data("different", Some(id.clone())));
+        let error = store
+            .externalize_record(&mismatched)
+            .expect_err("mismatched inline bytes must fail");
+        let text = format!("{error:#}");
+        assert!(text.contains(id.as_str()), "{text}");
+        assert!(text.contains("does not match"), "{text}");
+
+        let missing = ContentId::from_bytes(b"missing output");
+        let record = SessionRecord::FunctionCallOutput(output_data("", Some(missing.clone())));
+        let error = store
+            .externalize_record(&record)
+            .expect_err("missing reference must fail");
+        let text = format!("{error:#}");
+        assert!(text.contains(missing.as_str()), "{text}");
+        assert!(text.contains("missing"), "{text}");
+        assert_eq!(fs::read_dir(store.root()).expect("read root").count(), 1);
+    }
+
+    #[test]
+    fn hydrate_output_restores_reference_only_and_keeps_valid_inline() {
+        let (store, _temporary) = new_store();
+        let text = "externalized output";
+        let id = store.put(text.as_bytes()).expect("put output");
+
+        let mut records = vec![SessionRecord::FunctionCallOutput(output_data(
+            "",
+            Some(id.clone()),
+        ))];
+        store
+            .hydrate_session("session-1", &mut records)
+            .expect("hydrate reference-only output");
+        let SessionRecord::FunctionCallOutput(data) = &records[0] else {
+            panic!("function call output shape");
+        };
+        assert_eq!(data.output, text);
+        assert_eq!(data.content_id.as_deref(), Some(id.as_str()));
+
+        let mut records = vec![SessionRecord::FunctionCallOutput(output_data(
+            text,
+            Some(id.clone()),
+        ))];
+        store
+            .hydrate_session("session-2", &mut records)
+            .expect("hydrate both fields");
+        let SessionRecord::FunctionCallOutput(data) = &records[0] else {
+            panic!("function call output shape");
+        };
+        assert_eq!(data.output, text);
+
+        let mut empty = vec![SessionRecord::FunctionCallOutput(output_data("", None))];
+        store
+            .hydrate_session("session-3", &mut empty)
+            .expect("empty output is valid");
+        let SessionRecord::FunctionCallOutput(data) = &empty[0] else {
+            panic!("function call output shape");
+        };
+        assert!(data.output.is_empty());
+        assert_eq!(data.content_id, None);
+
+        let mut mismatched = vec![SessionRecord::FunctionCallOutput(output_data(
+            "different",
+            Some(id.clone()),
+        ))];
+        let error = store
+            .hydrate_session("session-4", &mut mismatched)
+            .expect_err("mismatched inline bytes must fail");
+        let text = format!("{error:#}");
+        assert!(text.contains("session-4"), "{text}");
+        assert!(text.contains(id.as_str()), "{text}");
+        assert!(text.contains("do not match"), "{text}");
+    }
+
+    #[test]
+    fn hydrate_output_rejects_missing_corrupt_and_non_utf8_blobs() {
+        let (store, _temporary) = new_store();
+        store.put(b"seed").expect("seed blob");
+
+        let missing = ContentId::from_bytes(b"missing output");
+        let mut records = vec![SessionRecord::FunctionCallOutput(output_data(
+            "",
+            Some(missing.clone()),
+        ))];
+        let error = store
+            .hydrate_session("session-1", &mut records)
+            .expect_err("missing blob must fail");
+        let text = format!("{error:#}");
+        assert!(text.contains("session-1"), "{text}");
+        assert!(text.contains(missing.as_str()), "{text}");
+        assert!(text.contains("missing"), "{text}");
+
+        let payload = "corrupt output payload";
+        let corrupt = store.put(payload.as_bytes()).expect("corrupt candidate");
+        fs::write(store.root().join(corrupt.as_str()), b"tampered").expect("replace blob bytes");
+        let mut records = vec![SessionRecord::FunctionCallOutput(output_data(
+            "",
+            Some(corrupt.clone()),
+        ))];
+        let error = store
+            .hydrate_session("session-2", &mut records)
+            .expect_err("corrupt blob must fail");
+        let text = format!("{error:#}");
+        assert!(text.contains("session-2"), "{text}");
+        assert!(text.contains(corrupt.as_str()), "{text}");
+        assert!(text.contains("digest mismatch"), "{text}");
+        assert!(!text.contains(payload), "{text}");
+
+        let non_utf8 = store.put(&[0xff, 0xfe]).expect("non-UTF-8 blob");
+        let mut records = vec![SessionRecord::FunctionCallOutput(output_data(
+            "",
+            Some(non_utf8.clone()),
+        ))];
+        let error = store
+            .hydrate_session("session-3", &mut records)
+            .expect_err("non-UTF-8 blob must fail");
+        let text = format!("{error:#}");
+        assert!(text.contains("session-3"), "{text}");
+        assert!(text.contains(non_utf8.as_str()), "{text}");
+        assert!(text.contains("not valid UTF-8"), "{text}");
+    }
+
+    #[test]
+    fn externalize_and_hydrate_checkpoint_retained_output_text() {
+        let (store, _temporary) = new_store();
+        let text = "c".repeat(TOOL_OUTPUT_EXTERNALIZATION_THRESHOLD_BYTES);
+        let checkpoint = test_support::checkpoint(
+            "checkpoint-1",
+            "summary",
+            test_support::exchange("call-1", &text),
+        );
+
+        let externalized = store
+            .externalize_checkpoint(&checkpoint)
+            .expect("externalize retained output");
+        let RetainedConversationRecord::FunctionCallOutput(data) = &externalized.retained[1].record
+        else {
+            panic!("retained output shape");
+        };
+        assert!(data.output.is_empty());
+        let id = ContentId::parse(data.content_id.as_deref().expect("content id"))
+            .expect("parse digest");
+        assert_eq!(
+            store.read_verified(&id).expect("stored output"),
+            text.as_bytes()
+        );
+        let RetainedConversationRecord::FunctionCallOutput(original) =
+            &checkpoint.retained[1].record
+        else {
+            panic!("original retained output shape");
+        };
+        assert_eq!(
+            original.output, text,
+            "externalization must not mutate the live checkpoint"
+        );
+
+        let mut records = vec![SessionRecord::Compaction(externalized)];
+        store
+            .hydrate_session("session-1", &mut records)
+            .expect("hydrate retained output");
+        let SessionRecord::Compaction(checkpoint) = &records[0] else {
+            panic!("checkpoint shape");
+        };
+        let RetainedConversationRecord::FunctionCallOutput(data) = &checkpoint.retained[1].record
+        else {
+            panic!("retained output shape");
+        };
+        assert_eq!(data.output, text);
     }
 
     #[test]
@@ -2486,20 +2860,26 @@ mod tests {
     }
 
     #[test]
-    fn referenced_ids_cover_messages_outputs_and_checkpoint_images() {
+    fn referenced_ids_cover_messages_outputs_and_checkpoint_payloads() {
         let message_id = ContentId::from_bytes(b"message image");
         let output_id = ContentId::from_bytes(b"output image");
         let retained_id = ContentId::from_bytes(b"retained image");
+        let output_text_id = ContentId::from_bytes(b"output text");
+        let retained_text_id = ContentId::from_bytes(b"retained output text");
         let message = message_with_images(vec![ImagePart {
             media_type: "image/png".to_string(),
             data_base64: String::new(),
             content_id: Some(message_id.as_str().to_string()),
         }]);
-        let output = output_with_images(vec![ImagePart {
+        let mut output = output_with_images(vec![ImagePart {
             media_type: "image/png".to_string(),
             data_base64: String::new(),
             content_id: Some(output_id.as_str().to_string()),
         }]);
+        let SessionRecord::FunctionCallOutput(data) = &mut output else {
+            panic!("function call output shape");
+        };
+        data.content_id = Some(output_text_id.as_str().to_string());
         let mut retained = test_support::message(Role::User, "look");
         let RetainedConversationRecord::Message(data) = &mut retained.record else {
             panic!("retained message shape");
@@ -2509,7 +2889,14 @@ mod tests {
             data_base64: String::new(),
             content_id: Some(retained_id.as_str().to_string()),
         });
-        let checkpoint = test_support::checkpoint("checkpoint-1", "summary", vec![retained]);
+        let mut retained_output = test_support::exchange("call-2", "retained output").remove(1);
+        let RetainedConversationRecord::FunctionCallOutput(data) = &mut retained_output.record
+        else {
+            panic!("retained output shape");
+        };
+        data.content_id = Some(retained_text_id.as_str().to_string());
+        let checkpoint =
+            test_support::checkpoint("checkpoint-1", "summary", vec![retained, retained_output]);
 
         let referenced =
             referenced_content_ids(&[message, output, SessionRecord::Compaction(checkpoint)])
@@ -2517,7 +2904,13 @@ mod tests {
 
         assert_eq!(
             referenced,
-            BTreeSet::from([message_id, output_id, retained_id])
+            BTreeSet::from([
+                message_id,
+                output_id,
+                retained_id,
+                output_text_id,
+                retained_text_id,
+            ])
         );
     }
 

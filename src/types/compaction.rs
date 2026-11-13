@@ -421,9 +421,9 @@ impl CompactionData {
     /// The returned bytes include the record envelope and trailing newline, so
     /// validation and a writer commit enforce the same ceiling on the same
     /// bytes. Serialization happens once: a writer can append these bytes
-    /// directly. Callers with retained images must externalize them first with
-    /// [`crate::config::BlobStore::externalize_checkpoint`]; this method
-    /// measures whatever image fields are present.
+    /// directly. Callers with retained payloads must externalize them first
+    /// with [`crate::config::BlobStore::externalize_checkpoint`]; this method
+    /// measures whatever image and output fields are present.
     ///
     /// # Errors
     ///
@@ -445,11 +445,11 @@ impl CompactionData {
         Ok(bytes)
     }
 
-    /// Remove image content ids from retained messages and tool outputs.
+    /// Remove payload content ids from retained messages and tool outputs.
     ///
     /// Persisted checkpoints retain references. Stream-json and other
-    /// projections use this to keep the pre-blob image shape.
-    pub(crate) fn strip_image_content_ids(&mut self) {
+    /// projections use this to keep the pre-blob payload shape.
+    pub(crate) fn strip_content_ids(&mut self) {
         for retained in &mut self.retained {
             match &mut retained.record {
                 RetainedConversationRecord::Message(data) => {
@@ -458,9 +458,7 @@ impl CompactionData {
                     }
                 },
                 RetainedConversationRecord::FunctionCallOutput(data) => {
-                    for image in &mut data.images {
-                        image.content_id = None;
-                    }
+                    data.strip_content_ids();
                 },
                 RetainedConversationRecord::Reasoning(_)
                 | RetainedConversationRecord::FunctionCall(_) => {},
@@ -722,6 +720,7 @@ pub mod test_support {
                 record: RetainedConversationRecord::FunctionCallOutput(FunctionCallOutputData {
                     call_id: call_id.to_string(),
                     output: output.to_string(),
+                    content_id: None,
                     replay: None,
                     timestamp: None,
                     images: Vec::new(),

@@ -53,6 +53,7 @@ fn session_with_skill_records() -> Session {
         SessionRecord::FunctionCallOutput(FunctionCallOutputData {
             call_id: "call-1".to_string(),
             output: "echoed text: Skill 'fake-skill' activated".to_string(),
+            content_id: None,
             replay: None,
             timestamp: None,
             images: Vec::new(),

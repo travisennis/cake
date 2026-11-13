@@ -136,7 +136,7 @@ fn emit_records(records: Vec<SessionRecord>) -> anyhow::Result<()> {
     // shape.
     for record in records {
         let mut stream = StreamRecord::from(record);
-        stream.strip_image_content_ids();
+        stream.strip_content_ids();
         emit(&stream)?;
     }
     Ok(())

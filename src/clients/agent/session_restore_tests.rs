@@ -103,6 +103,7 @@ fn function_call_output(call_id: &str, output: &str, offset: i64) -> SessionReco
     SessionRecord::FunctionCallOutput(FunctionCallOutputData {
         call_id: call_id.to_string(),
         output: output.to_string(),
+        content_id: None,
         replay: None,
         timestamp: Some(time(offset)),
         images: Vec::new(),
@@ -445,6 +446,7 @@ fn persist_repairs_and_reload(
                 Some(SessionRecord::FunctionCallOutput(FunctionCallOutputData {
                     call_id: call_id.clone(),
                     output: output.clone(),
+                    content_id: None,
                     replay: None,
                     timestamp: *timestamp,
                     images: Vec::new(),

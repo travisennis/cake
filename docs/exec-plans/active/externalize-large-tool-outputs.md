@@ -16,8 +16,8 @@ This is task 145a, the follow-up anticipated by ADR 061. It is a storage change 
 
 - [x] (2026-11-12) Measured existing session output sizes and selected the 16 KiB externalization threshold.
 - [x] (2026-11-12) Drafted this ExecPlan and the ADR 061 amendment before changing code.
-- [ ] Milestone 1: add `FunctionCallOutputData.content_id`, extend the shared content-id traversal and stripping projection, and add output externalization and hydration to `BlobStore`.
-- [ ] Milestone 1: prove threshold boundaries, both-field verification, reference-only hydration, empty output, missing/corrupt blob rejection, and UTF-8 failure with unit tests.
+- [x] (2026-11-13) Milestone 1: add `FunctionCallOutputData.content_id`, extend the shared content-id traversal and stripping projection, and add output externalization and hydration to `BlobStore`.
+- [x] (2026-11-13) Milestone 1: prove threshold boundaries, both-field verification, reference-only hydration, empty output, missing/corrupt blob rejection, and UTF-8 failure with unit tests.
 - [ ] Milestone 2: externalize output text in `SessionWriter::append_record` and in `SessionWriter::commit_checkpoint`/`cake sessions checkpoint`, and hydrate it on provider-bound loads and replay.
 - [ ] Milestone 2: prove the writer, checkpoint, replay, and legacy-inline paths with unit and integration tests.
 - [ ] Milestone 3: include output references in fork hard links, resume recovery, and `cake debug blobs`.
@@ -30,6 +30,7 @@ This is task 145a, the follow-up anticipated by ADR 061. It is a storage change 
 
 - A read-only scan of the live session store on 2026-11-12 found 2,597 session files and 175,118 `function_call_output` records holding 552.5 MB of inline text. The table in Artifacts and Notes shows how much text sits above each candidate threshold. A 16 KiB threshold captures 25.4% of output bytes and about 9.5% of raw JSONL bytes with 5,552 outputs, roughly two per session. A 32 KiB threshold captures only 6.5% of output bytes, and 8 KiB creates 3.4 times as many blobs for about twice the captured bytes.
 - The same scan found 323 checkpoints retaining 4,385 output records and 7.9 MB of text. At 16 KiB, 47 retained outputs (1.34 MB) become references; at 32 KiB only 12 (0.47 MB) do. Checkpoints are currently nowhere near the eight-MiB ceiling, so the immediate value is deduplication between the raw record, the checkpoint, and a fork, not rescuing an oversized checkpoint.
+- Output externalization invalidated the fixture in `flush_failure_with_an_oversized_record_leaves_no_malformed_line`: its 128 KiB retained tool output now serialized as a reference, so the write no longer exceeded `BufWriter`'s capacity. The fixture now retains a 128 KiB message, which stays inline and preserves the direct-write fault path.
 - `Session::append_records` writes seed records directly and has no `BlobStore`, so it cannot externalize output text. The only seed path that can carry a tool output today is a fork, and `create_seeded_session_file` already calls `prepare_fork_seed_records` first. The plan keeps that ordering and adds a regression test rather than widening `Session::append_records`.
 - The session-metrics Python loader reads `function_call_output.output` directly for failure classification and output sizes. Without a change it would treat every externalized output as empty and silently lose the failure taxonomy. The loader needs to resolve a `content_id` from the sibling `.blobs` directory.
 

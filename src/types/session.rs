@@ -391,6 +391,11 @@ pub struct FunctionCallData {
 pub struct FunctionCallOutputData {
     pub call_id: String,
     pub output: String,
+    /// Content id of the externalized `output` text. Present only when the
+    /// output is stored in the session's blob directory; `output` is empty
+    /// when the reference is authoritative.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_id: Option<String>,
     /// The replay declaration associated with the tool call that produced this
     /// output. Synthetic recovery outputs leave this absent.
     #[serde(
@@ -405,6 +410,14 @@ pub struct FunctionCallOutputData {
     /// records written before images existed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<ImagePart>,
+}
+
+impl FunctionCallOutputData {
+    /// Remove payload references from this output and its images.
+    pub(crate) fn strip_content_ids(&mut self) {
+        strip_image_content_ids(&mut self.images);
+        self.content_id = None;
+    }
 }
 
 /// Shared data for `Reasoning` records in both `StreamRecord` and `SessionRecord`.
@@ -982,16 +995,16 @@ fn session_activation_stream_record(record: SessionRecord) -> StreamRecord {
 }
 
 impl StreamRecord {
-    /// Remove image content ids from every stream payload shape.
+    /// Remove payload content ids from every stream payload shape.
     ///
-    /// This covers message images, function-call-output images, and images
-    /// retained inside a checkpoint. It keeps replayed and hydrated stream
-    /// output in the shape clients received before blob storage existed.
-    pub fn strip_image_content_ids(&mut self) {
+    /// This covers message images, function-call-output text and images, and
+    /// payloads retained inside a checkpoint. It keeps replayed and hydrated
+    /// stream output in the shape clients received before blob storage existed.
+    pub fn strip_content_ids(&mut self) {
         match self {
             Self::Message(data) => strip_image_content_ids(&mut data.images),
-            Self::FunctionCallOutput(data) => strip_image_content_ids(&mut data.images),
-            Self::Compaction(data) => data.strip_image_content_ids(),
+            Self::FunctionCallOutput(data) => data.strip_content_ids(),
+            Self::Compaction(data) => data.strip_content_ids(),
             Self::SessionMeta { .. }
             | Self::TaskStart(_)
             | Self::PromptContext { .. }
@@ -1061,6 +1074,7 @@ impl StreamRecord {
             } => Self::FunctionCallOutput(FunctionCallOutputData {
                 call_id: call_id.clone(),
                 output: output.clone(),
+                content_id: None,
                 replay,
                 timestamp: *timestamp,
                 images: images.clone(),
@@ -1123,17 +1137,46 @@ impl SessionRecord {
     }
 
     /// Return every content id referenced by this record, including ids on
-    /// images retained inside a checkpoint.
+    /// images and output text retained inside a checkpoint.
     ///
     /// Recovery and blob diagnostics share this traversal so a future
     /// payload-bearing record is either visible to both or to neither.
     pub(crate) fn content_ids(&self) -> impl Iterator<Item = &str> + '_ {
+        let mut output_ids = Vec::new();
+        match self {
+            Self::FunctionCallOutput(data) => {
+                if let Some(id) = data.content_id.as_deref() {
+                    output_ids.push(id);
+                }
+            },
+            Self::Compaction(checkpoint) => {
+                for retained in &checkpoint.retained {
+                    if let RetainedConversationRecord::FunctionCallOutput(data) = &retained.record
+                        && let Some(id) = data.content_id.as_deref()
+                    {
+                        output_ids.push(id);
+                    }
+                }
+            },
+            Self::SessionMeta { .. }
+            | Self::TaskStart(_)
+            | Self::PromptContext { .. }
+            | Self::Message(_)
+            | Self::FunctionCall(_)
+            | Self::SkillActivated { .. }
+            | Self::McpToolsActivated { .. }
+            | Self::HookEvent(_)
+            | Self::Reasoning(_)
+            | Self::TaskComplete(_)
+            | Self::TurnUsage(_) => {},
+        }
         self.image_parts()
             .into_iter()
             .filter_map(|image| image.content_id.as_deref())
+            .chain(output_ids)
     }
 
-    /// Remove image content ids from every persisted payload shape.
+    /// Remove payload content ids from every persisted payload shape.
     ///
     /// Session records keep references so a hydrated record can be written
     /// again, but stream-json output must preserve the pre-blob shape. This is
@@ -1145,11 +1188,11 @@ impl SessionRecord {
             reason = "replay strips the converted stream record; this keeps the shared projection complete for raw-record callers"
         )
     )]
-    pub fn strip_image_content_ids(&mut self) {
+    pub fn strip_content_ids(&mut self) {
         match self {
             Self::Message(data) => strip_image_content_ids(&mut data.images),
-            Self::FunctionCallOutput(data) => strip_image_content_ids(&mut data.images),
-            Self::Compaction(data) => data.strip_image_content_ids(),
+            Self::FunctionCallOutput(data) => data.strip_content_ids(),
+            Self::Compaction(data) => data.strip_content_ids(),
             Self::SessionMeta { .. }
             | Self::TaskStart(_)
             | Self::PromptContext { .. }
@@ -1222,6 +1265,7 @@ impl SessionRecord {
             Self::FunctionCallOutput(FunctionCallOutputData {
                 call_id,
                 output,
+                content_id: _,
                 replay: _,
                 timestamp,
                 images,

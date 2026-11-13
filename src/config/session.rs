@@ -1648,6 +1648,7 @@ mod tests {
             SessionRecord::FunctionCallOutput(FunctionCallOutputData {
                 call_id: "call-1".to_string(),
                 output: "file.txt".to_string(),
+                content_id: None,
                 replay: None,
                 timestamp: None,
                 images: Vec::new(),
@@ -1682,6 +1683,7 @@ mod tests {
                 SessionRecord::FunctionCallOutput(FunctionCallOutputData {
                     call_id: "call-1".to_string(),
                     output: "echoed text: Skill 'not-real' activated".to_string(),
+                    content_id: None,
                     replay: None,
                     timestamp: None,
                     images: Vec::new(),
@@ -2488,12 +2490,14 @@ mod tests {
         // Larger than `BufWriter`'s capacity. `write_all` bypasses the buffer
         // for a write this large, so the full record reaches the file before
         // the injected flush failure; detaching the buffer at failure must not
-        // leave an interior fragment.
-        let large_output = "x".repeat(128 * 1024);
+        // leave an interior fragment. Retained message text stays inline; a
+        // large retained tool output would now be externalized and would no
+        // longer exercise the direct-write path.
+        let large_content = "x".repeat(128 * 1024);
         let mut checkpoint = test_support::checkpoint(
             "checkpoint-1",
             "summary",
-            test_support::exchange("call-1", &large_output),
+            vec![test_support::message(Role::User, &large_content)],
         );
         checkpoint.session_id = session.id.to_string();
 
@@ -2532,12 +2536,12 @@ mod tests {
             "a record that reached the file stays, and it is complete"
         );
         assert_eq!(checkpoints[0].checkpoint_id, "checkpoint-1");
-        let crate::types::compaction::RetainedConversationRecord::FunctionCallOutput(output) =
-            &checkpoints[0].retained[1].record
+        let crate::types::compaction::RetainedConversationRecord::Message(message) =
+            &checkpoints[0].retained[0].record
         else {
-            panic!("the retained exchange keeps its output");
+            panic!("the retained message keeps its content");
         };
-        assert_eq!(output.output.len(), large_output.len());
+        assert_eq!(message.content.len(), large_content.len());
 
         let mut file = Session::open_for_append(&path).unwrap();
         Session::append_record(&mut file, &task_start(&session, "task-1")).unwrap();

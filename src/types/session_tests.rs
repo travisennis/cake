@@ -928,11 +928,17 @@ fn externalized_image_serializes_by_reference_and_roundtrips() {
 }
 
 #[test]
-fn strip_image_content_ids_covers_message_output_and_checkpoint_images() {
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "one fixture asserts both projections over three record shapes"
+)]
+fn strip_content_ids_covers_output_and_checkpoint_payloads() {
+    let image_id = "a".repeat(64);
+    let output_id = "b".repeat(64);
     let image = || ImagePart {
         media_type: "image/png".to_string(),
         data_base64: "QUJD".to_string(),
-        content_id: Some("a".repeat(64)),
+        content_id: Some(image_id.clone()),
     };
     let mut message = SessionRecord::Message(MessageData {
         role: Role::User,
@@ -944,7 +950,8 @@ fn strip_image_content_ids_covers_message_output_and_checkpoint_images() {
     });
     let mut output = SessionRecord::FunctionCallOutput(FunctionCallOutputData {
         call_id: "call-1".to_string(),
-        output: "result".to_string(),
+        output: String::new(),
+        content_id: Some(output_id.clone()),
         replay: None,
         timestamp: None,
         images: vec![image()],
@@ -954,19 +961,41 @@ fn strip_image_content_ids_covers_message_output_and_checkpoint_images() {
         panic!("retained message shape");
     };
     retained_message.images.push(image());
-    let stream_retained = retained.clone();
+    let mut retained_output = test_support::exchange("call-2", "retained output").remove(1);
+    let RetainedConversationRecord::FunctionCallOutput(retained_output_data) =
+        &mut retained_output.record
+    else {
+        panic!("retained output shape");
+    };
+    retained_output_data.content_id = Some(output_id.clone());
     let mut checkpoint = SessionRecord::Compaction(test_support::checkpoint(
         "checkpoint-1",
         "summary",
-        vec![retained],
+        vec![retained, retained_output],
     ));
+    let stream_checkpoint = match &checkpoint {
+        SessionRecord::Compaction(checkpoint) => checkpoint.clone(),
+        _ => panic!("checkpoint shape"),
+    };
 
     assert_eq!(message.image_parts().len(), 1);
     assert_eq!(output.image_parts().len(), 1);
     assert_eq!(checkpoint.image_parts().len(), 1);
+    assert_eq!(
+        message.content_ids().collect::<Vec<_>>(),
+        vec![image_id.as_str()]
+    );
+    assert_eq!(
+        output.content_ids().collect::<Vec<_>>(),
+        vec![image_id.as_str(), output_id.as_str()]
+    );
+    assert_eq!(
+        checkpoint.content_ids().collect::<Vec<_>>(),
+        vec![image_id.as_str(), output_id.as_str()]
+    );
 
     for record in [&mut message, &mut output, &mut checkpoint] {
-        record.strip_image_content_ids();
+        record.strip_content_ids();
     }
 
     let SessionRecord::Message(message) = &message else {
@@ -977,6 +1006,7 @@ fn strip_image_content_ids_covers_message_output_and_checkpoint_images() {
         panic!("output shape");
     };
     assert_eq!(output.images[0].content_id, None);
+    assert_eq!(output.content_id, None);
     let SessionRecord::Compaction(checkpoint) = &checkpoint else {
         panic!("checkpoint shape");
     };
@@ -984,13 +1014,15 @@ fn strip_image_content_ids_covers_message_output_and_checkpoint_images() {
         panic!("retained message shape");
     };
     assert_eq!(retained.images[0].content_id, None);
+    let RetainedConversationRecord::FunctionCallOutput(retained_output) =
+        &checkpoint.retained[1].record
+    else {
+        panic!("retained output shape");
+    };
+    assert_eq!(retained_output.content_id, None);
 
-    let mut stream = StreamRecord::Compaction(test_support::checkpoint(
-        "checkpoint-2",
-        "summary",
-        vec![stream_retained],
-    ));
-    stream.strip_image_content_ids();
+    let mut stream = StreamRecord::Compaction(stream_checkpoint);
+    stream.strip_content_ids();
     let StreamRecord::Compaction(checkpoint) = stream else {
         panic!("stream checkpoint shape");
     };
@@ -998,6 +1030,12 @@ fn strip_image_content_ids_covers_message_output_and_checkpoint_images() {
         panic!("retained message shape");
     };
     assert_eq!(retained.images[0].content_id, None);
+    let RetainedConversationRecord::FunctionCallOutput(retained_output) =
+        &checkpoint.retained[1].record
+    else {
+        panic!("retained output shape");
+    };
+    assert_eq!(retained_output.content_id, None);
 }
 
 #[test]
@@ -1239,6 +1277,7 @@ fn snapshot_session_json_compaction() {
                 record: RetainedConversationRecord::FunctionCallOutput(FunctionCallOutputData {
                     call_id: "call-1".to_string(),
                     output: "# Cake\n".to_string(),
+                    content_id: None,
                     replay: Some(ReplaySafety::Safe),
                     timestamp: Some(timestamp_at("2026-05-10T00:00:02Z")),
                     images: Vec::new(),
@@ -1313,6 +1352,7 @@ fn snapshot_session_json_compaction_with_image_references() {
                 record: RetainedConversationRecord::FunctionCallOutput(FunctionCallOutputData {
                     call_id: "call-1".to_string(),
                     output: "ReadImage /tmp/red.png (69 bytes, image/png)".to_string(),
+                    content_id: None,
                     replay: Some(ReplaySafety::Safe),
                     timestamp: Some(timestamp_at("2026-05-10T00:00:02Z")),
                     images: vec![referenced_image()],

@@ -1853,6 +1853,7 @@ mod tests {
             SessionRecord::FunctionCallOutput(FunctionCallOutputData {
                 call_id: "call-later".to_string(),
                 output: "later result".to_string(),
+                content_id: None,
                 replay: Some(crate::types::ReplaySafety::Safe),
                 timestamp: None,
                 images: Vec::new(),
