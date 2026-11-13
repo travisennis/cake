@@ -1094,6 +1094,94 @@ mod tests {
         (session, content_id.as_str().to_owned())
     }
 
+    fn fork_output_text() -> String {
+        "fork output ".repeat(1600)
+    }
+
+    /// Persist a session with one referenced output. `inline_bytes` selects the
+    /// legacy shape that can still load after its blob is removed.
+    fn saved_session_with_output(
+        data_dir: &DataDir,
+        working_dir: &Path,
+        inline_bytes: bool,
+    ) -> (Session, String, String) {
+        let text = fork_output_text();
+        let mut session = Session::new(uuid::Uuid::new_v4(), working_dir.to_path_buf());
+        session.model = Some("glm-5.1".to_string());
+        session.model_config = Some("test".to_string());
+        session.provider_identity = Some(test_provider_identity());
+        let content_id = data_dir
+            .session_blob_store(session.id)
+            .put(text.as_bytes())
+            .expect("source output blob");
+        session
+            .records
+            .push(SessionRecord::FunctionCall(FunctionCallData {
+                id: "fc-output".to_string(),
+                call_id: "call-output".to_string(),
+                name: "Bash".to_string(),
+                arguments: "{}".to_string(),
+                arguments_parse_error: None,
+                replay: None,
+                timestamp: None,
+            }));
+        session
+            .records
+            .push(SessionRecord::FunctionCallOutput(FunctionCallOutputData {
+                call_id: "call-output".to_string(),
+                output: if inline_bytes {
+                    text.clone()
+                } else {
+                    String::new()
+                },
+                content_id: Some(content_id.as_str().to_owned()),
+                replay: None,
+                timestamp: None,
+                images: Vec::new(),
+            }));
+        data_dir
+            .save_session(&session)
+            .expect("session fixture should save");
+        (session, content_id.as_str().to_owned(), text)
+    }
+
+    /// Persist a session with one eligible inline output and no reference.
+    fn saved_session_with_inline_output(
+        data_dir: &DataDir,
+        working_dir: &Path,
+    ) -> (Session, String) {
+        let text = fork_output_text();
+        let mut session = Session::new(uuid::Uuid::new_v4(), working_dir.to_path_buf());
+        session.model = Some("glm-5.1".to_string());
+        session.model_config = Some("test".to_string());
+        session.provider_identity = Some(test_provider_identity());
+        session
+            .records
+            .push(SessionRecord::FunctionCall(FunctionCallData {
+                id: "fc-output".to_string(),
+                call_id: "call-output".to_string(),
+                name: "Bash".to_string(),
+                arguments: "{}".to_string(),
+                arguments_parse_error: None,
+                replay: None,
+                timestamp: None,
+            }));
+        session
+            .records
+            .push(SessionRecord::FunctionCallOutput(FunctionCallOutputData {
+                call_id: "call-output".to_string(),
+                output: text.clone(),
+                content_id: None,
+                replay: None,
+                timestamp: None,
+                images: Vec::new(),
+            }));
+        data_dir
+            .save_session(&session)
+            .expect("session fixture should save");
+        (session, text)
+    }
+
     fn image_content_ids(records: &[SessionRecord]) -> Vec<String> {
         records
             .iter()
@@ -1576,6 +1664,221 @@ mod tests {
                     assert!(source_meta.nlink() >= 2);
                 }
             }
+        });
+    }
+
+    #[test]
+    fn fork_hard_links_referenced_output_blobs_and_writes_content_ids() {
+        temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
+            let cli = crate::CodingAssistant::parse_from(["cake"]);
+            let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+            let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+            let working_dir = tempfile::tempdir().expect("temp working dir");
+            let (source, output_id, output_text) =
+                saved_session_with_output(&data_dir, working_dir.path(), false);
+
+            let run = build_for_mode(
+                &cli,
+                &RunMode::Fork {
+                    session_id: source.id,
+                },
+                &data_dir,
+                working_dir.path(),
+            )
+            .expect("fork should succeed");
+            let fork_id = run.session.id;
+            let Some(SessionPersistencePlan::Create {
+                seed_records,
+                blob_source,
+            }) = run.persistence.as_ref()
+            else {
+                panic!("a fork persists a new session");
+            };
+            assert_eq!(*blob_source, Some(source.id));
+            let seed_output = seed_records
+                .iter()
+                .find_map(|record| match record {
+                    SessionRecord::FunctionCallOutput(data) => Some(data),
+                    _ => None,
+                })
+                .expect("seed output record");
+            assert_eq!(seed_output.content_id.as_deref(), Some(output_id.as_str()));
+            assert_eq!(
+                seed_output.output, output_text,
+                "the loaded parent record carries hydrated text before fork preparation"
+            );
+
+            let file = crate::cli::execute_persistence_plan(
+                run.persistence,
+                &data_dir,
+                &run.session,
+                Vec::new(),
+            )
+            .expect("fork persistence should succeed")
+            .expect("fork creates a file");
+            drop(file);
+
+            let forked = data_dir
+                .load_session(fork_id)
+                .expect("fork should load")
+                .expect("fork exists");
+            let forked_output = forked
+                .records
+                .iter()
+                .find_map(|record| match record {
+                    SessionRecord::FunctionCallOutput(data) => Some(data),
+                    _ => None,
+                })
+                .expect("forked output record");
+            assert_eq!(forked_output.output, output_text);
+            assert_eq!(
+                forked_output.content_id.as_deref(),
+                Some(output_id.as_str())
+            );
+            let raw = std::fs::read_to_string(data_dir.session_path(fork_id))
+                .expect("fork JSONL should read");
+            assert!(raw.contains(&output_id));
+            assert!(
+                !raw.contains("fork output"),
+                "fork seeds must not duplicate output text"
+            );
+
+            let source_blob = data_dir.session_blob_dir(source.id).join(&output_id);
+            let fork_blob = data_dir.session_blob_dir(fork_id).join(&output_id);
+            assert_eq!(
+                std::fs::read(&source_blob).expect("source output blob"),
+                output_text.as_bytes()
+            );
+            assert_eq!(
+                std::fs::read(&fork_blob).expect("fork output blob"),
+                output_text.as_bytes()
+            );
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt as _;
+                let source_meta = std::fs::metadata(&source_blob).expect("source metadata");
+                let fork_meta = std::fs::metadata(&fork_blob).expect("fork metadata");
+                assert_eq!(source_meta.ino(), fork_meta.ino());
+                assert!(source_meta.nlink() >= 2);
+            }
+        });
+    }
+
+    #[test]
+    fn fork_externalizes_large_inline_output_into_the_child_store() {
+        temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
+            let cli = crate::CodingAssistant::parse_from(["cake"]);
+            let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+            let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+            let working_dir = tempfile::tempdir().expect("temp working dir");
+            let (source, output_text) =
+                saved_session_with_inline_output(&data_dir, working_dir.path());
+
+            let run = build_for_mode(
+                &cli,
+                &RunMode::Fork {
+                    session_id: source.id,
+                },
+                &data_dir,
+                working_dir.path(),
+            )
+            .expect("fork should succeed");
+            let fork_id = run.session.id;
+            let Some(SessionPersistencePlan::Create { seed_records, .. }) =
+                run.persistence.as_ref()
+            else {
+                panic!("a fork persists a new session");
+            };
+            let seed_output = seed_records
+                .iter()
+                .find_map(|record| match record {
+                    SessionRecord::FunctionCallOutput(data) => Some(data),
+                    _ => None,
+                })
+                .expect("seed output record");
+            assert!(seed_output.content_id.is_none());
+            assert_eq!(seed_output.output, output_text);
+            assert!(
+                !data_dir.session_blob_dir(source.id).exists(),
+                "the inline source needs no blob store"
+            );
+
+            let file = crate::cli::execute_persistence_plan(
+                run.persistence,
+                &data_dir,
+                &run.session,
+                Vec::new(),
+            )
+            .expect("fork persistence should succeed")
+            .expect("fork creates a file");
+            drop(file);
+
+            let raw = std::fs::read_to_string(data_dir.session_path(fork_id))
+                .expect("fork JSONL should read");
+            assert!(
+                !raw.contains("fork output"),
+                "the eligible inline output should be externalized"
+            );
+            let forked = data_dir
+                .load_session(fork_id)
+                .expect("fork should load")
+                .expect("fork exists");
+            let forked_output = forked
+                .records
+                .iter()
+                .find_map(|record| match record {
+                    SessionRecord::FunctionCallOutput(data) => Some(data),
+                    _ => None,
+                })
+                .expect("forked output record");
+            assert_eq!(forked_output.output, output_text);
+            let content_id = forked_output
+                .content_id
+                .as_deref()
+                .expect("the child output should carry a content id");
+            assert_eq!(
+                std::fs::read(data_dir.session_blob_dir(fork_id).join(content_id))
+                    .expect("child output blob"),
+                output_text.as_bytes()
+            );
+        });
+    }
+
+    #[test]
+    fn fork_missing_parent_output_blob_fails_before_creating_the_child() {
+        temp_env::with_var("SESSION_FACTORY_TEST_KEY", Some("test-key"), || {
+            let cli = crate::CodingAssistant::parse_from(["cake"]);
+            let data_dir_dir = tempfile::tempdir().expect("temp data dir");
+            let data_dir = DataDir::new_in_dir(data_dir_dir.path());
+            let working_dir = tempfile::tempdir().expect("temp working dir");
+            let (source, output_id, _) =
+                saved_session_with_output(&data_dir, working_dir.path(), true);
+            std::fs::remove_file(data_dir.session_blob_dir(source.id).join(&output_id))
+                .expect("remove source output blob");
+
+            let run = build_for_mode(
+                &cli,
+                &RunMode::Fork {
+                    session_id: source.id,
+                },
+                &data_dir,
+                working_dir.path(),
+            )
+            .expect("inline source bytes should still load");
+            let fork_id = run.session.id;
+            let error = crate::cli::execute_persistence_plan(
+                run.persistence,
+                &data_dir,
+                &run.session,
+                Vec::new(),
+            )
+            .expect_err("a missing parent output blob must fail the fork");
+            let detail = format!("{error:#}");
+            assert!(detail.contains(&output_id), "{detail}");
+            assert!(detail.contains("failed to link fork blob"), "{detail}");
+            assert!(!data_dir.session_path(fork_id).exists());
+            assert!(!data_dir.session_blob_dir(fork_id).exists());
         });
     }
 

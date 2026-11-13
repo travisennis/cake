@@ -102,7 +102,7 @@ Examples:
         #[arg(long, default_value_t = false)]
         json: bool,
     },
-    /// Report session image blob health without deleting anything
+    /// Report session payload blob health without deleting anything
     #[command(after_help = "\
 Examples:
   cake debug blobs
@@ -291,7 +291,7 @@ impl CmdRunner for DebugCommand {
     }
 }
 
-/// Report session image blob health without deleting anything.
+/// Report session payload blob health without deleting anything.
 fn run_blobs(json: bool, data_dir: &DataDir) -> anyhow::Result<()> {
     let diagnostics = data_dir
         .blob_diagnostics()
@@ -354,7 +354,7 @@ fn append_session_blob_checks(session: &SessionBlobDiagnostics, checks: &mut Vec
         checks.push(DiagnosticCheck::warning(
             CHECK_BLOBS_SESSION,
             format!(
-                "session {}: image references could not be collected completely",
+                "session {}: payload references could not be collected completely",
                 session.session_id
             ),
         ));
@@ -373,7 +373,7 @@ fn append_session_blob_checks(session: &SessionBlobDiagnostics, checks: &mut Vec
         checks.push(DiagnosticCheck::warning(
             CHECK_BLOBS_REFERENCE_MISSING,
             format!(
-                "session {}: referenced image {} is missing at {}",
+                "session {}: referenced payload {} is missing at {}",
                 session.session_id,
                 missing.digest,
                 missing.path.display()
@@ -384,7 +384,7 @@ fn append_session_blob_checks(session: &SessionBlobDiagnostics, checks: &mut Vec
         checks.push(DiagnosticCheck::warning(
             CHECK_BLOBS_REFERENCE_CORRUPT,
             format!(
-                "session {}: referenced image {} is corrupt at {}: {}",
+                "session {}: referenced payload {} is corrupt at {}: {}",
                 session.session_id,
                 corrupt.digest,
                 corrupt.path.display(),
@@ -443,7 +443,7 @@ fn print_blob_document(diagnostics: &BlobDiagnostics) {
 /// Render the short human-readable blob report.
 fn format_blob_diagnostics(diagnostics: &BlobDiagnostics) -> String {
     let totals = &diagnostics.totals;
-    let mut output = String::from("Image blobs\n");
+    let mut output = String::from("Session payload blobs\n");
     _ = writeln!(output, "  sessions: {}", totals.session_count);
     _ = writeln!(
         output,

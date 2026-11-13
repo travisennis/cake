@@ -49,7 +49,7 @@ pub fn execute_persistence_plan(
     Ok(Some(file))
 }
 
-/// Remove unreferenced image blobs after an append lock and tail repair.
+/// Remove unreferenced payload blobs after an append lock and tail repair.
 ///
 /// Recovery is best-effort: a missing blob directory skips the scan, and a
 /// read, parse, or removal error is reported without failing the resume.
@@ -59,7 +59,7 @@ fn recover_append_blobs(data_dir: &DataDir, file: &File, session_id: Uuid) {
         Ok(None) => {},
         Err(error) => tracing::warn!(
             target: "cake",
-            "Skipped image blob recovery for session {}: {error:#}",
+            "Skipped payload blob recovery for session {}: {error:#}",
             session_id
         ),
     }
@@ -86,7 +86,7 @@ fn try_recover_append_blobs(
     let session = Session::load_from_append_handle(file, &session_path)
         .context("failed to read session references")?;
     let referenced = referenced_content_ids(&session.records)
-        .context("failed to collect session image references")?;
+        .context("failed to collect session payload references")?;
     data_dir
         .session_blob_store(session_id)
         .recover_unreferenced(&session_id.to_string(), &referenced)
@@ -117,7 +117,7 @@ struct SeedRequest<'a> {
 /// Create and seed a session under one lock.
 ///
 /// A fork links the parent's referenced blobs into the child and externalizes
-/// any legacy inline seed images before the child file exists. A failure after
+/// any legacy inline seed payloads before the child file exists. A failure after
 /// provisioning begins removes the incomplete file and any blob directory this
 /// fork created. If cleanup also fails, the returned error reports both
 /// failures.
@@ -162,7 +162,7 @@ fn create_seeded_session_file(
         Ok(prepared_records) => prepared_records,
         Err(error) => {
             let error = error.context(format!(
-                "Failed to prepare image blobs for new session {}",
+                "Failed to prepare payload blobs for new session {}",
                 session.id
             ));
             return Err(attach_cleanup_errors(
@@ -241,7 +241,7 @@ fn attach_cleanup_errors(mut error: anyhow::Error, cleanup_errors: Vec<String>) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::session::MessageData;
+    use crate::types::session::{FunctionCallOutputData, MessageData};
     use crate::types::{ImagePart, Role};
 
     fn test_session(working_dir: &std::path::Path) -> Session {
@@ -414,6 +414,78 @@ mod tests {
                 .exists()
         );
         assert!(!temp_path.exists());
+    }
+
+    #[test]
+    fn append_recovery_keeps_output_references_and_removes_orphan_outputs() {
+        let root = tempfile::tempdir().expect("temp data dir");
+        let data_dir = DataDir::new_in_dir(root.path());
+        let session = test_session(root.path());
+        let store = data_dir.session_blob_store(session.id);
+        let referenced = store
+            .put(b"referenced output text")
+            .expect("referenced output blob");
+        let corrupt = store
+            .put(b"expected corrupt output text")
+            .expect("corrupt output blob");
+        let orphan = store
+            .put(b"orphan output text")
+            .expect("orphan output blob");
+        let corrupt_path = data_dir.session_blob_dir(session.id).join(corrupt.as_str());
+        std::fs::write(&corrupt_path, b"corrupt output bytes").expect("corrupt output blob");
+
+        let mut file = data_dir
+            .create_session_file(&session, Vec::new())
+            .expect("create session");
+        for (call_id, content_id) in [
+            ("call-referenced", referenced.as_str()),
+            ("call-corrupt", corrupt.as_str()),
+        ] {
+            Session::append_record(
+                &mut file,
+                &SessionRecord::FunctionCallOutput(FunctionCallOutputData {
+                    call_id: call_id.to_string(),
+                    output: String::new(),
+                    content_id: Some(content_id.to_string()),
+                    replay: None,
+                    timestamp: None,
+                    images: Vec::new(),
+                }),
+            )
+            .expect("append output reference");
+        }
+        drop(file);
+
+        let file = execute_persistence_plan(
+            Some(SessionPersistencePlan::Append),
+            &data_dir,
+            &session,
+            Vec::new(),
+        )
+        .expect("append plan")
+        .expect("append handle");
+        drop(file);
+
+        assert_eq!(
+            std::fs::read(
+                data_dir
+                    .session_blob_dir(session.id)
+                    .join(referenced.as_str())
+            )
+            .expect("referenced output remains"),
+            b"referenced output text"
+        );
+        assert_eq!(
+            std::fs::read(&corrupt_path).expect("corrupt referenced output remains"),
+            b"corrupt output bytes"
+        );
+        assert!(
+            !data_dir
+                .session_blob_dir(session.id)
+                .join(orphan.as_str())
+                .exists(),
+            "recovery should remove only the unreferenced output"
+        );
     }
 
     #[test]

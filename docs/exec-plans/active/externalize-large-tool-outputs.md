@@ -20,8 +20,8 @@ This is task 145a, the follow-up anticipated by ADR 061. It is a storage change 
 - [x] (2026-11-13) Milestone 1: prove threshold boundaries, both-field verification, reference-only hydration, empty output, missing/corrupt blob rejection, and UTF-8 failure with unit tests.
 - [x] (2026-11-13) Milestone 2: externalize output text in `SessionWriter::append_record` and in `SessionWriter::commit_checkpoint`/`cake sessions checkpoint`, and hydrate it on provider-bound loads and replay.
 - [x] (2026-11-13) Milestone 2: prove the writer, checkpoint, replay, and legacy-inline paths with unit and integration tests.
-- [ ] Milestone 3: include output references in fork hard links, resume recovery, and `cake debug blobs`.
-- [ ] Milestone 3: prove a fork shares output inodes, recovery removes only unreferenced output blobs, and diagnostics report missing/corrupt output references.
+- [x] (2026-11-13) Milestone 3: include output references in fork hard links, resume recovery, and `cake debug blobs`.
+- [x] (2026-11-13) Milestone 3: prove a fork shares output inodes, recovery removes only unreferenced output blobs, and diagnostics report missing/corrupt output references.
 - [ ] Milestone 4: keep the session-metrics tooling truthful by resolving externalized output text from the session blob directory.
 - [ ] Milestone 5: update `docs/integrations.md`, `docs/security.md`, `docs/configuration.md`, `ARCHITECTURE.md`, the ADR amendment, and record snapshots.
 - [ ] Milestone 5: run the task verification commands and the full gate.
@@ -34,6 +34,7 @@ This is task 145a, the follow-up anticipated by ADR 061. It is a storage change 
 - `Session::append_records` writes seed records directly and has no `BlobStore`, so it cannot externalize output text. The only seed path that can carry a tool output today is a fork, and `create_seeded_session_file` already calls `prepare_fork_seed_records` first. The plan keeps that ordering and adds a regression test rather than widening `Session::append_records`.
 - The session-metrics Python loader reads `function_call_output.output` directly for failure classification and output sizes. Without a change it would treat every externalized output as empty and silently lose the failure taxonomy. The loader needs to resolve a `content_id` from the sibling `.blobs` directory.
 - Milestone 2 needed no new persistence wiring: `append_record`, `commit_checkpoint`, `cake sessions checkpoint`, `DataDir::load_session`, and replay already route through the shared `BlobStore` helpers, so output text followed the image path. The work was proving it with a real-binary run, a writer unit test, a checkpoint-verb test, and a legacy-inline fixture. The real-binary suite sets `CAKE_GATE=off` because the default command-policy gate is not installed in the test environment; otherwise Bash fails closed with `script_evidence` before producing an output.
+- Milestone 3 likewise needed no new production traversal: `prepare_fork_seed_records` and `collect_record_content_ids` already consume `SessionRecord::content_ids`, so output references followed images through fork, recovery, and diagnostics. The work was output-specific proof and payload wording. The `debug blobs` integration suite is `tests/debug_blobs.rs`, not `tests/debug_session.rs` as the original milestone criterion said; that criterion is corrected below.
 
 ## Decision Log
 
@@ -128,7 +129,7 @@ Recovery needs no new traversal because `referenced_content_ids` now includes ou
 
 `cake debug blobs` needs no new traversal either, because `collect_record_content_ids` uses `record.content_ids()`. Update its check text and human output from "image references" to "payload references" and its header from "Image blobs" to "Session payload blobs". Add a diagnostics test with an output reference that is missing and one that is corrupt, and one that is unreferenced, asserting the same `blobs.reference_missing`, `blobs.reference_corrupt`, and `blobs.unreferenced` ids and that no payload bytes appear in the report. Update `src/cli/debug.rs` help and `src/main.rs` examples only if they say "image" where they now mean payload.
 
-Milestone 3 is done when the fork test proves the parent and child output blob share an inode, a missing parent output blob fails with no child file, recovery removes only the unreferenced output blob, and `cargo test --test debug_session` covers an output reference in the report.
+Milestone 3 is done when the fork test proves the parent and child output blob share an inode, a missing parent output blob fails with no child file, recovery removes only the unreferenced output blob, and `cargo test --test debug_blobs` covers an output reference in the report.
 
 ### Milestone 4: keep session metrics truthful
 

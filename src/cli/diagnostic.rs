@@ -71,13 +71,13 @@ pub const CHECK_SESSIONS_CHECKPOINT: &str = "sessions.checkpoint_failed";
 /// Check id for a blob directory that is missing, unsafe, or unreadable.
 pub const CHECK_BLOBS_DIRECTORY: &str = "blobs.directory_problem";
 
-/// Check id for a session file whose image references could not be read fully.
+/// Check id for a session file whose payload references could not be read fully.
 pub const CHECK_BLOBS_SESSION: &str = "blobs.session_problem";
 
-/// Check id for a referenced image blob that is missing.
+/// Check id for a referenced payload blob that is missing.
 pub const CHECK_BLOBS_REFERENCE_MISSING: &str = "blobs.reference_missing";
 
-/// Check id for a referenced image blob whose bytes do not verify.
+/// Check id for a referenced payload blob whose bytes do not verify.
 pub const CHECK_BLOBS_REFERENCE_CORRUPT: &str = "blobs.reference_corrupt";
 
 /// Check id for published blobs that no session record references.
