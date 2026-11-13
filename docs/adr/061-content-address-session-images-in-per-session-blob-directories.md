@@ -123,3 +123,39 @@ A referenced-but-missing blob is not recreated; hydration fails closed. `cake de
 - `docs/integrations.md`, persisted sessions and checkpoint append contracts.
 - `docs/security.md`, session and payload storage sensitivity.
 - `ARCHITECTURE.md`, persistence and integration boundaries.
+- Amendment (2026-11-12, task 145a): the same reference shape now externalizes large tool-output text; see below.
+
+## Amendment: externalize large tool-output text (2026-11-12)
+
+The original decision covered images only and explicitly deferred tool-output text. Task 145a extends it without changing the image contract: an optional lowercase SHA-256 `content_id` may now sit beside `FunctionCallOutputData.output` in the same per-session blob directory, under the same publication, hydration, fork, recovery, and diagnostic rules.
+
+A read-only scan of the live store on 2026-11-12 found 2,597 sessions and 175,118 `function_call_output` records holding 552.5 MB of inline text. A 16 KiB boundary captures 25.4% of those output bytes and about 9.5% of raw JSONL bytes in 5,552 outputs, roughly two per session. A 32 KiB boundary captures 6.5% of output bytes, while 8 KiB captures 52% but creates 3.4 times as many blobs. fx uses the same 16 KiB `large_result_threshold_bytes` for its tool-result store, and 16 KiB is about 4k tokens, one fifth of Cake's 20k-token retained target.
+
+### Decision
+
+Externalize a `function_call_output` when its UTF-8 text length is at least 16 KiB (16,384 bytes). Shorter text stays inline. The threshold is a constant, `TOOL_OUTPUT_EXTERNALIZATION_THRESHOLD_BYTES` in `src/config/blob_store.rs`, not a settings key in this task.
+
+The record shape is an optional lowercase 64-character `content_id` beside the existing `output` field. An externalized record serializes `"output": ""` and the reference, so the field set stays stable for stream consumers and older readers that ignore unknown optional fields. A record carries either non-empty inline text or a reference, never both. An empty output with no reference is a valid empty tool result, because tools such as Bash can legitimately return no text. New writers never persist both forms.
+
+Publication is payload-before-marker, exactly as for images: write and verify the blob, then append the record. Hydration reads the blob, verifies the digest, and restores the text before request construction. A record with both an inline value and an id must have inline bytes that hash to the id. A missing, unreadable, non-regular, mismatched, or non-UTF-8 blob fails the load before any provider request with the session id and digest; Cake never substitutes empty text. Stream-json and replay keep their pre-blob shape: live stream records are serialized before persistence, and replay hydrates then omits `content_id`.
+
+`SessionWriter::append_record` externalizes ordinary records under its lock. `SessionWriter::commit_checkpoint` and `cake sessions checkpoint` externalize retained output text before the eight-MiB measurement, so a checkpoint counts a digest rather than the text. The checkpoint verb's eight-MiB stdin cap is unchanged: a payload at the cap can produce a smaller record, but a payload above the cap is still rejected.
+
+A fork hard-links every digest its seed records reference, images and outputs alike, then externalizes any eligible inline output into the child store. Resume-time recovery and `cake debug blobs` use the existing shared content-id traversal, so an unreferenced output blob is removed like an unreferenced image blob and a missing or corrupt output reference is reported the same way.
+
+### Consequences
+
+- Good: the raw record, every checkpoint retained tail, and a fork share one copy of a large output instead of duplicating its text.
+- Good: a checkpoint that retains a large output stays under the eight-MiB ceiling without weakening the self-contained projection.
+- Good: a corrupt or missing output payload fails before a provider request rather than sending empty text.
+- Good: session format version 4, provider wire shapes, and stream-json remain unchanged; legacy inline records load without a blob read.
+- Bad: a session with large outputs is now two filesystem entries, and copying only the JSONL breaks its references until the blob directory is restored.
+- Bad: a binary without this feature cannot load a reference-bearing `function_call_output`, because the text is absent. That is the same explicit forward-compatibility break the image decision accepted.
+- Bad: outputs below 16 KiB still count toward the checkpoint ceiling. The threshold trades fewer blob files for less deduplication of medium outputs.
+- Bad: every provider-bound load reads and hashes each referenced output. The cost is bounded by the number of large outputs in the session and is small relative to the provider request.
+
+### More Information
+
+- Task 145a and `docs/exec-plans/active/externalize-large-tool-outputs.md` for the delivery plan, measured threshold evidence, and verification.
+- The original image decision above remains in force; this amendment only widens the payload kinds that can use the same store.
+- Cake task 034f consumes the reference path for retained output text; it does not depend on the threshold value.
