@@ -1,7 +1,13 @@
 use std::collections::VecDeque;
+use std::io::Cursor;
 use std::time::Duration;
 
+use base64::Engine as _;
+use image::{DynamicImage, ImageFormat, Rgb, RgbImage};
+
 use super::*;
+use crate::clients::image_budget::{ImageBudgetChange, ImageOwner, ImageSlot, plan_image_budget};
+use crate::config::blob_store::ContentId;
 use crate::config::model::{ApiType, ModelConfig, ReasoningEffort};
 use crate::session_telemetry::TerminationClassification;
 use crate::types::compaction::{
@@ -66,17 +72,68 @@ fn output(call_id: &str, text: &str) -> RetainedRecord {
     ))
 }
 
+fn tiny_png_bytes() -> Vec<u8> {
+    let image = DynamicImage::ImageRgb8(RgbImage::from_pixel(2, 2, Rgb([220, 30, 30])));
+    let mut bytes = Vec::new();
+    image
+        .write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
+        .unwrap();
+    bytes
+}
+
+fn png_image_part(bytes: usize) -> ImagePart {
+    let mut png = tiny_png_bytes();
+    if png.len() < bytes {
+        png.resize(bytes, 0);
+    }
+    ImagePart {
+        media_type: "image/png".to_string(),
+        data_base64: base64::engine::general_purpose::STANDARD.encode(png),
+        content_id: None,
+    }
+}
+
 fn image_output(call_id: &str, bytes: usize) -> RetainedRecord {
     let mut record = output(call_id, "ReadImage");
     let RetainedConversationRecord::FunctionCallOutput(data) = &mut record.record else {
         unreachable!()
     };
-    data.images.push(ImagePart {
-        media_type: "image/png".to_string(),
-        data_base64: "A".repeat(bytes),
-        content_id: None,
-    });
+    data.images.push(png_image_part(bytes));
     record
+}
+
+fn with_content_id(mut image: ImagePart) -> ImagePart {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&image.data_base64)
+        .unwrap();
+    image.content_id = Some(ContentId::from_bytes(&bytes).to_string());
+    image
+}
+
+fn history_image_slots<'a>(
+    items: &'a [ConversationItem],
+    pinned_items: &[usize],
+) -> Vec<ImageSlot<'a>> {
+    let mut slots = Vec::new();
+    for (item_index, item) in items.iter().enumerate() {
+        let images = match item {
+            ConversationItem::Message { images, .. }
+            | ConversationItem::FunctionCallOutput { images, .. } => images.as_slice(),
+            ConversationItem::Reasoning { .. } | ConversationItem::FunctionCall { .. } => &[],
+        };
+        for (image_index, image) in images.iter().enumerate() {
+            slots.push(ImageSlot {
+                ordinal: slots.len() + 1,
+                owner: ImageOwner {
+                    item: item_index,
+                    image: image_index,
+                },
+                image,
+                pinned: pinned_items.contains(&item_index),
+            });
+        }
+    }
+    slots
 }
 
 fn pinned(mut record: RetainedRecord, pin: PinReason) -> RetainedRecord {
@@ -91,6 +148,8 @@ fn model() -> ModelIdentity {
         reasoning_effort: None,
     }
 }
+
+const DEFAULT_IMAGE_POLICY: ResolvedImagePolicy = ResolvedImagePolicy::defaults();
 
 fn input<'a>(
     source: &'a [RetainedRecord],
@@ -112,6 +171,7 @@ fn input<'a>(
         measured: None,
         has_active_checkpoint: false,
         consumed_image_indices: consumed,
+        image_policy: &DEFAULT_IMAGE_POLICY,
         session_id: Uuid::nil(),
         task_id: Uuid::nil(),
         model: model(),
@@ -346,6 +406,196 @@ fn prepare_keeps_large_payloads_out_of_the_checkpoint_ceiling() {
     assert!(checkpoint_bytes_with_reservation(&checkpoint).unwrap() < MAX_CHECKPOINT_RECORD_BYTES);
 }
 
+#[test]
+fn compaction_and_request_plan_images_identically() {
+    let mut current = user("current request");
+    let RetainedConversationRecord::Message(data) = &mut current.record else {
+        unreachable!()
+    };
+    data.images.push(png_image_part(64));
+
+    let source = vec![
+        message(Role::System, "system"),
+        call("old-1"),
+        output("old-1", &"o".repeat(40_000)),
+        call("old-2"),
+        output("old-2", &"p".repeat(40_000)),
+        current,
+        call("late-image"),
+        image_output("late-image", 64),
+        assistant("done"),
+    ];
+
+    let policy = ResolvedImagePolicy {
+        max_images: 1,
+        ..ResolvedImagePolicy::defaults()
+    };
+    let consumed = [5_usize, 7];
+    let mut compaction_input = input(&source, 1, Some(5), Some(10_000), &consumed);
+    compaction_input.image_policy = &policy;
+    let prepared = prepared(prepare(compaction_input).unwrap());
+
+    assert_eq!(prepared.image_plan.report.original_count, 2);
+    assert_eq!(prepared.image_plan.report.emitted_count, 1);
+    assert!(matches!(
+        prepared.image_plan.report.images[1].change,
+        ImageBudgetChange::Omitted(_)
+    ));
+    assert!(
+        prepared
+            .retired_exchanges
+            .iter()
+            .flatten()
+            .all(|record| record_images(record).is_empty())
+    );
+
+    let items: Vec<ConversationItem> = source
+        .iter()
+        .map(RetainedRecord::to_conversation_item)
+        .collect();
+    let slots = history_image_slots(&items, &[5]);
+    let ordinary_plan = plan_image_budget(&slots, &policy).unwrap();
+    assert_eq!(ordinary_plan, prepared.image_plan);
+}
+
+#[test]
+fn pinned_over_budget_retained_image_is_no_fit_and_unchanged() {
+    let mut current = user("current request");
+    let RetainedConversationRecord::Message(data) = &mut current.record else {
+        unreachable!()
+    };
+    data.images.push(png_image_part(64));
+    data.images.push(png_image_part(64));
+
+    let source = vec![
+        message(Role::System, "system"),
+        call("old"),
+        output("old", &"q".repeat(40_000)),
+        current,
+        assistant("done"),
+    ];
+    let original_images = record_images(&source[3]).to_vec();
+    let policy = ResolvedImagePolicy {
+        max_images: 1,
+        ..ResolvedImagePolicy::defaults()
+    };
+    let consumed = [3_usize];
+    let mut compaction_input = input(&source, 1, Some(3), Some(10_000), &consumed);
+    compaction_input.image_policy = &policy;
+    let outcome = prepare(compaction_input).unwrap();
+
+    let reason = outcome
+        .no_fit_reason()
+        .expect("pinned images alone exceed the count budget");
+    assert!(reason.contains("image count budget"), "{reason}");
+    assert!(reason.contains("2 pinned image(s)"), "{reason}");
+    assert_eq!(record_images(&source[3]), original_images.as_slice());
+}
+
+#[test]
+fn pinned_image_that_cannot_fit_is_no_fit() {
+    let mut current = user("current request");
+    let RetainedConversationRecord::Message(data) = &mut current.record else {
+        unreachable!()
+    };
+    let mut image = png_image_part(64);
+    image.media_type = "image/tiff".to_string();
+    data.images.push(image);
+
+    let source = vec![
+        message(Role::System, "system"),
+        call("old"),
+        output("old", &"s".repeat(40_000)),
+        current,
+        assistant("done"),
+    ];
+    let original_images = record_images(&source[3]).to_vec();
+    let policy = ResolvedImagePolicy {
+        max_bytes: 8,
+        ..ResolvedImagePolicy::defaults()
+    };
+    let consumed = [3_usize];
+    let mut compaction_input = input(&source, 1, Some(3), Some(10_000), &consumed);
+    compaction_input.image_policy = &policy;
+    let outcome = prepare(compaction_input).unwrap();
+
+    let reason = outcome
+        .no_fit_reason()
+        .expect("an opaque pinned image over the byte budget cannot fit");
+    assert!(reason.contains("cannot fit the image budget"), "{reason}");
+    assert!(reason.contains("1 pinned image(s)"), "{reason}");
+    assert_eq!(record_images(&source[3]), original_images.as_slice());
+}
+
+#[test]
+fn unpinned_over_budget_image_is_omitted_from_the_estimate_but_retained() {
+    let mut first = image_output("image-1", 64);
+    let RetainedConversationRecord::FunctionCallOutput(data) = &mut first.record else {
+        unreachable!()
+    };
+    data.images[0] = with_content_id(data.images[0].clone());
+    let mut second = image_output("image-2", 64);
+    let RetainedConversationRecord::FunctionCallOutput(data) = &mut second.record else {
+        unreachable!()
+    };
+    data.images[0] = with_content_id(data.images[0].clone());
+
+    let source = vec![
+        message(Role::System, "system"),
+        call("old"),
+        output("old", &"r".repeat(40_000)),
+        call("image-1"),
+        first,
+        call("image-2"),
+        second,
+        assistant("done"),
+    ];
+    let original_images: Vec<ImagePart> = [4_usize, 6]
+        .into_iter()
+        .flat_map(|index| record_images(&source[index]).iter().cloned())
+        .collect();
+    let policy = ResolvedImagePolicy {
+        max_images: 1,
+        ..ResolvedImagePolicy::defaults()
+    };
+    let consumed = [4_usize, 6];
+    let mut compaction_input = input(&source, 1, None, Some(10_000), &consumed);
+    compaction_input.image_policy = &policy;
+    let prepared = prepared(prepare(compaction_input).unwrap());
+
+    assert_eq!(prepared.image_plan.report.original_count, 2);
+    assert_eq!(prepared.image_plan.report.emitted_count, 1);
+    assert!(matches!(
+        prepared.image_plan.report.images[0].change,
+        ImageBudgetChange::Omitted(_)
+    ));
+    let retained_images: Vec<ImagePart> = prepared
+        .retained
+        .iter()
+        .flat_map(|record| record_images(record).iter().cloned())
+        .collect();
+    assert_eq!(retained_images, original_images);
+    assert!(
+        retained_images
+            .iter()
+            .all(|image| image.content_id.is_some())
+    );
+
+    let retained_items = source_items(&prepared.retained);
+    let slots = history_image_slots(&retained_items, &[]);
+    let owners: Vec<ImageOwner> = slots.iter().map(|slot| slot.owner).collect();
+    drop(slots);
+    let mut pruned = retained_items.clone();
+    apply_plan_to_history(&mut pruned, &owners, prepared.image_plan.clone()).unwrap();
+    let prefix: Vec<ConversationItem> = source[..1]
+        .iter()
+        .map(RetainedRecord::to_conversation_item)
+        .collect();
+    let expected = estimate_after(&prefix, &pruned, prepared.summary_tokens, 0);
+    assert_eq!(prepared.estimated_input.after_tokens, expected);
+    assert!(estimate_items_tokens(&pruned) < estimate_items_tokens(&retained_items));
+}
+
 #[tokio::test]
 async fn summarize_single_request_records_usage_and_validates_the_checkpoint() {
     let mut source = vec![message(Role::System, "system"), user("current request")];
@@ -466,6 +716,7 @@ fn summarize_rejects_more_than_four_logical_requests() {
     let prepared = PreparedCompaction {
         checkpoint_id: "checkpoint-1".to_string(),
         retained: Vec::new(),
+        image_plan: ImageBudgetPlan::default(),
         retired_exchanges: (0..5)
             .map(|index| vec![assistant(&format!("{index} {}", "word ".repeat(75_000)))])
             .collect(),
@@ -526,6 +777,7 @@ fn measured_basis_requires_complete_matching_fresh_usage() {
         measured,
         has_active_checkpoint: active,
         consumed_image_indices: &[],
+        image_policy: &DEFAULT_IMAGE_POLICY,
         session_id: Uuid::nil(),
         task_id: Uuid::nil(),
         model: model(),

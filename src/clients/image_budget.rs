@@ -371,7 +371,7 @@ pub struct ImageBudgetReport {
 }
 
 /// A complete request image plan and its diagnostics.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ImageBudgetPlan {
     /// One decision per input slot, in source order.
     pub entries: Vec<ImagePlanEntry>,

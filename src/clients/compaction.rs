@@ -26,10 +26,15 @@ use uuid::Uuid;
 use crate::clients::agent::{AttemptPurpose, TurnUsageSettlement};
 use crate::clients::agent_runner::AgentRunner;
 use crate::clients::backend::Backend;
+use crate::clients::image_budget::{
+    ImageBudgetError, ImageBudgetPlan, ImageOwner, ImageSlot, apply_plan_to_history,
+    plan_image_budget,
+};
 use crate::clients::termination::{self, IntendedLimits, TurnEvidence};
 use crate::clients::tools::Tool;
 use crate::config::blob_store::TOOL_OUTPUT_EXTERNALIZATION_THRESHOLD_BYTES;
 use crate::config::model::ResolvedModelConfig;
+use crate::config::settings::ResolvedImagePolicy;
 use crate::session_telemetry::{AgentRunnerTelemetryEvent, ProviderTermination};
 use crate::types::compaction::{
     CompactionData, CompactionTrigger, EstimateBasis, EstimatedInput, HISTORICAL_SUMMARY_MARKER,
@@ -215,6 +220,8 @@ pub struct PreparationInput<'a> {
     /// accepted main response. Every other image-bearing record must carry an
     /// `unconsumed_image` pin.
     pub consumed_image_indices: &'a [usize],
+    /// The request image policy used to measure the retained tail.
+    pub image_policy: &'a ResolvedImagePolicy,
     pub session_id: Uuid,
     pub task_id: Uuid,
     pub model: ModelIdentity,
@@ -256,6 +263,11 @@ impl PrepareOutcome {
 pub struct PreparedCompaction {
     pub checkpoint_id: String,
     pub retained: Vec<RetainedRecord>,
+    /// The read-only image plan for the retained tail.
+    ///
+    /// Retained records keep their original image references; this plan is
+    /// used only to estimate the request projection.
+    pub image_plan: ImageBudgetPlan,
     /// Retired whole exchanges, oldest first, for the summary caller.
     pub retired_exchanges: Vec<Vec<RetainedRecord>>,
     pub estimated_input: EstimatedInput,
@@ -380,17 +392,12 @@ fn source_metadata_tokens(records: &[RetainedRecord]) -> u64 {
 /// retained tail, and fixed request surface.
 fn estimate_after(
     prefix: &[ConversationItem],
-    retained: &[RetainedRecord],
+    retained_items: &[ConversationItem],
     summary_tokens: u64,
     fixed_tokens: u64,
 ) -> u64 {
     let prefix_tokens = estimate_items_tokens(prefix);
-    let retained_tokens = estimate_items_tokens(
-        &retained
-            .iter()
-            .map(RetainedRecord::to_conversation_item)
-            .collect::<Vec<_>>(),
-    );
+    let retained_tokens = estimate_items_tokens(retained_items);
     prefix_tokens
         .saturating_add(estimate_text_tokens(HISTORICAL_SUMMARY_MARKER))
         .saturating_add(summary_tokens)
@@ -763,7 +770,7 @@ pub fn prepare(input: PreparationInput<'_>) -> anyhow::Result<PrepareOutcome> {
     let minimum_reduction =
         before_tokens.saturating_add(MIN_REDUCTION_DIVISOR - 1) / MIN_REDUCTION_DIVISOR;
     let checkpoint_id = Uuid::new_v4().to_string();
-    let Some((retired_ranges, after_tokens)) = select_exchanges(
+    let selection = select_exchanges(
         &input,
         &source,
         &body_exchanges,
@@ -773,26 +780,60 @@ pub fn prepare(input: PreparationInput<'_>) -> anyhow::Result<PrepareOutcome> {
         resolved,
         fixed_tokens,
         &checkpoint_id,
-    ) else {
-        return Ok(no_fit_outcome(
-            &source,
-            &body_exchanges,
-            before_tokens,
-            minimum_reduction,
-            resolved,
-        ));
-    };
-
-    Ok(finalize_prepared(
+    )?;
+    Ok(outcome_from_selection(
+        selection,
         &input,
         &source,
-        &retired_ranges,
+        &body_exchanges,
         before_tokens,
-        after_tokens,
+        minimum_reduction,
         basis,
         checkpoint_id,
         resolved,
     ))
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the selection already carries the candidate; finishing it needs the same envelope"
+)]
+fn outcome_from_selection(
+    selection: Selection,
+    input: &PreparationInput<'_>,
+    source: &[RetainedRecord],
+    body_exchanges: &[Exchange],
+    before_tokens: u64,
+    minimum_reduction: u64,
+    basis: EstimateBasis,
+    checkpoint_id: String,
+    resolved: ResolvedCompactionPolicy,
+) -> PrepareOutcome {
+    match selection {
+        Selection::Fits {
+            retired_ranges,
+            after_tokens,
+            image_plan,
+        } => finalize_prepared(
+            input,
+            source,
+            &retired_ranges,
+            before_tokens,
+            after_tokens,
+            basis,
+            checkpoint_id,
+            resolved,
+            image_plan,
+        ),
+        Selection::PinnedNoFit(reason) => PrepareOutcome::NoFit { reason },
+        Selection::None => no_fit_outcome(
+            source,
+            body_exchanges,
+            before_tokens,
+            minimum_reduction,
+            resolved,
+        ),
+    }
 }
 
 fn measured_basis_is_valid(
@@ -839,18 +880,141 @@ fn retired_indices(ranges: &[Range<usize>]) -> std::collections::HashSet<usize> 
     retired
 }
 
+fn retained_source_indices(
+    source_len: usize,
+    prefix_len: usize,
+    retired_ranges: &[Range<usize>],
+) -> Vec<usize> {
+    let retired = retired_indices(retired_ranges);
+    (prefix_len..source_len)
+        .filter(|index| !retired.contains(index))
+        .collect()
+}
+
 fn retained_excluding(
     source: &[RetainedRecord],
     prefix_len: usize,
     retired_ranges: &[Range<usize>],
 ) -> Vec<RetainedRecord> {
-    let retired = retired_indices(retired_ranges);
-    source[prefix_len..]
-        .iter()
-        .enumerate()
-        .filter(|(offset, _)| !retired.contains(&(offset + prefix_len)))
-        .map(|(_, record)| record.clone())
+    retained_source_indices(source.len(), prefix_len, retired_ranges)
+        .into_iter()
+        .map(|index| source[index].clone())
         .collect()
+}
+
+/// Mark every source record that image planning must treat as pinned.
+///
+/// A checkpoint can never retire a pinned exchange, so every image in one is
+/// pinned. A record's own pin also protects it.
+fn pinned_source_records(source: &[RetainedRecord], exchanges: &[Exchange]) -> Vec<bool> {
+    let mut pinned: Vec<bool> = source.iter().map(|record| record.pin.is_some()).collect();
+    for exchange in exchanges {
+        if exchange.contains_pin(source) {
+            for index in exchange.range.clone() {
+                pinned[index] = true;
+            }
+        }
+    }
+    pinned
+}
+
+struct PlannedRetainedImages {
+    items: Vec<ConversationItem>,
+    plan: ImageBudgetPlan,
+}
+
+enum RetainedImageFailure {
+    NoFit(String),
+    Hard(anyhow::Error),
+}
+
+fn retained_image_slots<'a>(
+    retained: &'a [RetainedRecord],
+    source_indices: &[usize],
+    pinned_source: &[bool],
+) -> (Vec<ImageSlot<'a>>, Vec<ImageOwner>, usize) {
+    let mut slots = Vec::new();
+    let mut owners = Vec::new();
+    let mut pinned_count = 0;
+    for (item_index, (record, source_index)) in retained.iter().zip(source_indices).enumerate() {
+        let pinned = pinned_source.get(*source_index).copied().unwrap_or(false);
+        let images = record_images(record);
+        if pinned {
+            pinned_count += images.len();
+        }
+        for (image_index, image) in images.iter().enumerate() {
+            let owner = ImageOwner {
+                item: item_index,
+                image: image_index,
+            };
+            slots.push(ImageSlot {
+                ordinal: slots.len() + 1,
+                owner,
+                image,
+                pinned,
+            });
+            owners.push(owner);
+        }
+    }
+    (slots, owners, pinned_count)
+}
+
+fn pinned_image_no_fit_reason(error: &ImageBudgetError, pinned_count: usize) -> Option<String> {
+    match error {
+        ImageBudgetError::PinnedExceedsBudget {
+            budget,
+            used,
+            limit,
+            pinned_images,
+        } => Some(format!(
+            "pinned compaction images exceed the image {budget} budget: {used} used, \
+             {limit} allowed across {pinned_images} pinned image(s)"
+        )),
+        ImageBudgetError::PinnedCannotFit {
+            slot,
+            media_type,
+            detail,
+        } => Some(format!(
+            "pinned compaction image {slot} ({media_type}) cannot fit the image budget: {detail} \
+             ({pinned_count} pinned image(s))"
+        )),
+        ImageBudgetError::InvalidBase64 { .. }
+        | ImageBudgetError::DigestMismatch { .. }
+        | ImageBudgetError::DimensionProbe { .. }
+        | ImageBudgetError::DecompressionBomb { .. } => None,
+    }
+}
+
+/// Plan the retained tail without mutating its records.
+///
+/// The returned items are a request-only clone with replacements and markers
+/// applied for estimation. The records themselves keep their original image
+/// references.
+fn plan_retained_images(
+    retained: &[RetainedRecord],
+    source_indices: &[usize],
+    pinned_source: &[bool],
+    policy: &ResolvedImagePolicy,
+) -> Result<PlannedRetainedImages, RetainedImageFailure> {
+    let (slots, owners, pinned_count) =
+        retained_image_slots(retained, source_indices, pinned_source);
+    let plan = match plan_image_budget(&slots, policy) {
+        Ok(plan) => plan,
+        Err(error) => {
+            return Err(
+                pinned_image_no_fit_reason(&error, pinned_count).map_or_else(
+                    || RetainedImageFailure::Hard(error.into()),
+                    RetainedImageFailure::NoFit,
+                ),
+            );
+        },
+    };
+    drop(slots);
+    let mut items = source_items(retained);
+    if let Err(error) = apply_plan_to_history(&mut items, &owners, plan.clone()) {
+        return Err(RetainedImageFailure::Hard(error));
+    }
+    Ok(PlannedRetainedImages { items, plan })
 }
 
 fn meets_bounds(
@@ -862,6 +1026,16 @@ fn meets_bounds(
     let meets_target = target_tokens.is_none_or(|target| after_tokens <= target);
     let meets_reduction = before_tokens.saturating_sub(after_tokens) >= minimum_reduction;
     meets_target && meets_reduction
+}
+
+enum Selection {
+    Fits {
+        retired_ranges: Vec<Range<usize>>,
+        after_tokens: u64,
+        image_plan: ImageBudgetPlan,
+    },
+    PinnedNoFit(String),
+    None,
 }
 
 #[expect(
@@ -878,15 +1052,38 @@ fn select_exchanges(
     resolved: ResolvedCompactionPolicy,
     fixed_tokens: u64,
     checkpoint_id: &str,
-) -> Option<(Vec<Range<usize>>, u64)> {
+) -> anyhow::Result<Selection> {
+    let pinned_source = pinned_source_records(source, body_exchanges);
     let mut retired_ranges: Vec<Range<usize>> = Vec::new();
     for exchange in body_exchanges {
         if exchange.contains_pin(source) {
             continue;
         }
         retired_ranges.push(exchange.range.clone());
-        let retained = retained_excluding(source, input.prompt_prefix_len, &retired_ranges);
-        let after_tokens = estimate_after(prefix, &retained, resolved.summary_tokens, fixed_tokens);
+        let retained_indices =
+            retained_source_indices(source.len(), input.prompt_prefix_len, &retired_ranges);
+        let retained: Vec<RetainedRecord> = retained_indices
+            .iter()
+            .map(|index| source[*index].clone())
+            .collect();
+        let planned = match plan_retained_images(
+            &retained,
+            &retained_indices,
+            &pinned_source,
+            input.image_policy,
+        ) {
+            Ok(planned) => planned,
+            Err(RetainedImageFailure::NoFit(reason)) => {
+                return Ok(Selection::PinnedNoFit(reason));
+            },
+            Err(RetainedImageFailure::Hard(error)) => return Err(error),
+        };
+        let after_tokens = estimate_after(
+            prefix,
+            &planned.items,
+            resolved.summary_tokens,
+            fixed_tokens,
+        );
         if !meets_bounds(
             before_tokens,
             after_tokens,
@@ -908,10 +1105,14 @@ fn select_exchanges(
         if checkpoint_bytes_with_reservation(&checkpoint)
             .is_ok_and(|bytes| bytes <= MAX_CHECKPOINT_RECORD_BYTES)
         {
-            return Some((retired_ranges, after_tokens));
+            return Ok(Selection::Fits {
+                retired_ranges,
+                after_tokens,
+                image_plan: planned.plan,
+            });
         }
     }
-    None
+    Ok(Selection::None)
 }
 
 fn no_fit_outcome(
@@ -950,6 +1151,7 @@ fn finalize_prepared(
     basis: EstimateBasis,
     checkpoint_id: String,
     resolved: ResolvedCompactionPolicy,
+    image_plan: ImageBudgetPlan,
 ) -> PrepareOutcome {
     let retired_exchanges: Vec<Vec<RetainedRecord>> = retired_ranges
         .iter()
@@ -964,6 +1166,7 @@ fn finalize_prepared(
     PrepareOutcome::Prepared(Box::new(PreparedCompaction {
         checkpoint_id,
         retained,
+        image_plan,
         retired_exchanges,
         estimated_input: EstimatedInput {
             before_tokens,
