@@ -22,7 +22,8 @@ use crate::cli::{
 };
 use crate::clients::{GrantReport, SandboxPolicy, builtin_tool_inventory};
 use crate::config::hooks::{HookGroup, HookMatcher, HooksLoader};
-use crate::config::settings::{JudgeSettings, LoadedSettings, ResolvedLimits};
+use crate::config::settings::MAX_IMAGE_EDGE;
+use crate::config::settings::{JudgeSettings, LoadedSettings, ResolvedImagePolicy, ResolvedLimits};
 use crate::config::skills::{
     SkillCatalog, SkillConfig, SkillDiagnostic, discover_skills_with_paths, parse_skill_path_list,
 };
@@ -194,6 +195,7 @@ struct SettingsSnapshot {
     skills: SkillSettingsSnapshot,
     tools_enabled: Option<Vec<String>>,
     limits: LimitsSnapshot,
+    images: ImagesSnapshot,
     judge: JudgeSnapshot,
 }
 
@@ -253,6 +255,28 @@ impl From<&ResolvedLimits> for LimitsSnapshot {
     }
 }
 
+/// Effective per-request image policy, including the source-read cap.
+#[derive(Debug, Serialize)]
+struct ImagesSnapshot {
+    max_images: usize,
+    max_bytes: usize,
+    max_pixels: u64,
+    read_image_max_bytes: Option<usize>,
+    max_edge: u32,
+}
+
+impl ImagesSnapshot {
+    const fn build(images: &ResolvedImagePolicy, limits: &ResolvedLimits) -> Self {
+        Self {
+            max_images: images.max_images,
+            max_bytes: images.max_bytes,
+            max_pixels: images.max_pixels,
+            read_image_max_bytes: limits.tool_limits.read_image_max_bytes,
+            max_edge: MAX_IMAGE_EDGE,
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct JudgeSnapshot {
     enabled: bool,
@@ -295,6 +319,7 @@ impl SettingsSnapshot {
             },
             tools_enabled: loaded.tools_enabled.clone(),
             limits: LimitsSnapshot::from(&loaded.limits),
+            images: ImagesSnapshot::build(&loaded.images, &loaded.limits),
             judge: JudgeSnapshot::from(&loaded.judge),
         }
     }
@@ -1089,6 +1114,16 @@ impl ConfigReport {
             option_label(limits.read_image_max_bytes, "unlimited"),
             option_label(limits.hook_output_limit, "unlimited"),
         );
+        let images = &self.settings.images;
+        _ = writeln!(
+            output,
+            "  images: max_images={}, max_bytes={}, max_pixels={}, read_image_max_bytes={}, max_edge={}",
+            images.max_images,
+            images.max_bytes,
+            images.max_pixels,
+            option_label(images.read_image_max_bytes, "unlimited"),
+            images.max_edge,
+        );
         let judge = &self.settings.judge;
         _ = writeln!(
             output,
@@ -1396,5 +1431,24 @@ mod tests {
         assert_eq!(value["max_turns"], 9);
         assert_eq!(value["max_tool_calls"], serde_json::Value::Null);
         assert_eq!(value["bash_output_max_bytes"], 1234);
+    }
+
+    #[test]
+    fn images_snapshot_includes_request_budgets_and_source_cap() {
+        let images = ResolvedImagePolicy {
+            max_images: 4,
+            max_bytes: 2_000_000,
+            max_pixels: 12_000_000,
+        };
+        let mut limits = ResolvedLimits::default();
+        limits.tool_limits.read_image_max_bytes = Some(32 * 1024 * 1024);
+
+        let snapshot = ImagesSnapshot::build(&images, &limits);
+        let value = serde_json::to_value(&snapshot).expect("images serialize");
+        assert_eq!(value["max_images"], 4);
+        assert_eq!(value["max_bytes"], 2_000_000);
+        assert_eq!(value["max_pixels"], 12_000_000);
+        assert_eq!(value["read_image_max_bytes"], 32 * 1024 * 1024);
+        assert_eq!(value["max_edge"], 2048);
     }
 }

@@ -152,7 +152,7 @@ fn read_bounded(path: &Path, cap: Option<usize>) -> Result<Vec<u8>, String> {
 /// read an image rejects the entire request, stranding a task over a file that
 /// is perfectly valid. Shrinking here keeps a large screenshot or photo usable
 /// instead of poisoning the conversation that carries it.
-const MAX_IMAGE_DIMENSION: u32 = 2048;
+const MAX_IMAGE_DIMENSION: u32 = crate::config::settings::MAX_IMAGE_EDGE;
 
 /// Ceiling on decoded image memory, so a small compressed file that expands to
 /// gigabytes is refused instead of exhausting the process.

@@ -137,6 +137,9 @@ fn debug_config_text_reports_effective_sections_without_the_credential() {
     assert!(report.contains("Effective sets:"));
     assert!(report.contains("Tools\n"));
     assert!(report.contains("Skills: all (default); selected 1, filtered 0"));
+    assert!(report.contains(
+        "images: max_images=8, max_bytes=16777216, max_pixels=24000000, read_image_max_bytes=5242880, max_edge=2048"
+    ));
     assert!(report.contains("Hooks\n"));
     assert!(report.contains("Toolbox (describe probing skipped)"));
     assert!(!report.contains("actual-secret-value"));
@@ -203,6 +206,16 @@ fn assert_config_json_document(env: &TestEnv, document: &serde_json::Value) {
     assert_eq!(document["data"]["project_trust"]["mode"], "inspect");
     assert_eq!(document["data"]["system_prompt"]["source"], "builtin");
     assert_eq!(document["data"]["tools"]["source"], "default");
+    assert_eq!(
+        document["data"]["settings"]["images"],
+        serde_json::json!({
+            "max_images": 8,
+            "max_bytes": 16_777_216,
+            "max_pixels": 24_000_000,
+            "read_image_max_bytes": 5_242_880,
+            "max_edge": 2048,
+        })
+    );
     assert_eq!(
         document["data"]["tools"]["builtin"],
         serde_json::json!(["Bash", "BashSession", "Edit", "Read", "Write"])

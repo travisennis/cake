@@ -17,8 +17,8 @@ The feature is an additive configuration surface with one deliberate default cha
 - [x] (2026-11-14) Drafted ADR 062 as proposed; it is the gate before code changes.
 - [x] (2026-11-14) Drafted this ExecPlan.
 - [x] (2026-11-14) Trav accepted ADR 062 as written: 32 MiB source cap, `[images]` budgets of 8 / 16 MiB / 24 MP, and the recent-user-message pin rule.
-- [ ] Milestone 1: add `[images]` settings, defaults, profile overlay, resolution, diagnostics, and the `cake init` template.
-- [ ] Milestone 1: prove defaults, per-key precedence, profile precedence, zero and negative rejection, unknown-key warnings, and generated template content.
+- [x] (2026-11-14) Milestone 1: added `[images]` settings, compiled defaults, global/project/profile per-key merging, `ResolvedImagePolicy` on `LoadedSettings`, `cake debug config` image diagnostics, and the `cake init` template comments.
+- [x] (2026-11-14) Milestone 1: proved defaults, per-key precedence, profile precedence, zero and negative rejection, unknown-key warnings, low-authority preservation, and generated template content.
 - [ ] Milestone 2: extract the codec helpers into `src/clients/image_budget.rs`, raise the source-read default to 32 MiB, and add the 100-megapixel probe before full decode.
 - [ ] Milestone 2: prove PNG, JPEG, GIF, and WebP downscaling; aspect ratio; no upscale; byte-identical source files; over-limit source rejection; decompression-bomb rejection; and bounded memory.
 - [ ] Milestone 3: implement the image planner, digest verification, deterministic selection, omission markers, and the normal-request adapter.
@@ -58,7 +58,11 @@ The feature is an additive configuration surface with one deliberate default cha
 
 ## Outcomes & Retrospective
 
-Not started. The plan is waiting for ADR 062 acceptance. On completion, record the delivered settings, the source-cap change, the planner API, the exact verification commands and counts, any skipped platform check, and whether pressure recovery's 034h integration needed a planner change. Move this plan to `docs/exec-plans/completed/` only when the whole task is complete.
+Milestone 1 delivered 2026-11-14. `[images]` now has `max_images = 8`, `max_bytes = 16777216`, and `max_pixels = 24000000`; each is a positive integer with no `"unlimited"` value. Global, trusted-project, and `[profiles.NAME.images]` layers merge per key, the section is low-authority, and unknown keys warn with the source file and section. `cake debug config` reports the resolved budgets plus `read_image_max_bytes` and `max_edge = 2048`, and `cake init` documents the section separately from the source-read cap.
+
+Focused verification: `cargo test --bin cake settings` (125 passed), `cargo test --bin cake init` (38), `cargo test --bin cake config_report` (4), `cargo test --test debug_config` (19), and the trust suite after adding the low-authority assertion. `just docs-check` passed. `just check` passed with the full test suite, CC gate, strict clippy, import/dependency/module-size lints, and script fixture suites. No paid model calls.
+
+Remaining: Milestones 2 through 5. The source-read default is still five MiB until Milestone 2, and the request planner does not exist yet; the Images documentation in this milestone describes the accepted contract that Milestones 2 and 3 implement. Move this plan to `docs/exec-plans/completed/` only when the whole task is complete.
 
 ## Context and Orientation
 

@@ -69,6 +69,7 @@ fn minimal_settings(gates: GateConfiguration) -> LoadedSettings {
         system_prompt: None,
         judge: crate::config::settings::JudgeSettings::default(),
         limits: crate::config::settings::ResolvedLimits::default(),
+        images: crate::config::settings::ResolvedImagePolicy::default(),
         warnings: Vec::new(),
     }
 }

@@ -237,6 +237,7 @@ async fn explicit_no_gate_bypasses_before_model_resolution() {
         system_prompt: None,
         judge: JudgeSettings::default(),
         limits: ResolvedLimits::default(),
+        images: crate::config::settings::ResolvedImagePolicy::default(),
         warnings: Vec::new(),
     };
 

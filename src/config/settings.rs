@@ -339,6 +339,11 @@ pub struct ProfileSettings {
     /// configured key overrides the lower-precedence value.
     #[serde(default)]
     pub limits: Option<LimitsSettingsOverlay>,
+    /// Per-request image budgets overlaid onto the merged top-level
+    /// `[images]` section. Each configured key overrides the
+    /// lower-precedence value.
+    #[serde(default)]
+    pub images: Option<ImagesSettingsOverlay>,
     /// Model definitions are intentionally not supported in profiles.
     #[serde(default)]
     pub models: Option<Vec<ModelDefinition>>,
@@ -387,13 +392,17 @@ pub struct Settings {
     /// Agent-loop and tool output limits.
     #[serde(default)]
     pub limits: Option<LimitsSettingsOverlay>,
+    /// Per-request image budgets.
+    #[serde(default)]
+    pub images: Option<ImagesSettingsOverlay>,
 }
 
 impl Settings {
     /// Return a copy with every authority-bearing project key removed.
     ///
-    /// Low-authority fields (`default_model`, `[limits]`, narrowing
-    /// `[tools].enabled`, profile selection, and skill filters) are preserved.
+    /// Low-authority fields (`default_model`, `[limits]`, `[images]`,
+    /// narrowing `[tools].enabled`, profile selection, and skill filters) are
+    /// preserved.
     #[must_use]
     pub fn without_authority(&self) -> Self {
         let mut stripped = self.clone();
@@ -735,6 +744,99 @@ pub struct LimitsSettingsOverlay {
     pub hook_output_limit: Option<Limit>,
 }
 
+/// TOML-facing per-request image budget overlay.
+///
+/// Each key is a positive integer. There is deliberately no `"unlimited"`
+/// sentinel: an unbounded request image set is the behavior these budgets
+/// exist to prevent. An absent key inherits the lower-precedence value, then
+/// the compiled default.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the field names mirror the [images] settings keys"
+)]
+pub struct ImagesSettingsOverlay {
+    /// Maximum number of images in one provider request.
+    #[serde(default)]
+    pub max_images: Option<PositiveLimit>,
+    /// Maximum encoded image bytes in one provider request.
+    #[serde(default)]
+    pub max_bytes: Option<PositiveLimit>,
+    /// Maximum decoded pixels across all images in one provider request.
+    #[serde(default)]
+    pub max_pixels: Option<PositiveLimit>,
+}
+
+impl ImagesSettingsOverlay {
+    /// Apply the compiled defaults and convert every configured value into
+    /// the concrete representation used by the request planner.
+    #[must_use]
+    pub const fn resolve(&self) -> ResolvedImagePolicy {
+        ResolvedImagePolicy {
+            max_images: match self.max_images {
+                Some(limit) => limit.value() as usize,
+                None => DEFAULT_IMAGE_MAX_IMAGES as usize,
+            },
+            max_bytes: match self.max_bytes {
+                Some(limit) => limit.value() as usize,
+                None => DEFAULT_IMAGE_MAX_BYTES as usize,
+            },
+            max_pixels: match self.max_pixels {
+                Some(limit) => limit.value() as u64,
+                None => DEFAULT_IMAGE_MAX_PIXELS as u64,
+            },
+        }
+    }
+}
+
+/// Resolved per-request image policy used by the request planner.
+///
+/// Unlike [`LimitsSettingsOverlay`], this type has no absent-key or sentinel
+/// state. It is produced once after every settings layer has been merged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the field names mirror the [images] settings keys"
+)]
+pub struct ResolvedImagePolicy {
+    /// Maximum number of images in one provider request.
+    pub max_images: usize,
+    /// Maximum encoded image bytes in one provider request.
+    pub max_bytes: usize,
+    /// Maximum decoded pixels across all images in one provider request.
+    pub max_pixels: u64,
+}
+
+/// Compiled default for [`ResolvedImagePolicy::max_images`].
+pub const DEFAULT_IMAGE_MAX_IMAGES: u32 = 8;
+/// Compiled default for [`ResolvedImagePolicy::max_bytes`]: 16 MiB of encoded
+/// image bytes, before the roughly four-thirds base64 expansion.
+pub const DEFAULT_IMAGE_MAX_BYTES: u32 = 16 * 1024 * 1024;
+/// Compiled default for [`ResolvedImagePolicy::max_pixels`]: 24 megapixels
+/// across all images in one request.
+pub const DEFAULT_IMAGE_MAX_PIXELS: u32 = 24_000_000;
+/// Compiled longest-edge bound for one emitted image. An image above this
+/// edge is downscaled before it is placed in a request.
+pub const MAX_IMAGE_EDGE: u32 = 2048;
+
+impl ResolvedImagePolicy {
+    /// The compiled defaults used when no `[images]` key is configured.
+    #[must_use]
+    pub const fn defaults() -> Self {
+        Self {
+            max_images: DEFAULT_IMAGE_MAX_IMAGES as usize,
+            max_bytes: DEFAULT_IMAGE_MAX_BYTES as usize,
+            max_pixels: DEFAULT_IMAGE_MAX_PIXELS as u64,
+        }
+    }
+}
+
+impl Default for ResolvedImagePolicy {
+    fn default() -> Self {
+        Self::defaults()
+    }
+}
+
 /// Resolved runtime limits for the agent loop and tools.
 ///
 /// This type contains no TOML sentinel values or absent-key state. It is
@@ -930,6 +1032,8 @@ pub struct LoadedSettings {
     pub judge: JudgeSettings,
     /// Effective agent-loop and tool output limits after all overlays resolve.
     pub limits: ResolvedLimits,
+    /// Effective per-request image budgets after all overlays resolve.
+    pub images: ResolvedImagePolicy,
     /// Warnings about unrecognized keys in settings files, one per issue and
     /// already formatted with the source file path. Unrecognized keys are
     /// ignored (existing behavior); these warnings surface them instead of
@@ -1623,6 +1727,7 @@ impl SettingsLoader {
         }
         Self::merge_tools_settings(settings.tools.clone(), origin, source_path, acc)?;
         Self::merge_limits(settings.limits.clone(), acc);
+        Self::merge_images(settings.images.clone(), acc);
         for (name, profile) in &settings.profiles {
             acc.profiles
                 .entry(name.clone())
@@ -1693,6 +1798,26 @@ impl SettingsLoader {
         }
         if limits.bash_session_exited_ttl_seconds.is_some() {
             acc.bash_session_exited_ttl_seconds = limits.bash_session_exited_ttl_seconds;
+        }
+    }
+
+    /// Merge `[images]` fields into the accumulator.
+    ///
+    /// Absent keys keep lower-precedence values, so a project or profile
+    /// `[images]` section overrides only the keys it sets. Every key is a
+    /// positive integer; there is no `"unlimited"` sentinel.
+    const fn merge_images(images: Option<ImagesSettingsOverlay>, acc: &mut SettingsAccumulator) {
+        let Some(images) = images else {
+            return;
+        };
+        if images.max_images.is_some() {
+            acc.image_max_images = images.max_images;
+        }
+        if images.max_bytes.is_some() {
+            acc.image_max_bytes = images.max_bytes;
+        }
+        if images.max_pixels.is_some() {
+            acc.image_max_pixels = images.max_pixels;
         }
     }
 
@@ -1964,6 +2089,9 @@ struct SettingsAccumulator {
     read_max_line_bytes: Option<Limit>,
     read_image_max_bytes: Option<Limit>,
     hook_output_limit: Option<Limit>,
+    image_max_images: Option<PositiveLimit>,
+    image_max_bytes: Option<PositiveLimit>,
+    image_max_pixels: Option<PositiveLimit>,
     warnings: Vec<String>,
 }
 
@@ -2005,6 +2133,7 @@ impl SettingsAccumulator {
         self.skills.apply_overlay(settings.skills.clone());
         self.apply_tools_overlay(&settings.tools, overlay)?;
         SettingsLoader::merge_limits(settings.limits.clone(), self);
+        SettingsLoader::merge_images(settings.images.clone(), self);
         Ok(())
     }
 
@@ -2079,6 +2208,12 @@ impl SettingsAccumulator {
                 typesafe: self.typesafe,
             },
             limits: limits.resolve(),
+            images: ImagesSettingsOverlay {
+                max_images: self.image_max_images,
+                max_bytes: self.image_max_bytes,
+                max_pixels: self.image_max_pixels,
+            }
+            .resolve(),
             warnings: self.warnings,
         }
     }

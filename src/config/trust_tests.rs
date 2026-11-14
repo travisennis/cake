@@ -513,6 +513,8 @@ default_model = "test"
 enabled = ["Read"]
 [limits]
 max_turns = 4
+[images]
+max_images = 3
 "#,
     );
 
@@ -528,6 +530,7 @@ max_turns = 4
     assert_eq!(load.settings.default_model.as_deref(), Some("test"));
     assert_eq!(load.settings.tools_enabled, Some(vec!["Read".to_string()]));
     assert_eq!(load.settings.limits.max_turns, Some(4));
+    assert_eq!(load.settings.images.max_images, 3);
 }
 
 #[test]

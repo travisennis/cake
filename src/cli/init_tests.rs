@@ -100,6 +100,18 @@ fn initialize_creates_behavior_preserving_settings() {
         content.contains("\"unlimited\""),
         "generated settings must document the unlimited opt-out"
     );
+    for expected in [
+        "[images]",
+        "max_images = 8",
+        "max_bytes = 16777216",
+        "max_pixels = 24000000",
+        "separate from [limits].read_image_max_bytes",
+    ] {
+        assert!(
+            content.contains(expected),
+            "generated settings must document {expected}"
+        );
+    }
 }
 
 #[test]

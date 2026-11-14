@@ -279,6 +279,16 @@ const DEFAULT_SETTINGS: &str = r#"# Cake project settings, created by `cake init
 # edit_max_file_bytes = 16777216   # Edit input-file cap (bytes)
 # read_max_line_bytes = 10000      # Read per-line cap (bytes; "unlimited" reads a whole line into memory)
 # hook_output_limit = 65536        # Hook stdout/stderr cap per hook (bytes)
+
+# Optional per-request image budgets bound what one provider request sends.
+# They are separate from [limits].read_image_max_bytes, which caps the source
+# file ReadImage will read. Each key is a positive integer; there is no
+# "unlimited" value. See docs/configuration.md. A selected profile can also set
+# [profiles.NAME.images]; profile values override top-level values per key.
+# [images]
+# max_images = 8          # images per request
+# max_bytes = 16777216    # encoded image bytes per request (16 MiB)
+# max_pixels = 24000000   # decoded pixels per request (24 MP)
 "#;
 
 /// Generated inert `.cake/hooks.json.example` content.

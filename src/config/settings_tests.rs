@@ -2332,6 +2332,197 @@ fn read_image_max_bytes_resolves_and_accepts_unlimited() {
 }
 
 #[test]
+fn image_policy_resolves_defaults_and_rejects_non_positive_values() {
+    let overlay: ImagesSettingsOverlay = toml::from_str("").unwrap();
+    assert_eq!(overlay.resolve(), ResolvedImagePolicy::defaults());
+    assert_eq!(DEFAULT_IMAGE_MAX_IMAGES, 8);
+    assert_eq!(DEFAULT_IMAGE_MAX_BYTES, 16 * 1024 * 1024);
+    assert_eq!(DEFAULT_IMAGE_MAX_PIXELS, 24_000_000);
+    assert_eq!(MAX_IMAGE_EDGE, 2048);
+
+    let overlay: ImagesSettingsOverlay =
+        toml::from_str("max_images = 3\nmax_bytes = 1000000\nmax_pixels = 12000000\n").unwrap();
+    assert_eq!(
+        overlay.resolve(),
+        ResolvedImagePolicy {
+            max_images: 3,
+            max_bytes: 1_000_000,
+            max_pixels: 12_000_000,
+        }
+    );
+
+    for key in ["max_images", "max_bytes", "max_pixels"] {
+        for invalid in ["0", "-1", "\"unlimited\""] {
+            assert!(
+                toml::from_str::<ImagesSettingsOverlay>(&format!("{key} = {invalid}")).is_err(),
+                "{key} accepted {invalid}"
+            );
+        }
+    }
+}
+
+#[test]
+fn image_policy_global_project_and_profile_precedence() {
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"
+[[models]]
+name = "test-model"
+model = "test/model"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+
+[images]
+max_images = 3
+max_bytes = 1_000_000
+max_pixels = 10_000_000
+
+[profiles.review.images]
+max_images = 4
+max_bytes = 3_000_000
+max_pixels = 12_000_000
+"#,
+    );
+    let project = create_project_settings(
+        r"
+[images]
+max_bytes = 2_000_000
+
+[profiles.review.images]
+max_images = 5
+max_bytes = 4_000_000
+",
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(project.path()))
+    })
+    .unwrap();
+    assert_eq!(
+        loaded.images,
+        ResolvedImagePolicy {
+            max_images: 3,
+            max_bytes: 2_000_000,
+            max_pixels: 10_000_000,
+        }
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load_with_profile(Some(project.path()), Some("review"))
+    })
+    .unwrap();
+    assert_eq!(
+        loaded.images,
+        ResolvedImagePolicy {
+            max_images: 5,
+            max_bytes: 4_000_000,
+            max_pixels: 12_000_000,
+        }
+    );
+    assert!(loaded.warnings.is_empty(), "{:#?}", loaded.warnings);
+}
+
+#[test]
+fn image_policy_zero_and_negative_values_fail_to_load() {
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"
+[[models]]
+name = "test-model"
+model = "test/model"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+"#,
+    );
+
+    let zero = create_project_settings("[images]\nmax_images = 0\n");
+    let err = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(zero.path()))
+    })
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("positive integer"),
+        "expected a clear rejection of 0, got: {err}"
+    );
+
+    let negative = create_project_settings("[images]\nmax_pixels = -1\n");
+    assert!(
+        with_var("HOME", Some(home.path()), || {
+            SettingsLoader::load(Some(negative.path()))
+        })
+        .is_err()
+    );
+}
+
+#[test]
+fn unknown_image_keys_warn_with_file_and_section() {
+    let dir = create_project_settings(
+        r"
+[images]
+max_image = 3
+
+[profiles.review.images]
+max_bytes = 1000
+max_byte = 2000
+",
+    );
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
+name = "test-model"
+model = "test/model"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+"#,
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(dir.path()))
+    })
+    .unwrap();
+
+    let warnings = &loaded.warnings;
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert!(
+        warnings.iter().any(|w| w.contains("max_image")
+            && w.contains("[images]")
+            && w.contains("settings.toml")),
+        "{warnings:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("max_byte") && w.contains("[profiles.review.images]")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn image_policy_survives_without_authority() {
+    let settings: Settings = toml::from_str(
+        r#"
+directories = ["/tmp/work"]
+
+[images]
+max_images = 3
+max_bytes = 1000000
+max_pixels = 12000000
+"#,
+    )
+    .unwrap();
+
+    let stripped = settings.without_authority();
+    assert!(stripped.directories.is_empty());
+    let images = stripped.images.expect("images must be preserved");
+    assert_eq!(images.max_images.unwrap().value(), 3);
+    assert_eq!(images.max_bytes.unwrap().value(), 1_000_000);
+    assert_eq!(images.max_pixels.unwrap().value(), 12_000_000);
+}
+
+#[test]
 fn test_limits_output_budgets_default_to_compiled_values() {
     let dir = create_project_settings("");
 
@@ -2644,6 +2835,11 @@ max_turns = 10
 bash_output_max_bytes = 50000
 edit_max_file_bytes = 16777216
 
+[images]
+max_images = 6
+max_bytes = 12000000
+max_pixels = 20000000
+
 [profiles.review]
 default_model = "zen"
 directories = ["../standards"]
@@ -2654,6 +2850,9 @@ sandbox = { read_only = ["~/.local/bin/other"], writable = ["~/.cache"] }
 [profiles.review.limits]
 max_tool_calls = 50
 read_max_output_bytes = "unlimited"
+
+[profiles.review.images]
+max_images = 4
 
 [profiles.review.tools]
 enabled = ["Read"]

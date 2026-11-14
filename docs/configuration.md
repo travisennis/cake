@@ -22,7 +22,7 @@ Model definitions are global-only. A project settings file may select a global `
 
 Project `.cake/` configuration has three trust classes (ADR 053):
 
-- **Low-authority** settings load without a trust record: `default_model` and profile `default_model` naming a global model, profile selection and non-authority profile overlays, `[tools].enabled` when it only narrows, `[limits]`, project `AGENTS.md`, and skills under the default project roots. These can change behavior or cost but cannot add filesystem authority, execute code, read arbitrary host files, or select a new provider endpoint.
+- **Low-authority** settings load without a trust record: `default_model` and profile `default_model` naming a global model, profile selection and non-authority profile overlays, `[tools].enabled` when it only narrows, `[limits]`, `[images]`, project `AGENTS.md`, and skills under the default project roots. These can change behavior or cost but cannot add filesystem authority, execute code, read arbitrary host files, or select a new provider endpoint.
 - **Authority-bearing** settings require an explicit trust record: `directories`, `[sandbox].read_only` and `[sandbox].writable`, `[tools.bash].gates`, every `[gates.<name>]` table, the legacy `[tools.bash.judge]` table, `system_prompt`, `skills.path`, `.cake/hooks.json`, `.cake/hooks.local.json`, `.cake/mcp.json`, and every file under `.cake/tools/`. The same keys inside a project profile overlay also require trust.
 - **Model definitions** are user-owned global configuration. A project cannot define a `[[models]]` entry; move it to `<config>/cake/settings.toml` and select it by name.
 
@@ -67,7 +67,7 @@ cake --profile review debug config --sandbox read-only --add-dir ../shared
 cake debug config --skills debugging-cake --tools Read
 ```
 
-The report covers the settings sources and whether project authority was applied, the effective directories, sandbox lists, skill selection, tool selection, limits, and judge settings; the selected profile and model, including the credential environment variable name and whether it is present, never its value; the selected system prompt source and path, never its body; the project trust state, mode, authority-bearing files and keys, and manifest changes; the sandbox policy and effective grant counts; the built-in tool set after model, sandbox, and selection filters; selected and filtered skills with diagnostics; hook sources and group metadata with command text omitted; and toolbox directories with executable candidates and no `describe` call. Run `cake debug grants` when you need every grant source and the complete read-only set.
+The report covers the settings sources and whether project authority was applied, the effective directories, sandbox lists, skill selection, tool selection, limits, images, and judge settings; the selected profile and model, including the credential environment variable name and whether it is present, never its value; the selected system prompt source and path, never its body; the project trust state, mode, authority-bearing files and keys, and manifest changes; the sandbox policy and effective grant counts; the built-in tool set after model, sandbox, and selection filters; selected and filtered skills with diagnostics; hook sources and group metadata with command text omitted; and toolbox directories with executable candidates and no `describe` call. Run `cake debug grants` when you need every grant source and the complete read-only set.
 
 Inspection never resolves a provider credential, calls a provider, runs a hook, gate, MCP server, or toolbox executable, creates a configured writable directory or the user skill root, or opens a session. Untrusted project authority is reported but not applied; `--trust-project` accepts it for one report, and `--no-project-config` omits it. Local `--sandbox`, `--add-dir`, `--skills`, `--no-skills`, `--tools`, `--no-tools`, and `--toolbox` flags describe a one-run choice without changing defaults.
 
@@ -248,6 +248,25 @@ hook_output_limit = 65536       # Hook stdout/stderr cap per hook (bytes; defaul
 - `hook_output_limit`: maximum bytes of hook stdout and stderr captured per hook invocation. `"unlimited"` disables truncation.
 
 When a project overrides a global limit back to no cap, `"unlimited"` is the explicit value that does so.
+
+## Images
+
+The optional `[images]` section bounds the images one provider request carries. It is separate from `[limits].read_image_max_bytes`, which caps the source file `ReadImage` accepts. The request budgets apply to every image in the projected history after source acceptance.
+
+```toml
+[images]
+max_images = 8          # images per request (default 8)
+max_bytes = 16777216    # encoded image bytes per request (default 16 MiB)
+max_pixels = 24000000   # decoded pixels per request (default 24 MP)
+```
+
+Each key is a positive integer. `0`, negative values, and `"unlimited"` are rejected at load time; there is no way to disable a bound. Project `[images]` values override global values per key, and a selected profile may define `[profiles.NAME.images]`; profile values override the merged top-level values per key, with project profile values taking precedence over global profile values.
+
+`max_bytes` counts encoded image bytes before base64 encoding. The provider request body is roughly four-thirds larger because of base64 and JSON overhead. `max_pixels` counts decoded pixels; an image whose longest edge exceeds 2048 pixels is downscaled in memory before it is sent. The source file is never modified.
+
+When a request exceeds a budget, Cake keeps the newest images and replaces each older unpinned image with an explicit `[image omitted: ...]` marker. Images on the most recent user message are pinned and are never silently dropped; if those pinned images alone exceed a budget, the run fails before the provider request. Request fitting changes only the request projection, not session history or checkpoint records.
+
+`[images]` is low-authority configuration: it can change request size and cost but cannot add filesystem authority, execute code, or select a provider. `cake debug config` reports the resolved `images` values along with `read_image_max_bytes` and the 2048-pixel edge.
 
 ## Tool selection
 
