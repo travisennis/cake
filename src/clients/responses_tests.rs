@@ -1912,6 +1912,35 @@ fn build_request_json_omits_history_images_for_a_text_only_model() {
 }
 
 #[test]
+fn build_request_json_rejects_a_corrupt_image_digest() {
+    let mut config = request_config("https://api.example.com/v1", ApiType::Responses);
+    config.model_config.supports_images = true;
+    let history = vec![ConversationItem::Message {
+        role: Role::User,
+        content: "What is in this picture?".to_string(),
+        id: None,
+        status: None,
+        timestamp: None,
+        images: vec![ImagePart {
+            media_type: "image/png".to_string(),
+            data_base64: "QUJD".to_string(),
+            content_id: Some("0".repeat(64)),
+        }],
+    }];
+
+    let error = super::build_request_json(
+        &config,
+        &history,
+        &[],
+        &crate::clients::retry::RequestOverrides::default(),
+        None,
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("has content id"), "{error}");
+}
+
+#[test]
 fn build_response_request_composes_user_agent_and_auth() {
     let client = reqwest::Client::new();
     let config = request_config("https://api.example.com/v1", ApiType::Responses);

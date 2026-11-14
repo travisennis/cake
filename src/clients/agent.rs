@@ -18,7 +18,7 @@ use crate::clients::tools::{
 };
 use crate::config::model::ResolvedModelConfig;
 use crate::config::output_schema::OutputSchema;
-use crate::config::settings::ResolvedLimits;
+use crate::config::settings::{ResolvedImagePolicy, ResolvedLimits};
 use crate::config::skills::Skill;
 use crate::config::toolbox::ToolboxTool;
 use crate::hooks::HookRunner;
@@ -223,6 +223,8 @@ pub struct Agent {
     /// User-configured maximum number of tool calls executed. `None` (the
     /// default) leaves the loop uncapped.
     max_tool_calls: Option<u32>,
+    /// Per-request image budgets applied to the provider request projection.
+    image_policy: ResolvedImagePolicy,
     /// Maps SKILL.md paths to skills for path-watching `SkillActivated` records.
     /// When the Read tool targets one of these paths, a `SkillActivated`
     /// record is emitted once per skill per session.
@@ -282,6 +284,7 @@ impl Agent {
             tool_call_count: 0,
             max_turns: None,
             max_tool_calls: None,
+            image_policy: ResolvedImagePolicy::defaults(),
             skill_locations: Arc::new(HashMap::new()),
             activated_skills: Arc::new(Mutex::new(HashSet::new())),
             permission_denials: Vec::new(),
@@ -1037,6 +1040,12 @@ impl Agent {
         self
     }
 
+    /// Applies the user-configured per-request image budgets.
+    pub const fn with_image_policy(mut self, policy: &ResolvedImagePolicy) -> Self {
+        self.image_policy = *policy;
+        self
+    }
+
     /// Sets the conversation history from raw conversation items.
     ///
     /// Restore and fork seed through [`Self::with_context_seed`], which carries
@@ -1436,3 +1445,7 @@ mod session_restore_tests;
 
 #[cfg(test)]
 mod tail_only_growth_tests;
+
+#[cfg(test)]
+#[path = "agent/image_budget_tests.rs"]
+mod image_budget_tests;

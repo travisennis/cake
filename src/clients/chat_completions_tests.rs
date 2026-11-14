@@ -1281,6 +1281,33 @@ fn build_request_json_keeps_history_images_for_a_vision_model() {
 }
 
 #[test]
+fn build_request_json_rejects_a_corrupt_image_digest() {
+    let mut config = request_config("https://api.example.com/v1", ApiType::ChatCompletions);
+    config.model_config.supports_images = true;
+    let mut image = tiny_png_image();
+    image.content_id = Some("0".repeat(64));
+    let history = vec![ConversationItem::Message {
+        role: Role::User,
+        content: "What is in this picture?".to_string(),
+        id: None,
+        status: None,
+        timestamp: None,
+        images: vec![image],
+    }];
+
+    let error = super::build_request_json(
+        &config,
+        &history,
+        &[] as &[Tool],
+        &crate::clients::retry::RequestOverrides::default(),
+        None,
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("has content id"), "{error}");
+}
+
+#[test]
 fn snapshot_tool_image_parts() {
     let history = vec![
         ConversationItem::Message {

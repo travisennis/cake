@@ -6,6 +6,7 @@ use futures::StreamExt;
 
 use crate::clients::agent::{Agent, TurnResult, record_turn_usage};
 use crate::clients::backend::FinalOutputConstraint;
+use crate::clients::image_budget::prune_request;
 use crate::clients::retry::{RequestOverrides, RetryReason, RetryStatus};
 use crate::clients::termination::{
     self, ContextPressure, IntendedLimits, TerminationVerdict, TurnEvidence,
@@ -965,8 +966,15 @@ impl Agent {
         let task_id = self.task_id;
         // Requests use the projection, never the raw vector: raw offsets keep
         // their meaning for attribution while a checkpoint may replace retired
-        // history here.
+        // history here. Image pruning is request-only and happens before the
+        // first attempt, so every retry of this turn sees the same projection.
+        // A text-only model never receives images, so it does not plan them.
         let history = self.conversation.request_context();
+        let history = if self.config.model_config.supports_images {
+            prune_request(history, &self.image_policy)?
+        } else {
+            history
+        };
         let turn_index = self.turn_count.saturating_add(1);
         let runner = &self.runner;
         let runner_telemetry = self.runner_telemetry_sink();

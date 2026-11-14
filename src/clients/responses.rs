@@ -4,6 +4,7 @@ use crate::config::model::ResolvedModelConfig;
 
 use crate::clients::agent::TurnResult;
 use crate::clients::backend::{FinalOutputConstraint, ResponseDecodeError, ResponseParseError};
+use crate::clients::image_budget::verify_request_images;
 use crate::clients::provider_strategy::ProviderStrategy;
 use crate::clients::response_stall::{BodyReadOutcome, read_body};
 use crate::clients::responses_types::{
@@ -60,6 +61,9 @@ pub(super) fn build_request_json<'a>(
     overrides: &RequestOverrides,
     constraint: Option<FinalOutputConstraint<'a>>,
 ) -> anyhow::Result<Vec<u8>> {
+    if config.model_config.supports_images {
+        verify_request_images(history)?;
+    }
     let strategy = ProviderStrategy::from_config(config);
     let provider_config = strategy.responses_provider_config();
 

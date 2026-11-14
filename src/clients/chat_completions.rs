@@ -10,6 +10,7 @@ use crate::clients::chat_types::{
     ChatContent, ChatFunction, ChatFunctionCallRef, ChatMessage, ChatRequest, ChatResponse,
     ChatTool, ChatToolCallRef, ChatUsage, ResponseFormat, ResponseFormatJsonSchema,
 };
+use crate::clients::image_budget::verify_request_images;
 use crate::clients::provider_strategy::ProviderStrategy;
 use crate::clients::response_stall::{BodyReadOutcome, read_body};
 use crate::clients::retry::RequestOverrides;
@@ -59,6 +60,9 @@ pub(super) fn build_request_json<'a>(
     overrides: &RequestOverrides,
     constraint: Option<FinalOutputConstraint<'a>>,
 ) -> anyhow::Result<Vec<u8>> {
+    if config.model_config.supports_images {
+        verify_request_images(history)?;
+    }
     let mut messages = build_messages(history, config.model_config.supports_images);
     ProviderStrategy::transform_chat_messages(&mut messages);
     let chat_tools = convert_tools(tools);

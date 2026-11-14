@@ -1658,6 +1658,7 @@ impl CmdRunner for CodingAssistant {
             &config_dir,
             &resources.agents_files,
             &resources.loaded.models,
+            &resources.loaded.images,
             resources.loaded.default_model.as_deref(),
             &resources.skill_catalog,
             &resources.tool_context,
@@ -1680,7 +1681,10 @@ impl CmdRunner for CodingAssistant {
             &run_session.agent.tool_names(),
         );
 
-        run_session.agent = run_session.agent.with_limits(&resources.loaded.limits);
+        run_session.agent = run_session
+            .agent
+            .with_limits(&resources.loaded.limits)
+            .with_image_policy(&resources.loaded.images);
         run_session.attach_output_schema(prepared.output_schema.as_ref());
 
         let session_start_source =

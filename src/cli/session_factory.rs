@@ -14,7 +14,7 @@ use crate::cli::run_mode::{RunMode, SessionPersistencePlan};
 use crate::clients::mcp::McpServer;
 use crate::clients::{Agent, ToolContext};
 use crate::config::provider_identity::{self, SessionProviderIdentityCheck};
-use crate::config::settings::SkillSettings;
+use crate::config::settings::{ResolvedImagePolicy, SkillSettings};
 use crate::config::skills::Skill;
 use crate::config::toolbox::ToolboxTool;
 use crate::config::{
@@ -320,6 +320,7 @@ impl crate::CodingAssistant {
         config_dir: &Path,
         agents_files: &[AgentsFile],
         models: &HashMap<String, ModelDefinition>,
+        images: &ResolvedImagePolicy,
         default_model: Option<&str>,
         skill_catalog: &SkillCatalog,
         tool_context: &Arc<ToolContext>,
@@ -340,6 +341,7 @@ impl crate::CodingAssistant {
             skill_catalog,
             skill_locations: skill_locations(skill_catalog),
             models,
+            images,
             default_model,
             skill_settings,
             tool_context,
@@ -393,7 +395,7 @@ impl crate::CodingAssistant {
             resolved.model_config.context_window,
         );
         let tool_context = Arc::clone(inputs.tool_context);
-        Self::restored_client_and_session(
+        let mut run = Self::restored_client_and_session(
             restored,
             resolved,
             model_config_name,
@@ -406,7 +408,9 @@ impl crate::CodingAssistant {
             inputs.mcp_servers.to_vec(),
             inputs.tools_enabled,
             inputs.task_id,
-        )
+        )?;
+        run.agent = run.agent.with_image_policy(inputs.images);
+        Ok(run)
     }
 
     /// `--resume <UUID>`: restore the named session.
@@ -452,7 +456,7 @@ impl crate::CodingAssistant {
             resolved.model_config.context_window,
         );
         let tool_context = Arc::clone(inputs.tool_context);
-        Self::forked_client_and_session(
+        let mut run = Self::forked_client_and_session(
             &restored,
             resolved,
             model_config_name,
@@ -466,7 +470,9 @@ impl crate::CodingAssistant {
             inputs.mcp_servers.to_vec(),
             inputs.tools_enabled,
             inputs.task_id,
-        )
+        )?;
+        run.agent = run.agent.with_image_policy(inputs.images);
+        Ok(run)
     }
 
     /// New and ephemeral runs: start fresh from the CLI-selected model.
@@ -483,7 +489,7 @@ impl crate::CodingAssistant {
             resolved.model_config.supports_images,
             resolved.model_config.context_window,
         );
-        Ok(Self::new_client_and_session(
+        let mut run = Self::new_client_and_session(
             resolved,
             model_config_name,
             provider_identity,
@@ -496,7 +502,9 @@ impl crate::CodingAssistant {
             inputs.tools_enabled,
             inputs.task_id,
             persistence,
-        ))
+        );
+        run.agent = run.agent.with_image_policy(inputs.images);
+        Ok(run)
     }
 }
 
@@ -553,6 +561,7 @@ struct RunInputs<'a> {
     skill_catalog: &'a SkillCatalog,
     skill_locations: HashMap<PathBuf, Skill>,
     models: &'a HashMap<String, ModelDefinition>,
+    images: &'a ResolvedImagePolicy,
     default_model: Option<&'a str>,
     skill_settings: &'a SkillSettings,
     tool_context: &'a Arc<ToolContext>,
@@ -796,6 +805,7 @@ mod tests {
                     config_dir.path(),
                     &[],
                     &models,
+                    &ResolvedImagePolicy::defaults(),
                     Some("test"),
                     &SkillCatalog {
                         skills: Vec::new(),
@@ -1214,6 +1224,7 @@ mod tests {
             working_dir,
             &[],
             &test_models(),
+            &ResolvedImagePolicy::defaults(),
             Some("test"),
             &SkillCatalog {
                 skills: Vec::new(),

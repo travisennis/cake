@@ -8,6 +8,8 @@
 use super::*;
 use crate::config::model::ApiType;
 use crate::types::ImagePart;
+use base64::Engine as _;
+use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 
 use wiremock::matchers::{method, path};
@@ -64,6 +66,17 @@ impl Match for RequestsNoImage {
     }
 }
 
+/// A valid tiny JPEG, so the request planner can probe its dimensions.
+fn tiny_jpeg_base64() -> String {
+    let image =
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(2, 2, image::Rgb([255, 0, 0])));
+    let mut bytes = Vec::new();
+    image
+        .write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Jpeg)
+        .unwrap();
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
 /// A conversation with one tool-result image, as a `ReadImage` call leaves it.
 fn agent_with_tool_output_image(base_url: &str) -> Agent {
     let mut agent = test_agent_for(ApiType::ChatCompletions, base_url);
@@ -75,7 +88,7 @@ fn agent_with_tool_output_image(base_url: &str) -> Agent {
             timestamp: None,
             images: vec![ImagePart {
                 media_type: "image/jpeg".to_string(),
-                data_base64: "AAAA".to_string(),
+                data_base64: tiny_jpeg_base64(),
                 content_id: None,
             }],
         });
