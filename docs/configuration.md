@@ -230,7 +230,7 @@ read_default_end_line = 500     # Read default window (lines; default 500)
 read_max_output_bytes = 100000  # Read output cap (bytes; default 100000)
 edit_max_file_bytes = 16777216  # Edit input-file cap (bytes; default 16 MiB)
 read_max_line_bytes = 10000     # Read per-line cap (bytes; default 10000)
-read_image_max_bytes = 5242880  # ReadImage image cap (bytes; default 5 MiB)
+read_image_max_bytes = 33554432 # ReadImage source cap (bytes; default 32 MiB)
 hook_output_limit = 65536       # Hook stdout/stderr cap per hook (bytes; default 65536)
 ```
 
@@ -244,7 +244,7 @@ hook_output_limit = 65536       # Hook stdout/stderr cap per hook (bytes; defaul
 - `read_max_output_bytes`: maximum bytes of Read output before line-aligned truncation with a `continue with start_line=...` resume hint. A byte-cap stop never delivers a partial line. `"unlimited"` disables the cap.
 - `edit_max_file_bytes`: maximum bytes of an input file Edit will read. Edit checks the file size before reading and rejects a larger file without truncating or modifying it. This limit is independent of `read_max_output_bytes`. The compiled default is 16 MiB (16,777,216 bytes). `"unlimited"` disables the cap.
 - `read_max_line_bytes`: maximum bytes delivered for a single Read line before it is truncated with a marker at a UTF-8 boundary. The cap bounds memory for newline-free giant lines. `"unlimited"` re-enables reading a whole line into memory, which can starve memory for such a file.
-- `read_image_max_bytes`: maximum bytes of an image the ReadImage tool will read and send to the provider. A larger file is rejected with a model-visible error, and the read itself stops at the cap. An image whose longest edge exceeds 2048 pixels is downscaled before sending, so a large screenshot reaches the model as a readable picture instead of a rejected request. `"unlimited"` disables the cap.
+- `read_image_max_bytes`: maximum bytes of an image file the ReadImage tool will read. This is a source-read cap, not a per-request cap; `[images]` bounds what a request sends. A larger file is rejected with a model-visible error, and the read itself stops at the cap plus one byte. An image within the cap whose longest edge exceeds 2048 pixels is decoded and downscaled in memory, so a large screenshot reaches the model as a readable picture instead of a rejected request, and the source file is never modified. A source image whose header claims more than 100,000,000 decoded pixels is rejected before a full decode. `"unlimited"` disables the byte cap.
 - `hook_output_limit`: maximum bytes of hook stdout and stderr captured per hook invocation. `"unlimited"` disables truncation.
 
 When a project overrides a global limit back to no cap, `"unlimited"` is the explicit value that does so.

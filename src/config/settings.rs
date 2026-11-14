@@ -732,9 +732,9 @@ pub struct LimitsSettingsOverlay {
     /// newline-free giant line.
     #[serde(default)]
     pub read_max_line_bytes: Option<Limit>,
-    /// Maximum bytes of an image the `ReadImage` tool will read and send to the
-    /// provider. Absent uses the compiled default of 5 MiB; `"unlimited"`
-    /// disables the cap.
+    /// Maximum bytes of an image file the `ReadImage` tool will read. This is a
+    /// source-read cap, not a per-request cap. Absent uses the compiled default
+    /// of 32 MiB; `"unlimited"` disables the cap.
     #[serde(default)]
     pub read_image_max_bytes: Option<Limit>,
     /// Maximum bytes of hook stdout and stderr captured per hook invocation.
@@ -875,7 +875,7 @@ pub struct ToolLimits {
     pub edit_max_file_bytes: Option<usize>,
     /// Maximum bytes delivered for a single Read line (default 10,000).
     pub read_max_line_bytes: Option<usize>,
-    /// Maximum bytes of an image `ReadImage` will read (default 5 MiB).
+    /// Maximum bytes of an image file `ReadImage` will read (default 32 MiB).
     pub read_image_max_bytes: Option<usize>,
     /// Maximum bytes of hook stdout/stderr captured per hook (default 64 KiB).
     pub hook_output_limit: Option<usize>,
@@ -902,10 +902,12 @@ pub const DEFAULT_EDIT_MAX_FILE_BYTES: u32 = 16 * 1024 * 1024;
 /// Compiled default for [`ToolLimits::read_max_line_bytes`], matching the
 /// constant it replaced in `src/clients/tools/read.rs`.
 pub const DEFAULT_READ_MAX_LINE_BYTES: u32 = 10_000;
-/// Compiled default for [`ToolLimits::read_image_max_bytes`]: 5 MiB, large
-/// enough for a screenshot and small enough to keep the inline base64 request
-/// body bounded.
-pub const DEFAULT_READ_IMAGE_MAX_BYTES: u32 = 5 * 1024 * 1024;
+/// Compiled default for [`ToolLimits::read_image_max_bytes`]: 32 MiB.
+///
+/// This bounds the source file `ReadImage` opens, not the request. A source
+/// image within this cap is decoded and downscaled in memory when its longest
+/// edge exceeds 2048 pixels; the per-request budgets live in `[images]`.
+pub const DEFAULT_READ_IMAGE_MAX_BYTES: u32 = 32 * 1024 * 1024;
 /// Compiled default for [`ToolLimits::hook_output_limit`].
 pub const DEFAULT_HOOK_OUTPUT_LIMIT: u32 = 64 * 1024;
 

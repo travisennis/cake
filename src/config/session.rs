@@ -2266,15 +2266,16 @@ mod tests {
     )]
     #[test]
     fn writer_externalizes_checkpoint_images_before_the_size_ceiling_and_hydration_restores_them() {
+        // The checkpoint ceiling is 8 MiB serialized, so two 5 MiB images
+        // exceed it inline without depending on the source-read default.
+        const IMAGE_BYTES: usize = 5 * 1024 * 1024;
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("session.jsonl");
         let session = make_test_session();
         let file = Session::create_on_disk(&path, &meta_record(&session)).unwrap();
         let writer = test_writer(&dir, file);
-        let first_bytes =
-            vec![0x5a; crate::config::settings::DEFAULT_READ_IMAGE_MAX_BYTES as usize];
-        let second_bytes =
-            vec![0x3c; crate::config::settings::DEFAULT_READ_IMAGE_MAX_BYTES as usize];
+        let first_bytes = vec![0x5a; IMAGE_BYTES];
+        let second_bytes = vec![0x3c; IMAGE_BYTES];
         let first_encoded = base64::engine::general_purpose::STANDARD.encode(&first_bytes);
         let second_encoded = base64::engine::general_purpose::STANDARD.encode(&second_bytes);
         let images = vec![

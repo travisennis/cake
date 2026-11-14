@@ -138,7 +138,7 @@ fn debug_config_text_reports_effective_sections_without_the_credential() {
     assert!(report.contains("Tools\n"));
     assert!(report.contains("Skills: all (default); selected 1, filtered 0"));
     assert!(report.contains(
-        "images: max_images=8, max_bytes=16777216, max_pixels=24000000, read_image_max_bytes=5242880, max_edge=2048"
+        "images: max_images=8, max_bytes=16777216, max_pixels=24000000, read_image_max_bytes=33554432, max_edge=2048"
     ));
     assert!(report.contains("Hooks\n"));
     assert!(report.contains("Toolbox (describe probing skipped)"));
@@ -212,7 +212,7 @@ fn assert_config_json_document(env: &TestEnv, document: &serde_json::Value) {
             "max_images": 8,
             "max_bytes": 16_777_216,
             "max_pixels": 24_000_000,
-            "read_image_max_bytes": 5_242_880,
+            "read_image_max_bytes": 33_554_432,
             "max_edge": 2048,
         })
     );

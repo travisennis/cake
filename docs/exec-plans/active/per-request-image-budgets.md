@@ -19,8 +19,8 @@ The feature is an additive configuration surface with one deliberate default cha
 - [x] (2026-11-14) Trav accepted ADR 062 as written: 32 MiB source cap, `[images]` budgets of 8 / 16 MiB / 24 MP, and the recent-user-message pin rule.
 - [x] (2026-11-14) Milestone 1: added `[images]` settings, compiled defaults, global/project/profile per-key merging, `ResolvedImagePolicy` on `LoadedSettings`, `cake debug config` image diagnostics, and the `cake init` template comments.
 - [x] (2026-11-14) Milestone 1: proved defaults, per-key precedence, profile precedence, zero and negative rejection, unknown-key warnings, low-authority preservation, and generated template content.
-- [ ] Milestone 2: extract the codec helpers into `src/clients/image_budget.rs`, raise the source-read default to 32 MiB, and add the 100-megapixel probe before full decode.
-- [ ] Milestone 2: prove PNG, JPEG, GIF, and WebP downscaling; aspect ratio; no upscale; byte-identical source files; over-limit source rejection; decompression-bomb rejection; and bounded memory.
+- [x] (2026-11-14) Milestone 2: extracted the codec helpers into `src/clients/image_budget.rs`, raised the source-read default to 32 MiB, and added the 100-megapixel probe before full decode.
+- [x] (2026-11-14) Milestone 2: proved PNG, JPEG, GIF, and WebP downscaling; aspect ratio; no upscale; byte-identical source files; over-limit source rejection; decompression-bomb rejection; and bounded memory.
 - [ ] Milestone 3: implement the image planner, digest verification, deterministic selection, omission markers, and the normal-request adapter.
 - [ ] Milestone 3: wire the planner into `Agent::complete_turn_in_mode` and the two backend request builders; add `Agent::with_image_policy`.
 - [ ] Milestone 3: prove count, pixel, and byte limits; oldest-first ordering; newest retention; pinned no-fit; digest mismatch; marker text; request-body shape; and no mutation of raw history.
@@ -40,6 +40,8 @@ The feature is an additive configuration surface with one deliberate default cha
 - Observation: compaction already segments exchanges and exposes `Exchange::contains_pin`; pinned exchanges are the right source for compaction image pins. Evidence: `segment_exchanges`, `validate_exchanges`, and `select_exchanges` in `src/clients/compaction.rs`.
 - Observation: several existing image tests use placeholder base64 such as `AAAA` or a truncated PNG header. Serialization-only tests can keep those bytes, but any test that passes through the planner or `verify_request_images` needs a valid tiny PNG or an explicitly opaque media type; otherwise the dimension probe fails before the behavior under test. Evidence: `src/clients/agent/image_recovery_tests.rs` uses `data_base64: "AAAA"`, and `src/clients/compaction_tests.rs` builds synthetic image parts. Milestone 3 updates only the fixtures that enter the planner.
 - Observation: the `image` crate is already a direct dependency with the four needed codec features, and `ReadImage` uses it. Evidence: `Cargo.toml` line 55. There is no new dependency or binary-size decision beyond reusing that code.
+- Observation: a GIF header-only fixture fails the `image` dimension probe with `Unexpected End of File`; the `gif` crate reads through the image descriptor before it reports dimensions. A valid 1x1 frame inside a 65535x65535 logical screen keeps the container parseable while still proving the 100-megapixel rejection happens before any pixel decode. Evidence: `read_image_rejects_a_decompression_bomb_before_decoding` in `src/clients/tools/read_image.rs`.
+- Observation: the checkpoint externalization test used `DEFAULT_READ_IMAGE_MAX_BYTES` to build two inline images. Raising the source-read default would have made that test allocate two 32 MiB buffers plus base64 copies for no benefit. Evidence: `writer_externalizes_checkpoint_images_before_the_size_ceiling_and_hydration_restores_them` in `src/config/session.rs` now uses a local 5 MiB fixture size tied to the 8 MiB checkpoint ceiling.
 - Observation: `[images]` is low-authority configuration like `[limits]`; it can change cost and request size but cannot grant paths, run code, or select a provider. Evidence: the low-authority list in `docs/configuration.md` and `Settings::without_authority` in `src/config/settings.rs`.
 
 ## Decision Log
@@ -62,7 +64,11 @@ Milestone 1 delivered 2026-11-14. `[images]` now has `max_images = 8`, `max_byte
 
 Focused verification: `cargo test --bin cake settings` (125 passed), `cargo test --bin cake init` (38), `cargo test --bin cake config_report` (4), `cargo test --test debug_config` (19), and the trust suite after adding the low-authority assertion. `just docs-check` passed. `just check` passed with the full test suite, CC gate, strict clippy, import/dependency/module-size lints, and script fixture suites. No paid model calls.
 
-Remaining: Milestones 2 through 5. The source-read default is still five MiB until Milestone 2, and the request planner does not exist yet; the Images documentation in this milestone describes the accepted contract that Milestones 2 and 3 implement. Move this plan to `docs/exec-plans/completed/` only when the whole task is complete.
+Milestone 2 delivered 2026-11-14. The codec-only helpers now live in `src/clients/image_budget.rs` behind one module: the supported media-type allowlist, format mapping, header probe, decode and allocation limits, downscale, PNG/JPEG re-encode rule, transparency test, and the `PreparedImage` record with emitted and source dimensions plus a changed flag. `ReadImage` keeps path validation, argument parsing, and model-visible wording; it probes the header, rejects a source above `MAX_SOURCE_PIXELS` (100,000,000) with an actionable error before any decode, and then asks the shared codec to prepare the image. `[limits].read_image_max_bytes` now defaults to 32 MiB as a source-read cap, and its docs, tool description, debug-config assertions, and request snapshots say so.
+
+Focused verification: `cargo test --bin cake read_image` (32 passed) covers PNG, JPEG, GIF, and WebP fixtures at 2400x600, a 2048x512 bounded re-encode with a 4:1 aspect ratio, source SHA-256 equality, a byte-identical 10x10 image, a 64 MiB sparse source rejected under a 4 KiB cap, a valid GIF whose 65535x65535 logical screen is rejected before decode, a truncated header probe error, and a corrupt IDAT that falls back to the original bytes without a panic. `cargo test --bin cake settings` (125), `cargo test --bin cake writer_externalizes_checkpoint_images` (1), and `cargo test --test debug_config` (19) passed. `just docs-check` and `just cc-check` (2,286 functions, 0 over allowed) passed, and `just check` passed with the full suite, strict clippy, import/dependency/module-size lints, and script fixture suites. No paid model calls.
+
+Remaining: Milestones 3 through 5. The request planner does not exist yet; the Images documentation describes the accepted contract that Milestones 3 and 4 implement. Move this plan to `docs/exec-plans/completed/` only when the whole task is complete.
 
 ## Context and Orientation
 
@@ -98,7 +104,7 @@ The key files are:
 - `src/clients/tools/read-image-description.txt` --- the model-visible tool description.
 - `docs/configuration.md` and `docs/integrations.md` --- the settings contract and the diagnostics contract.
 
-The current defaults are five MiB for `read_image_max_bytes`, 2048 pixels for the longest edge, JPEG quality 85 for a downscaled non-PNG image, and 512 MiB for one decoded image. The session image store and its digest verification are already delivered by task 145 and ADR 061. The checkpoint ceiling is eight MiB serialized with a 256 KiB summary reservation; image references do not count their payload bytes toward that ceiling.
+The current defaults are 32 MiB for the `read_image_max_bytes` source-read cap, 2048 pixels for the longest edge, JPEG quality 85 for a downscaled non-PNG image, 100,000,000 pixels for one source image, and 512 MiB for one decoded image. The session image store and its digest verification are already delivered by task 145 and ADR 061. The checkpoint ceiling is eight MiB serialized with a 256 KiB summary reservation; image references do not count their payload bytes toward that ceiling.
 
 ## Plan of Work
 

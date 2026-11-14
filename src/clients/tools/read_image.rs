@@ -1,11 +1,12 @@
-use std::io::Cursor;
 use std::io::Read as _;
 use std::path::Path;
 
 use base64::Engine as _;
-use image::imageops::FilterType;
 use serde::Deserialize;
 
+use crate::clients::image_budget::{
+    MAX_SOURCE_PIXELS, is_supported_media_type, prepare_image, source_dimensions,
+};
 use crate::clients::tools::{
     ToolContext, file_access::validate_regular_file, resolve_path_for_read_scheduling,
     validate_path_in_cwd,
@@ -62,7 +63,7 @@ pub(super) fn path_target(
 /// Execute a `ReadImage` call: validate the path, read the file under the
 /// configured size cap, and return its bytes as one inline image part.
 ///
-/// An image wider or taller than [`MAX_IMAGE_DIMENSION`] is downscaled first,
+/// An image wider or taller than the 2048-pixel edge cap is downscaled first,
 /// so a large screenshot reaches the provider as a usable picture instead of a
 /// request the provider rejects outright.
 pub(super) fn execute_read_image(
@@ -87,14 +88,20 @@ pub(super) fn execute_read_image(
         ));
     };
 
-    let prepared = prepare_image(&bytes, media_type);
+    let source_size = checked_source_dimensions(&path, &bytes, media_type)?;
+
+    let prepared = prepare_image(&bytes, media_type, source_size);
     let size_bytes = prepared.bytes.len();
-    let resize_note = match (prepared.source_size, prepared.size) {
-        (Some(source), Some(sent)) if source != sent => format!(
-            ", downscaled from {}x{} to {}x{}",
-            source.0, source.1, sent.0, sent.1
-        ),
-        _ => String::new(),
+    let resize_note = if prepared.changed {
+        match (prepared.source_size, prepared.size) {
+            (Some(source), Some(sent)) => format!(
+                ", downscaled from {}x{} to {}x{}",
+                source.0, source.1, sent.0, sent.1
+            ),
+            _ => String::new(),
+        }
+    } else {
+        String::new()
     };
     let output = format!(
         "ReadImage {} ({size_bytes} bytes, {}{resize_note})",
@@ -142,188 +149,35 @@ fn read_bounded(path: &Path, cap: Option<usize>) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-// =============================================================================
-// Downscaling
-// =============================================================================
-
-/// Longest edge `ReadImage` forwards to a provider, in pixels.
-///
-/// Vision models resample anything larger anyway, but a provider that cannot
-/// read an image rejects the entire request, stranding a task over a file that
-/// is perfectly valid. Shrinking here keeps a large screenshot or photo usable
-/// instead of poisoning the conversation that carries it.
-const MAX_IMAGE_DIMENSION: u32 = crate::config::settings::MAX_IMAGE_EDGE;
-
-/// Ceiling on decoded image memory, so a small compressed file that expands to
-/// gigabytes is refused instead of exhausting the process.
-const MAX_DECODED_IMAGE_BYTES: u64 = 512 * 1024 * 1024;
-
-/// JPEG quality for a downscaled re-encode: high enough that small text stays
-/// legible after resizing.
-const DOWNSCALE_JPEG_QUALITY: u8 = 85;
-
-/// The bytes `ReadImage` sends, plus the dimensions the model-visible output
-/// reports.
-struct PreparedImage {
-    bytes: Vec<u8>,
-    media_type: &'static str,
-    /// Dimensions of the bytes actually sent, when known.
-    size: Option<(u32, u32)>,
-    /// Dimensions of the file on disk, when known.
-    source_size: Option<(u32, u32)>,
-}
-
-/// A re-encoded image: the bytes to send and what they are.
-struct Downscaled {
-    bytes: Vec<u8>,
-    media_type: &'static str,
-    size: (u32, u32),
-}
-
-/// Shrink `bytes` when either edge exceeds [`MAX_IMAGE_DIMENSION`].
-///
-/// An image inside the cap is forwarded byte for byte, which preserves
-/// animation, the source encoder's settings, and every pixel a vision model
-/// would consume. Downscaling is best effort: a decode or encode failure
-/// returns the original bytes, because a file `infer` recognizes but this
-/// decoder rejects may still be readable upstream, and the agent loop's
-/// image-rejection recovery is the backstop for anything that slips through.
-fn prepare_image(bytes: &[u8], media_type: &'static str) -> PreparedImage {
-    let unchanged = |size| PreparedImage {
-        bytes: bytes.to_vec(),
-        media_type,
-        size,
-        source_size: size,
+/// Probe the source header and reject a decompression-bomb-sized claim.
+fn checked_source_dimensions(
+    path: &Path,
+    bytes: &[u8],
+    media_type: &str,
+) -> Result<Option<(u32, u32)>, String> {
+    let source_size = source_dimensions(bytes, media_type).map_err(|error| {
+        format!(
+            "Failed to read image dimensions for {}: {error}",
+            path.display()
+        )
+    })?;
+    let Some((width, height)) = source_size else {
+        return Ok(None);
     };
-
-    let Some(format) = image_format(media_type) else {
-        return unchanged(None);
-    };
-    let Ok((width, height)) = image_dimensions(bytes, format) else {
-        return unchanged(None);
-    };
-    if width <= MAX_IMAGE_DIMENSION && height <= MAX_IMAGE_DIMENSION {
-        return unchanged(Some((width, height)));
+    let pixels = u64::from(width) * u64::from(height);
+    if pixels > MAX_SOURCE_PIXELS {
+        return Err(oversized_source_error(path, width, height, pixels));
     }
-
-    match downscale(bytes, format) {
-        Ok(downscaled) => PreparedImage {
-            bytes: downscaled.bytes,
-            media_type: downscaled.media_type,
-            size: Some(downscaled.size),
-            source_size: Some((width, height)),
-        },
-        Err(error) => {
-            tracing::warn!(
-                target: "cake",
-                %error,
-                "Could not downscale an oversized image; sending it unchanged"
-            );
-            unchanged(Some((width, height)))
-        },
-    }
+    Ok(Some((width, height)))
 }
 
-/// Map a supported media type to the codec that decodes and re-encodes it.
-fn image_format(media_type: &str) -> Option<image::ImageFormat> {
-    Some(match media_type {
-        "image/png" => image::ImageFormat::Png,
-        "image/jpeg" => image::ImageFormat::Jpeg,
-        "image/gif" => image::ImageFormat::Gif,
-        "image/webp" => image::ImageFormat::WebP,
-        _ => return None,
-    })
+/// Model-visible error for a source image whose header claims too many pixels.
+fn oversized_source_error(path: &Path, width: u32, height: u32, pixels: u64) -> String {
+    format!(
+        "Image dimensions are too large: {} is {width}x{height} ({pixels} pixels), above the {MAX_SOURCE_PIXELS}-pixel source limit; crop or resize the image before using ReadImage.",
+        path.display()
+    )
 }
-
-/// Read the dimensions from the image header without decoding the pixels.
-fn image_dimensions(bytes: &[u8], format: image::ImageFormat) -> Result<(u32, u32), String> {
-    image::ImageReader::with_format(Cursor::new(bytes), format)
-        .into_dimensions()
-        .map_err(|e| format!("Failed to read the image dimensions: {e}"))
-}
-
-/// Decode, shrink to the cap, and re-encode `bytes`.
-fn downscale(bytes: &[u8], format: image::ImageFormat) -> Result<Downscaled, String> {
-    let image = decode_image(bytes, format)?;
-    let resized = image.resize(
-        MAX_IMAGE_DIMENSION,
-        MAX_IMAGE_DIMENSION,
-        FilterType::Lanczos3,
-    );
-    encode_downscaled(&resized, format)
-}
-
-/// Decode the whole image, refusing a file whose pixels would not fit in memory.
-fn decode_image(bytes: &[u8], format: image::ImageFormat) -> Result<image::DynamicImage, String> {
-    let mut reader = image::ImageReader::with_format(Cursor::new(bytes), format);
-    reader.limits(decode_limits());
-    reader
-        .decode()
-        .map_err(|e| format!("Failed to decode the image: {e}"))
-}
-
-/// Allocation ceiling for one decode.
-///
-/// `image::Limits` is non-exhaustive outside its crate, so struct-update syntax
-/// is unavailable and the one field is assigned directly.
-fn decode_limits() -> image::Limits {
-    let mut limits = image::Limits::default();
-    limits.max_alloc = Some(MAX_DECODED_IMAGE_BYTES);
-    limits
-}
-
-/// Encode a downscaled image, keeping the source format when it can represent
-/// the pixels.
-///
-/// PNG sources stay PNG so screenshots and fine text survive the resize
-/// losslessly. Everything else becomes JPEG, which is compact for the
-/// photographic images that reach this size. Transparency forces PNG because
-/// JPEG cannot carry it, and the WebP and GIF encoders are either absent or
-/// lossy-only here, so those sources take the same rule.
-fn encode_downscaled(
-    image: &image::DynamicImage,
-    source: image::ImageFormat,
-) -> Result<Downscaled, String> {
-    let size = (image.width(), image.height());
-    if source == image::ImageFormat::Png || has_transparency(image) {
-        let mut bytes = Vec::new();
-        image
-            .write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
-            .map_err(|e| format!("Failed to encode the downscaled PNG: {e}"))?;
-        return Ok(Downscaled {
-            bytes,
-            media_type: "image/png",
-            size,
-        });
-    }
-
-    let mut bytes = Vec::new();
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, DOWNSCALE_JPEG_QUALITY)
-        .encode_image(&image.to_rgb8())
-        .map_err(|e| format!("Failed to encode the downscaled JPEG: {e}"))?;
-    Ok(Downscaled {
-        bytes,
-        media_type: "image/jpeg",
-        size,
-    })
-}
-
-/// Whether the image has transparency that a JPEG encode would discard.
-fn has_transparency(image: &image::DynamicImage) -> bool {
-    if !image.color().has_alpha() {
-        return false;
-    }
-    image.to_rgba8().pixels().any(|pixel| pixel.0[3] < u8::MAX)
-}
-
-/// Image formats `ReadImage` sends to the provider.
-///
-/// `infer` recognizes many more `image/*` types (TIFF, BMP, ICO, AVIF, and
-/// others) than the vision-capable backends accept, so the accepted set is an
-/// explicit allowlist that matches the tool description rather than an
-/// `image/` prefix test.
-const SUPPORTED_IMAGE_MEDIA_TYPES: &[&str] =
-    &["image/png", "image/jpeg", "image/gif", "image/webp"];
 
 /// Detect the MIME type of raw file bytes using content-based detection.
 fn detect_mime_type(data: &[u8]) -> Option<&'static str> {
@@ -332,7 +186,7 @@ fn detect_mime_type(data: &[u8]) -> Option<&'static str> {
 
 /// Return the MIME type only when the bytes are in a supported image format.
 fn detect_image_media_type(data: &[u8]) -> Option<&'static str> {
-    detect_mime_type(data).filter(|media_type| SUPPORTED_IMAGE_MEDIA_TYPES.contains(media_type))
+    detect_mime_type(data).filter(|media_type| is_supported_media_type(media_type))
 }
 
 /// Model-visible error for a file `ReadImage` will not send.
@@ -357,9 +211,12 @@ fn unsupported_image_error(path: &Path, detected: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clients::image_budget::{MAX_IMAGE_DIMENSION, has_transparency};
     #[cfg(unix)]
     use crate::clients::tools::file_access::process_isolation;
     use crate::config::settings::DEFAULT_READ_IMAGE_MAX_BYTES;
+    use sha2::{Digest as _, Sha256};
+    use std::io::Write as _;
     use tempfile::TempDir;
 
     /// A valid 1x1 red PNG, generated with Python `zlib`.
@@ -377,6 +234,28 @@ mod tests {
         std::fs::write(&file_path, bytes).unwrap();
         let path = file_path.to_str().unwrap().to_string();
         (temp_dir, path)
+    }
+
+    /// Write a gradient image whose width is past the 2048-pixel edge cap.
+    fn write_gradient_image(
+        path: &std::path::Path,
+        format: image::ImageFormat,
+        width: u32,
+        height: u32,
+    ) {
+        image::RgbImage::from_fn(width, height, |x, y| {
+            image::Rgb([
+                u8::try_from(x % 256).unwrap(),
+                u8::try_from(y % 256).unwrap(),
+                u8::try_from((x + y) % 256).unwrap(),
+            ])
+        })
+        .save_with_format(path, format)
+        .unwrap();
+    }
+
+    fn file_digest(path: &std::path::Path) -> Vec<u8> {
+        Sha256::digest(std::fs::read(path).unwrap()).to_vec()
     }
 
     /// The bytes `ReadImage` actually hands to the provider.
@@ -579,6 +458,189 @@ mod tests {
         let sent = image::load_from_memory(&sent_bytes(&result.images[0])).unwrap();
         assert_eq!(sent.width(), MAX_IMAGE_DIMENSION);
         assert!(sent.height() <= 40, "{}", sent.height());
+    }
+
+    #[test]
+    fn read_image_downscales_every_supported_codec_and_leaves_the_source_untouched() {
+        struct Case {
+            name: &'static str,
+            source: image::ImageFormat,
+            emitted_media_type: &'static str,
+            emitted: image::ImageFormat,
+        }
+
+        let cases = [
+            Case {
+                name: "wide.png",
+                source: image::ImageFormat::Png,
+                emitted_media_type: "image/png",
+                emitted: image::ImageFormat::Png,
+            },
+            Case {
+                name: "wide.jpg",
+                source: image::ImageFormat::Jpeg,
+                emitted_media_type: "image/jpeg",
+                emitted: image::ImageFormat::Jpeg,
+            },
+            Case {
+                name: "wide.gif",
+                source: image::ImageFormat::Gif,
+                emitted_media_type: "image/jpeg",
+                emitted: image::ImageFormat::Jpeg,
+            },
+            Case {
+                name: "wide.webp",
+                source: image::ImageFormat::WebP,
+                emitted_media_type: "image/jpeg",
+                emitted: image::ImageFormat::Jpeg,
+            },
+        ];
+
+        for case in cases {
+            let temp_dir = TempDir::new().unwrap();
+            let source = temp_dir.path().join(case.name);
+            write_gradient_image(&source, case.source, 2400, 600);
+            let before = file_digest(&source);
+
+            let args = serde_json::json!({ "path": source.to_str().unwrap() }).to_string();
+            let result = execute_read_image(&ToolContext::from_current_process(), &args)
+                .unwrap_or_else(|error| panic!("{}: {error}", case.name));
+
+            assert_eq!(result.images.len(), 1, "{}", case.name);
+            assert_eq!(
+                result.images[0].media_type, case.emitted_media_type,
+                "{}",
+                case.name
+            );
+            assert!(
+                result
+                    .output
+                    .contains("downscaled from 2400x600 to 2048x512"),
+                "{}: {}",
+                case.name,
+                result.output
+            );
+
+            let bytes = sent_bytes(&result.images[0]);
+            assert_eq!(
+                image::guess_format(&bytes).unwrap(),
+                case.emitted,
+                "{}",
+                case.name
+            );
+            let sent = image::load_from_memory(&bytes).unwrap();
+            assert_eq!((sent.width(), sent.height()), (2048, 512), "{}", case.name);
+            let aspect = f64::from(sent.width()) / f64::from(sent.height());
+            assert!(
+                (aspect - 4.0).abs() < 0.01,
+                "{}: aspect ratio {aspect}",
+                case.name
+            );
+
+            assert_eq!(
+                before,
+                file_digest(&source),
+                "{}: the source file must stay byte-identical",
+                case.name
+            );
+        }
+    }
+
+    #[test]
+    fn read_image_keeps_a_small_image_byte_identical() {
+        let temp_dir = TempDir::new().unwrap();
+        let source = temp_dir.path().join("small.png");
+        write_gradient_image(&source, image::ImageFormat::Png, 10, 10);
+        let original = std::fs::read(&source).unwrap();
+
+        let args = serde_json::json!({ "path": source.to_str().unwrap() }).to_string();
+        let result = execute_read_image(&ToolContext::from_current_process(), &args).unwrap();
+
+        assert_eq!(sent_bytes(&result.images[0]), original);
+        assert!(!result.output.contains("downscaled"), "{}", result.output);
+        let sent = image::load_from_memory(&sent_bytes(&result.images[0])).unwrap();
+        assert_eq!((sent.width(), sent.height()), (10, 10));
+    }
+
+    #[test]
+    fn read_image_rejects_a_decompression_bomb_before_decoding() {
+        // A GIF logical screen of 65535x65535 claims 4,294,836,225 pixels.
+        // The 1x1 frame keeps the container valid for the header probe, while
+        // a full decode of the logical screen would need more than 16 GiB.
+        let header = [
+            b'G', b'I', b'F', b'8', b'9', b'a', // signature
+            0xff, 0xff, // logical screen width 65535
+            0xff, 0xff, // logical screen height 65535
+            0x00, 0x00, 0x00, // no global palette, background, aspect
+            0x2c, // image separator
+            0x00, 0x00, 0x00, 0x00, // frame origin
+            0x01, 0x00, 0x01, 0x00, // frame size 1x1
+            0x00, // no local palette
+            0x02, // LZW minimum code size
+            0x02, 0x44, 0x01, 0x00, // one-pixel LZW data and terminator
+            0x3b, // trailer
+        ];
+        let (_temp_dir, path) = write_fixture("bomb.gif", &header);
+        let args = serde_json::json!({ "path": path }).to_string();
+
+        let err = execute_read_image(&ToolContext::from_current_process(), &args).unwrap_err();
+
+        assert!(err.contains("Image dimensions are too large"), "{err}");
+        assert!(err.contains("65535x65535"), "{err}");
+        assert!(err.contains("4294836225"), "{err}");
+        assert!(err.contains("100000000-pixel source limit"), "{err}");
+        assert!(err.contains("crop or resize"), "{err}");
+    }
+
+    #[test]
+    fn read_image_reports_a_header_probe_failure_without_panicking() {
+        let (_temp_dir, path) = write_fixture("truncated.gif", b"GIF89a");
+        let args = serde_json::json!({ "path": path }).to_string();
+
+        let err = execute_read_image(&ToolContext::from_current_process(), &args).unwrap_err();
+
+        assert!(err.contains("Failed to read image dimensions"), "{err}");
+    }
+
+    #[test]
+    fn read_image_rejects_a_large_source_with_a_bounded_read() {
+        let temp_dir = TempDir::new().unwrap();
+        let source = temp_dir.path().join("huge.png");
+        let mut file = std::fs::File::create(&source).unwrap();
+        file.write_all(TINY_PNG).unwrap();
+        file.set_len(64 * 1024 * 1024).unwrap();
+        drop(file);
+
+        let mut context = ToolContext::from_current_process();
+        let mut limits = crate::config::settings::ToolLimits::defaults();
+        limits.read_image_max_bytes = Some(4096);
+        context.limits = limits;
+        let args = serde_json::json!({ "path": source.to_str().unwrap() }).to_string();
+
+        let err = execute_read_image(&context, &args).unwrap_err();
+
+        assert!(err.contains("too large"), "{err}");
+        assert!(err.contains("4096"), "{err}");
+    }
+
+    #[test]
+    fn read_image_keeps_oversized_bytes_when_the_downscale_decode_fails() {
+        let temp_dir = TempDir::new().unwrap();
+        let source = temp_dir.path().join("broken.png");
+        write_gradient_image(&source, image::ImageFormat::Png, 3000, 40);
+        let mut bytes = std::fs::read(&source).unwrap();
+        let idat = bytes
+            .windows(4)
+            .position(|window| window == b"IDAT")
+            .unwrap();
+        bytes[idat + 8] ^= 0xff;
+        std::fs::write(&source, &bytes).unwrap();
+
+        let args = serde_json::json!({ "path": source.to_str().unwrap() }).to_string();
+        let result = execute_read_image(&ToolContext::from_current_process(), &args).unwrap();
+
+        assert_eq!(sent_bytes(&result.images[0]), bytes);
+        assert!(!result.output.contains("downscaled"), "{}", result.output);
     }
 
     #[test]
