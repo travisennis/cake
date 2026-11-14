@@ -251,7 +251,7 @@ When a project overrides a global limit back to no cap, `"unlimited"` is the exp
 
 ## Images
 
-The optional `[images]` section bounds the images one provider request carries. It is separate from `[limits].read_image_max_bytes`, which caps the source file `ReadImage` accepts. The request budgets apply to every image in the projected history after source acceptance.
+The optional `[images]` section bounds the images one provider request carries. It is separate from `[limits].read_image_max_bytes`, which caps the source file `ReadImage` accepts. The request budgets apply to every image in the projected history after source acceptance. The source-read default rose from five MiB to 32 MiB when the request budgets were added; set `read_image_max_bytes = 5242880` to restore the old rejection.
 
 ```toml
 [images]
@@ -262,9 +262,13 @@ max_pixels = 24000000   # decoded pixels per request (default 24 MP)
 
 Each key is a positive integer. `0`, negative values, and `"unlimited"` are rejected at load time; there is no way to disable a bound. Project `[images]` values override global values per key, and a selected profile may define `[profiles.NAME.images]`; profile values override the merged top-level values per key, with project profile values taking precedence over global profile values.
 
-`max_bytes` counts encoded image bytes before base64 encoding. The provider request body is roughly four-thirds larger because of base64 and JSON overhead. `max_pixels` counts decoded pixels; an image whose longest edge exceeds 2048 pixels is downscaled in memory before it is sent. The source file is never modified.
+`max_bytes` counts each emitted image's encoded bytes before base64 encoding, summed across the request. The provider request body is roughly four-thirds larger because of base64 and JSON overhead. `max_pixels` counts decoded pixels across the emitted images. For a supported codec, an image whose longest edge exceeds 2048 pixels, whose pixels exceed `max_pixels`, or whose encoded bytes exceed `max_bytes` is decoded and downscaled in memory before it is sent. The source file is never modified.
 
-When a request exceeds a budget, Cake keeps the newest images and replaces each older unpinned image with an explicit `[image omitted: ...]` marker. Images on the most recent user message are pinned and are never silently dropped; if those pinned images alone exceed a budget, the run fails before the provider request. Request fitting changes only the request projection, not session history or checkpoint records.
+The supported codecs are PNG, JPEG, GIF, and WebP. A downscaled PNG stays PNG; every other downscaled source becomes JPEG except that any transparency forces PNG so those pixels are not discarded. A downscaled animated GIF or WebP keeps only its first frame.
+
+When a request exceeds an aggregate budget, Cake keeps the newest images and omits the oldest unpinned image until the request fits. Each omission replaces the image with an explicit `[image omitted: <reason>; <media>, <dimensions>, <bytes> bytes]` marker in its owning message or tool output. Images on the most recent user message that carries images are pinned and are never omitted; a pinned image may still be downscaled to fit a per-image limit. If the pinned images alone exceed an aggregate budget, the request fails before it reaches the provider with an error naming the budget, the amount used, the limit, and the pinned image count. A pinned image that cannot be reduced below a per-image limit fails instead of being omitted. In compaction, every image in a pinned exchange is pinned as well, so a retained tail follows the same no-fit rule.
+
+Request fitting changes only the request projection, not session history, checkpoint records, or the source file. A later request or resumed run plans again from the stored images.
 
 `[images]` is low-authority configuration: it can change request size and cost but cannot add filesystem authority, execute code, or select a provider. `cake debug config` reports the resolved `images` values along with `read_image_max_bytes` and the 2048-pixel edge.
 
@@ -655,3 +659,4 @@ Set `RUST_LOG=cake=debug` or `RUST_LOG=cake=trace` for verbose file logging. Nor
 - [ADR 003](adr/003-settings-profiles.md), settings profiles.
 - [ADR 049](adr/049-external-policy-gates-with-the-cake-gate-1-protocol.md), external policy gates and the `cake-gate/1` protocol.
 - [ADR 055](adr/055-use-a-dual-era-stdio-mcp-client-configured-by-mcp-json.md), the stdio MCP client and `mcp.json` configuration.
+- [ADR 062](adr/062-bound-request-images-by-count-pixels-and-bytes.md), per-request image budgets and the source-read cap.

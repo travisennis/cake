@@ -26,9 +26,9 @@ The feature is an additive configuration surface with one deliberate default cha
 - [x] (2026-11-14) Milestone 3: proved count, pixel, and byte limits; oldest-first ordering; newest retention; per-image downscale; pinned no-fit; digest mismatch; invalid base64; marker text; request-body shape; and no mutation of raw history.
 - [x] (2026-11-14) Milestone 4: called `plan_image_budget` from compaction preparation in read-only mode, fed the pruned retained-tail item list into the estimate, returned `NoFit` for pinned overflow, and kept retained records unchanged. `PreparedCompaction` now carries the plan for diagnostics.
 - [x] (2026-11-14) Milestone 4: proved an ordinary request and compaction produce the same plan, a pinned over-budget tail is `NoFit` and byte-identical, and an unpinned over-budget image is omitted from the estimate while its retained records keep their original `content_id` values.
-- [ ] Milestone 5: update `docs/configuration.md`, `docs/integrations.md`, the `ReadImage` description, affected snapshots, and the ADR/plan records.
-- [ ] Milestone 5: run the task verification commands, the full gate, and the session-metrics check; record the outcomes and move this plan to `docs/exec-plans/completed/`.
-- [ ] `ahm task complete 147` before the final implementing commit; commit and push `master`.
+- [x] (2026-11-14) Milestone 5: updated `docs/configuration.md`, `docs/integrations.md`, and the `ReadImage` description; regenerated the Chat Completions and Responses request snapshots. ADR 062 was already accepted with its task and plan record.
+- [x] (2026-11-14) Milestone 5: ran the focused task commands, `just docs-check`, `just session-metrics-check`, and `just check`; recorded the outcomes below. The plan moves to `docs/exec-plans/completed/` with the final commit.
+- [x] (2026-11-14) Completed task 147 before the final implementing commit; the final commit and push follow this record.
 
 ## Surprises & Discoveries
 
@@ -48,6 +48,7 @@ The feature is an additive configuration surface with one deliberate default cha
 - Observation: `[images]` is low-authority configuration like `[limits]`; it can change cost and request size but cannot grant paths, run code, or select a provider. Evidence: the low-authority list in `docs/configuration.md` and `Settings::without_authority` in `src/config/settings.rs`.
 - Observation: compaction exchange segmentation treats consecutive assistant messages and function calls as one exchange until a function-call output closes it. A test that needs separate retirable exchanges must insert a call/output boundary; two adjacent assistant or user messages otherwise merge, and a pin on either one protects the merged exchange. Evidence: `segment_exchanges` and the Milestone 4 fixtures in `src/clients/compaction_tests.rs`.
 - Observation: retained-tail image planning is repeated for each candidate retirement set because the planner sees only records that survive that candidate. Pinned images are candidate-independent and still produce an immediate `NoFit`; unpinned omissions change as older exchanges retire. Evidence: `select_exchanges`, `plan_retained_images`, and `pinned_source_records` in `src/clients/compaction.rs`.
+- Observation: the `debug_config` suite is an integration target, `tests/debug_config.rs`; the planned `cargo test --bin cake debug_config` selected zero tests and exited 0. The Milestone 1 command is corrected to `cargo test --test debug_config`, and the final gate ran all 19 tests.
 
 ## Decision Log
 
@@ -83,7 +84,10 @@ Milestone 4 delivered 2026-11-14. `PreparationInput` now carries the resolved im
 
 Focused verification: `cargo test --bin cake compaction` (64 passed) covers an ordinary request and compaction producing the same plan and totals for the same pinned/unpinned images, a pinned count overflow returning `NoFit` with the count budget and pinned count in the reason, a pinned opaque image over the byte budget returning `NoFit`, and an unpinned over-budget image omitted from the estimate while both retained records keep their original `content_id` values. The latter test reconstructs `after_tokens` from the emitted projection and asserts it is lower than the raw retained-tail estimate. `cargo test --bin cake clients::agent` (205 passed), `just clippy`, `just cc-check` (2,329 functions, 13 grandfathered, 0 over allowed), `just docs-check`, and `just check` (2,260 unit tests plus the integration and script fixture suites) passed. No paid model calls.
 
-Remaining: Milestone 5. Update the configuration, integration, and `ReadImage` documentation and snapshots, record the acceptance and outcomes, run the full gate and session-metrics checks, then move this plan to `docs/exec-plans/completed/` only when the whole task is complete.
+Milestone 5 delivered 2026-11-14. `docs/configuration.md` now specifies `[images]` after Limits: the three positive keys and their defaults, per-key global/project/profile precedence, low-authority status, emitted encoded bytes before base64 and the roughly four-thirds provider-body approximation, the 2048-pixel edge, per-image downscale, the four supported codecs, PNG and transparency versus JPEG re-encoding, first-frame behavior for downscaled animated GIF and WebP, recent-user-message pinning, aggregate and per-image no-fit failures, compaction exchange pinning, and the 32 MiB source-read cap with `5242880` as the old-behavior override. `docs/integrations.md` adds the request-budget contract: the wire shape is unchanged, emitted images stay inline data URLs in the same item, omissions become marker text, planning is request-only, and session and checkpoint records are not rewritten; it also documents `data.settings.images`. Both documents link ADR 062. `read-image-description.txt`
+states the 32 MiB source cap, in-memory downscale and first-frame rules, and request-level downscale or omission with markers. The Chat Completions and Responses full-request snapshots were regenerated.
+
+Focused verification: `settings` 125, `init` 38, `debug_config` 19 (integration target), `read_image` 32, `image_budget` 19, `clients::agent` 205, `compaction` 64, `replay` 20, and the snapshot suite 75 all passed. `just docs-check` and `just session-metrics-check` (184 tests) passed. `just check` passed 2,260 unit tests, integration suites of 6, 19, 13, 17, 28, 13, 31, 11, 24, 14, 13, 20, 7, 4, 5, 21, 20, 6, 17, 13, 9, and 18 tests, strict clippy, the CC gate (2,329 functions, 13 grandfathered, 0 over allowed), import, dependency, module-size, and glossary lints, and the docs-corpus and script fixture suites. The informational module-size report still lists `src/clients/compaction.rs` at 1,764 and `src/clients/image_budget.rs` at 1,230 production lines against the 800-line threshold; the lint is not gated. No paid model calls were made and no platform check was skipped.
 
 ## Context and Orientation
 
@@ -240,7 +244,7 @@ Milestone 1 focused checks:
 ```bash
 cargo test --bin cake settings
 cargo test --bin cake init
-cargo test --bin cake debug_config
+cargo test --test debug_config
 just docs-check
 ```
 
