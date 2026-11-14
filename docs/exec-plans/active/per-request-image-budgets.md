@@ -8,7 +8,7 @@ After this change, a Cake session can read a large screenshot or photo, keep it 
 
 A user can see the result without reading code. Reading a seven-MiB, 4000-by-3000 PNG succeeds instead of failing with the old five-MiB error; the result reports its emitted dimensions, and `shasum` before and after the run is identical. In a session with ten images, a request contains the newest images within the configured budgets and one marker for each older image that was dropped. If the current user input's images alone exceed a budget, the run fails before any HTTP request with an error naming the budget and the pinned images. A corrupt or missing image digest also fails before any provider request. `cake debug config --json` reports the resolved image policy.
 
-The feature is an additive configuration surface with one deliberate default change: `[limits].read_image_max_bytes` rises from five MiB to 32 MiB because the source cap no longer has to double as a request cap. Provider wire shapes stay the same: each emitted image is still an inline data URL. Session records and checkpoint retained records keep their original image references; fitting is a request projection, not a persistence rewrite. The governing decision is ADR 062, `docs/adr/062-bound-request-images-by-count-pixels-and-bytes.md` (proposed at the time of writing), with ADR 047 for compaction and ADR 061 for session blobs.
+The feature is an additive configuration surface with one deliberate default change: `[limits].read_image_max_bytes` rises from five MiB to 32 MiB because the source cap no longer has to double as a request cap. Provider wire shapes stay the same: each emitted image is still an inline data URL. Session records and checkpoint retained records keep their original image references; fitting is a request projection, not a persistence rewrite. The governing decision is ADR 062, `docs/adr/062-bound-request-images-by-count-pixels-and-bytes.md` (accepted 2026-11-14), with ADR 047 for compaction and ADR 061 for session blobs.
 
 ## Progress
 
@@ -16,7 +16,7 @@ The feature is an additive configuration surface with one deliberate default cha
 - [x] (2026-11-14) Found that `ReadImage` already downscales an image whose longest edge exceeds 2048 pixels; the missing behavior is the aggregate request budget, not a per-image resize.
 - [x] (2026-11-14) Drafted ADR 062 as proposed; it is the gate before code changes.
 - [x] (2026-11-14) Drafted this ExecPlan.
-- [ ] Trav accepts ADR 062, or records the changes that must be made first.
+- [x] (2026-11-14) Trav accepted ADR 062 as written: 32 MiB source cap, `[images]` budgets of 8 / 16 MiB / 24 MP, and the recent-user-message pin rule.
 - [ ] Milestone 1: add `[images]` settings, defaults, profile overlay, resolution, diagnostics, and the `cake init` template.
 - [ ] Milestone 1: prove defaults, per-key precedence, profile precedence, zero and negative rejection, unknown-key warnings, and generated template content.
 - [ ] Milestone 2: extract the codec helpers into `src/clients/image_budget.rs`, raise the source-read default to 32 MiB, and add the 100-megapixel probe before full decode.
