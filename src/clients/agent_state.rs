@@ -248,6 +248,15 @@ impl ConversationState {
         ))
     }
 
+    /// Source refs aligned with [`Self::request_context`].
+    ///
+    /// The request path uses this to map an admission plan's item index back to
+    /// the raw or retained record it came from. It derives the same order as
+    /// [`Self::preparation_source`] without cloning records.
+    pub(super) fn request_source_refs(&self) -> Vec<SourceRef> {
+        self.project_source_refs()
+    }
+
     /// Whether a checkpoint currently replaces part of the request context.
     #[cfg(test)]
     pub(super) const fn has_checkpoint(&self) -> bool {
@@ -273,7 +282,7 @@ impl ConversationState {
         current_task_id: &str,
     ) -> anyhow::Result<PreparationSource> {
         self.ensure_current_user(current_user_raw, invocation_start)?;
-        let (mut records, source_refs, image_consumption) = self.project_preparation_records();
+        let (mut records, source_refs, image_consumption) = self.project_preparation_records()?;
         let current_user_input = self.source_index_for_user(current_user_raw, &source_refs)?;
         let invocation_pins = self.invocation_pins(
             current_user_input,
@@ -324,13 +333,6 @@ impl ConversationState {
     ///
     /// Call only after the response is accepted and only for records whose
     /// every image was emitted by the request.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the accepted-response caller records consumed images in Milestone 4"
-        )
-    )]
     pub(super) fn mark_images_consumed(&mut self, refs: &[SourceRef]) {
         for source_ref in refs {
             match *source_ref {
@@ -384,48 +386,74 @@ impl ConversationState {
 
     fn project_preparation_records(
         &self,
-    ) -> (Vec<RetainedRecord>, Vec<SourceRef>, Vec<ImageConsumption>) {
-        let prompt_len = prompt_context_prefix_len(&self.history);
-        let mut records = Vec::new();
-        let mut source_refs = Vec::new();
-        let mut image_consumption = Vec::new();
-        for raw_index in 0..prompt_len {
-            records.push(retained_record_from_source(
-                &self.history[raw_index],
-                &self.provenance[raw_index],
-            ));
-            source_refs.push(SourceRef::Prompt);
-            image_consumption.push(ImageConsumption::Consumed);
-        }
-        if let Some(checkpoint) = self.checkpoint.as_ref() {
-            records.push(historical_summary_record(checkpoint));
-            source_refs.push(SourceRef::Summary);
-            image_consumption.push(ImageConsumption::Consumed);
-            for (index, record) in checkpoint.retained.iter().enumerate() {
-                records.push(record.clone());
-                source_refs.push(SourceRef::Retained(index));
-                image_consumption.push(
-                    self.retained_image_consumption
+    ) -> anyhow::Result<(Vec<RetainedRecord>, Vec<SourceRef>, Vec<ImageConsumption>)> {
+        let source_refs = self.project_source_refs();
+        let mut records = Vec::with_capacity(source_refs.len());
+        let mut image_consumption = Vec::with_capacity(source_refs.len());
+        for (source_index, source_ref) in source_refs.iter().enumerate() {
+            let (record, consumption) = match *source_ref {
+                SourceRef::Prompt => (
+                    retained_record_from_source(
+                        &self.history[source_index],
+                        &self.provenance[source_index],
+                    ),
+                    ImageConsumption::Consumed,
+                ),
+                SourceRef::Summary => {
+                    let checkpoint = self.checkpoint.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!("summary source has no active checkpoint")
+                    })?;
+                    (
+                        historical_summary_record(checkpoint),
+                        ImageConsumption::Consumed,
+                    )
+                },
+                SourceRef::Retained(index) => {
+                    let checkpoint = self.checkpoint.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!("retained source has no active checkpoint")
+                    })?;
+                    let record = checkpoint.retained.get(index).cloned().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "retained source index {index} exceeds the {} checkpoint records",
+                            checkpoint.retained.len()
+                        )
+                    })?;
+                    let consumption = self
+                        .retained_image_consumption
                         .get(index)
                         .copied()
-                        .unwrap_or_else(|| retained_image_consumption(record)),
-                );
-            }
+                        .unwrap_or_else(|| retained_image_consumption(&record));
+                    (record, consumption)
+                },
+                SourceRef::Raw(raw_index) => (
+                    retained_record_from_source(
+                        &self.history[raw_index],
+                        &self.provenance[raw_index],
+                    ),
+                    self.provenance[raw_index].image_consumption,
+                ),
+            };
+            records.push(record);
+            image_consumption.push(consumption);
+        }
+        Ok((records, source_refs, image_consumption))
+    }
+
+    /// Projection-order source refs shared by preparation and requests.
+    fn project_source_refs(&self) -> Vec<SourceRef> {
+        let prompt_len = prompt_context_prefix_len(&self.history);
+        let mut source_refs = vec![SourceRef::Prompt; prompt_len];
+        if let Some(checkpoint) = self.checkpoint.as_ref() {
+            source_refs.push(SourceRef::Summary);
+            source_refs.extend((0..checkpoint.retained.len()).map(SourceRef::Retained));
         }
         let raw_start = if self.checkpoint.is_some() {
             self.checkpoint_boundary.max(prompt_len)
         } else {
             prompt_len
         };
-        for raw_index in raw_start..self.history.len() {
-            records.push(retained_record_from_source(
-                &self.history[raw_index],
-                &self.provenance[raw_index],
-            ));
-            source_refs.push(SourceRef::Raw(raw_index));
-            image_consumption.push(self.provenance[raw_index].image_consumption);
-        }
-        (records, source_refs, image_consumption)
+        source_refs.extend((raw_start..self.history.len()).map(SourceRef::Raw));
+        source_refs
     }
 
     fn source_index_for_user(
@@ -1760,6 +1788,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(source.prompt_prefix_len, 3);
+        assert_eq!(state.request_source_refs(), source.source_refs);
         assert_eq!(
             source.source_refs[..4],
             [

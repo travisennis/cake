@@ -301,6 +301,7 @@ fn parse_json_response(body: &[u8]) -> anyhow::Result<TurnResult> {
         termination,
         provider_request_id: api_response.id,
         response_model,
+        consumed_sources: Vec::new(),
     })
 }
 
@@ -770,6 +771,7 @@ fn finalize_stream(mut accumulator: StreamAccumulator) -> anyhow::Result<TurnRes
         termination,
         provider_request_id: api_response.id,
         response_model: api_response.model,
+        consumed_sources: Vec::new(),
     })
 }
 

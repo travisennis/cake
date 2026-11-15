@@ -1,4 +1,5 @@
 use super::*;
+use crate::clients::compaction::ImageConsumption;
 use crate::config::blob_store::ContentId;
 use crate::config::model::ApiType;
 use crate::config::settings::ResolvedImagePolicy;
@@ -86,6 +87,24 @@ fn user_message(content: &str, images: Vec<ImagePart>) -> ConversationItem {
         timestamp: None,
         images,
     }
+}
+
+fn image_exchange(call_id: &str, images: Vec<ImagePart>) -> Vec<ConversationItem> {
+    vec![
+        ConversationItem::FunctionCall {
+            id: format!("fc-{call_id}"),
+            call_id: call_id.to_string(),
+            name: "ReadImage".to_string(),
+            arguments: "{}".to_string(),
+            timestamp: None,
+        },
+        ConversationItem::FunctionCallOutput {
+            call_id: call_id.to_string(),
+            output: format!("ReadImage {call_id}"),
+            timestamp: None,
+            images,
+        },
+    ]
 }
 
 fn decoded_len(image: &ImagePart) -> usize {
@@ -191,6 +210,87 @@ async fn image_overflow_omits_instead_of_failing_the_request() {
         agent.history_image_count(),
         2,
         "the raw conversation must keep the omitted image"
+    );
+}
+
+#[tokio::test]
+async fn accepted_request_consumes_only_records_whose_images_were_emitted() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(final_chat_response()))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let history = [
+        image_exchange("call-1", vec![png_part(10, 10)]),
+        image_exchange("call-2", vec![png_part(11, 11), png_part(12, 12)]),
+    ]
+    .concat();
+    let mut agent = test_agent(&mock_server.uri())
+        .with_history(history)
+        .unwrap()
+        .with_image_policy(&ResolvedImagePolicy {
+            max_images: 2,
+            max_bytes: 64 * 1024 * 1024,
+            max_pixels: 100_000_000,
+        });
+
+    assert_eq!(agent.send("go".to_string()).await.unwrap(), "Hello!");
+
+    let provenance = agent.conversation.provenance();
+    assert_eq!(
+        provenance[2].image_consumption,
+        ImageConsumption::Consumed,
+        "a record with one emitted image was consumed"
+    );
+    assert_eq!(
+        provenance[4].image_consumption,
+        ImageConsumption::Unknown,
+        "a partially emitted restored record keeps its evidence"
+    );
+}
+
+#[tokio::test]
+async fn discarded_request_does_not_consume_an_emitted_image() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "chatcmpl-over-window",
+            "model": "test-model",
+            "choices": [{
+                "index": 0,
+                "message": { "role": "assistant", "content": "discarded" },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 200,
+                "completion_tokens": 5,
+                "total_tokens": 205
+            }
+        })))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let history = image_exchange("call-1", vec![png_part(10, 10)]);
+    let mut agent = test_agent(&mock_server.uri())
+        .with_history(history)
+        .unwrap()
+        .with_context_window(Some(100));
+
+    let error = agent
+        .send("go".to_string())
+        .await
+        .expect_err("an over-window response is discarded");
+    assert!(error.to_string().contains("discarded"), "{error:#}");
+
+    assert_eq!(
+        agent.conversation.provenance()[2].image_consumption,
+        ImageConsumption::Unknown,
+        "a discarded response must not consume the image it carried"
     );
 }
 

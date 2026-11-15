@@ -393,6 +393,51 @@ fn decompression_bomb_is_rejected_before_decode() {
 }
 
 #[test]
+fn prune_request_with_plan_reports_fully_emitted_items() {
+    let history = vec![
+        user_message("first", vec![png_part(10, 10)]),
+        user_message("second", vec![png_part(11, 11), png_part(12, 12)]),
+    ];
+
+    let request = prune_request_with_plan(
+        Cow::Borrowed(&history),
+        &policy(2, loose_policy().max_bytes, 100_000_000),
+    )
+    .unwrap();
+
+    assert_eq!(request.plan.report.emitted_count, 2);
+    assert_eq!(
+        request
+            .owners
+            .iter()
+            .map(|owner| (owner.item, owner.image))
+            .collect::<Vec<_>>(),
+        vec![(0, 0), (1, 0), (1, 1)]
+    );
+    assert_eq!(
+        request.fully_emitted_items(),
+        vec![0],
+        "a record with one omitted image is not consumed"
+    );
+    assert!(matches!(
+        request.plan.entries[2],
+        ImagePlanEntry::Omit { .. }
+    ));
+}
+
+#[test]
+fn prune_request_with_plan_preserves_an_image_free_projection() {
+    let history = vec![user_message("no images", Vec::new())];
+    let request = prune_request_with_plan(Cow::Borrowed(&history), &loose_policy()).unwrap();
+
+    assert!(matches!(request.history, Cow::Borrowed(_)));
+    assert_eq!(request.history.as_ref(), history.as_slice());
+    assert!(request.owners.is_empty());
+    assert!(request.plan.entries.is_empty());
+    assert!(request.fully_emitted_items().is_empty());
+}
+
+#[test]
 fn prune_request_returns_the_borrowed_history_when_every_image_fits() {
     let history = vec![user_message("one image", vec![png_part(10, 10)])];
     let pruned = prune_request(Cow::Borrowed(&history), &loose_policy()).unwrap();

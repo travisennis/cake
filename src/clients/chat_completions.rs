@@ -224,6 +224,7 @@ pub(super) async fn parse_response(
         termination,
         provider_request_id: chat_response.id,
         response_model: chat_response.model,
+        consumed_sources: Vec::new(),
     })
 }
 

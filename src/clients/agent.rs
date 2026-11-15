@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use crate::OutputFormat;
 use crate::clients::agent_observer::AgentObserver;
 use crate::clients::agent_runner::AgentRunner;
-use crate::clients::agent_state::{ConversationState, accumulate_usage};
+use crate::clients::agent_state::{ConversationState, SourceRef, accumulate_usage};
 use crate::clients::backend::Backend;
 use crate::clients::mcp::{McpClient, McpServer, McpTool};
 use crate::clients::tools::{
@@ -43,6 +43,11 @@ pub(super) struct TurnResult {
     /// format supplied one. May differ from the configured model when a
     /// gateway routes an alias.
     pub(super) response_model: Option<String>,
+    /// Source records whose every image this request emitted.
+    ///
+    /// Populated only after admission planning. An accepted response marks
+    /// these consumed; a discarded response marks nothing.
+    pub(super) consumed_sources: Vec<SourceRef>,
 }
 
 /// One provider attempt whose reported usage must be settled into the

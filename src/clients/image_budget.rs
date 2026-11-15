@@ -602,6 +602,96 @@ pub fn plan_admitted_images(
     Ok(ImageBudgetPlan { entries, report })
 }
 
+/// A pruned request projection together with the plan that produced it.
+///
+/// `owners` and `plan.entries` align with the image slots found in the
+/// unpruned history. Add [`Self::fully_emitted_items`] to map an emitted image
+/// back to its request item.
+#[derive(Debug)]
+pub struct RequestImagePlan<'a> {
+    /// The request projection after admission.
+    pub history: Cow<'a, [ConversationItem]>,
+    /// The admission decisions for every source image.
+    pub plan: ImageBudgetPlan,
+    /// The item and image index for each plan entry.
+    pub owners: Vec<ImageOwner>,
+}
+
+impl RequestImagePlan<'_> {
+    /// Request items whose every image was emitted.
+    ///
+    /// A record with any omitted image is excluded: partial delivery is not
+    /// consumption. Items without images have no plan entries and are absent.
+    pub fn fully_emitted_items(&self) -> Vec<usize> {
+        let mut emitted = vec![false; self.history.len()];
+        let mut omitted = vec![false; self.history.len()];
+        for (owner, entry) in self.owners.iter().zip(&self.plan.entries) {
+            let Some(was_emitted) = emitted.get_mut(owner.item) else {
+                continue;
+            };
+            match entry {
+                ImagePlanEntry::Keep | ImagePlanEntry::Replace(_) => *was_emitted = true,
+                ImagePlanEntry::Omit { .. } => {
+                    if let Some(was_omitted) = omitted.get_mut(owner.item) {
+                        *was_omitted = true;
+                    }
+                },
+            }
+        }
+        emitted
+            .into_iter()
+            .zip(omitted)
+            .enumerate()
+            .filter_map(|(item, (emitted, omitted))| (emitted && !omitted).then_some(item))
+            .collect()
+    }
+}
+
+/// Prune a request projection and return the plan that produced it.
+///
+/// The history follows the same admission rules as [`prune_request`]. The plan
+/// and owner list let an accepted response record which image-bearing source
+/// records it actually sent.
+///
+/// # Errors
+///
+/// Returns an error when an image cannot be planned safely, including a corrupt
+/// image or a digest mismatch. A budget never fails a request.
+pub fn prune_request_with_plan<'a>(
+    history: Cow<'a, [ConversationItem]>,
+    policy: &ResolvedImagePolicy,
+) -> anyhow::Result<RequestImagePlan<'a>> {
+    let slots = collect_image_slots(&history);
+    if slots.is_empty() {
+        return Ok(RequestImagePlan {
+            history,
+            plan: ImageBudgetPlan::default(),
+            owners: Vec::new(),
+        });
+    }
+    let owners: Vec<ImageOwner> = slots.iter().map(|slot| slot.owner).collect();
+    let plan = plan_admitted_images(&slots, policy)?;
+    let every_image_fits = plan
+        .entries
+        .iter()
+        .all(|entry| matches!(entry, ImagePlanEntry::Keep));
+    drop(slots);
+    if every_image_fits {
+        return Ok(RequestImagePlan {
+            history,
+            plan,
+            owners,
+        });
+    }
+    let mut owned = history.into_owned();
+    apply_plan_to_history(&mut owned, &owners, plan.clone())?;
+    Ok(RequestImagePlan {
+        history: Cow::Owned(owned),
+        plan,
+        owners,
+    })
+}
+
 /// Prune a request projection to the configured image policy.
 ///
 /// Images are admitted in source order and an image that would exceed a budget
@@ -614,27 +704,18 @@ pub fn plan_admitted_images(
 ///
 /// Returns an error when an image cannot be planned safely, including a corrupt
 /// image or a digest mismatch. A budget never fails a request.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the agent uses the plan-bearing variant; this keeps the simple signature"
+    )
+)]
 pub fn prune_request<'a>(
     history: Cow<'a, [ConversationItem]>,
     policy: &ResolvedImagePolicy,
 ) -> anyhow::Result<Cow<'a, [ConversationItem]>> {
-    let slots = collect_image_slots(&history);
-    if slots.is_empty() {
-        return Ok(history);
-    }
-    let owners: Vec<ImageOwner> = slots.iter().map(|slot| slot.owner).collect();
-    let plan = plan_admitted_images(&slots, policy)?;
-    let every_image_fits = plan
-        .entries
-        .iter()
-        .all(|entry| matches!(entry, ImagePlanEntry::Keep));
-    drop(slots);
-    if every_image_fits {
-        return Ok(history);
-    }
-    let mut owned = history.into_owned();
-    apply_plan_to_history(&mut owned, &owners, plan)?;
-    Ok(Cow::Owned(owned))
+    Ok(prune_request_with_plan(history, policy)?.history)
 }
 
 /// Verify every image digest in a request history without changing it.

@@ -7,7 +7,7 @@ use futures::StreamExt;
 use crate::clients::agent::{Agent, TurnResult, record_turn_usage};
 use crate::clients::agent_state::RecordProvenance;
 use crate::clients::backend::FinalOutputConstraint;
-use crate::clients::image_budget::prune_request;
+use crate::clients::image_budget::prune_request_with_plan;
 use crate::clients::retry::{RequestOverrides, RetryReason, RetryStatus};
 use crate::clients::termination::{
     self, ContextPressure, IntendedLimits, TerminationVerdict, TurnEvidence,
@@ -225,6 +225,7 @@ impl Agent {
                 items,
                 usage,
                 termination,
+                consumed_sources,
                 ..
             } = self.complete_turn_with_image_recovery(turn_mode).await?;
 
@@ -254,6 +255,12 @@ impl Agent {
                 );
                 return Err(context_pressure_error(self.session_id, pressure).into());
             }
+
+            // The provider accepted this response, so every image the request
+            // emitted reached it. A discarded response returned above and
+            // marks nothing; an image-recovery retry replaces the plan, so a
+            // rejected attempt cannot consume pixels.
+            self.conversation.mark_images_consumed(&consumed_sources);
 
             let function_calls = self.process_completed_turn(items, turn_mode)?;
             let turn_context = TurnContext {
@@ -1011,8 +1018,16 @@ impl Agent {
         // what keeps each request a prefix-extension of the last one. A
         // text-only model never receives images, so it does not plan them.
         let history = self.conversation.request_context();
+        let mut consumed_sources = Vec::new();
         let history = if self.config.model_config.supports_images {
-            prune_request(history, &self.image_policy)?
+            let request = prune_request_with_plan(history, &self.image_policy)?;
+            let source_refs = self.conversation.request_source_refs();
+            consumed_sources = request
+                .fully_emitted_items()
+                .into_iter()
+                .filter_map(|item| source_refs.get(item).copied())
+                .collect();
+            request.history
         } else {
             history
         };
@@ -1022,7 +1037,7 @@ impl Agent {
         let observer = &mut self.observer;
         let total_usage = &mut self.total_usage;
         let last_usage = &mut self.last_usage;
-        runner
+        let mut turn = runner
             .complete_turn(
                 config,
                 session_id,
@@ -1050,7 +1065,9 @@ impl Agent {
                     );
                 },
             )
-            .await
+            .await?;
+        turn.consumed_sources = consumed_sources;
+        Ok(turn)
     }
 
     #[cfg(test)]
