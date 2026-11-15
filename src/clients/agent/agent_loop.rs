@@ -966,9 +966,11 @@ impl Agent {
         let task_id = self.task_id;
         // Requests use the projection, never the raw vector: raw offsets keep
         // their meaning for attribution while a checkpoint may replace retired
-        // history here. Image pruning is request-only and happens before the
-        // first attempt, so every retry of this turn sees the same projection.
-        // A text-only model never receives images, so it does not plan them.
+        // history here. Image admission is request-only, happens before the
+        // first attempt so every retry of this turn sees the same projection,
+        // and never changes an image an earlier request already sent, which is
+        // what keeps each request a prefix-extension of the last one. A
+        // text-only model never receives images, so it does not plan them.
         let history = self.conversation.request_context();
         let history = if self.config.model_config.supports_images {
             prune_request(history, &self.image_policy)?

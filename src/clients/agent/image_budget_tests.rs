@@ -112,20 +112,20 @@ impl Match for RequestShape {
 }
 
 #[tokio::test]
-async fn agent_prunes_old_images_sends_markers_and_keeps_raw_history() {
+async fn agent_omits_the_overflowing_image_sends_markers_and_keeps_raw_history() {
     let mock_server = MockServer::start().await;
-    let old_dropped = png_part(10, 10);
-    let old_kept = png_part(11, 11);
-    let newest = png_part(12, 12);
+    let old_kept = png_part(10, 10);
+    let newer_kept = png_part(11, 11);
+    let omitted = png_part(12, 12);
     let marker = format!(
-        "[image omitted: count; image/png, 10x10, {} bytes]",
-        decoded_len(&old_dropped)
+        "[image omitted: count; image/png, 12x12, {} bytes; the request image budget is exhausted for this run, so crop or downscale the source, or continue from text]",
+        decoded_len(&omitted)
     );
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .and(RequestShape {
-            present: vec![old_kept.data_url(), newest.data_url()],
-            absent: vec![old_dropped.data_url()],
+            present: vec![old_kept.data_url(), newer_kept.data_url()],
+            absent: vec![omitted.data_url()],
             markers: vec![marker],
         })
         .respond_with(ResponseTemplate::new(200).set_body_json(final_chat_response()))
@@ -134,8 +134,8 @@ async fn agent_prunes_old_images_sends_markers_and_keeps_raw_history() {
         .await;
 
     let history = vec![
-        user_message("old", vec![old_dropped, old_kept]),
-        user_message("new", vec![newest]),
+        user_message("old", vec![old_kept, newer_kept]),
+        user_message("new", vec![omitted]),
     ];
     let mut agent = test_agent(&mock_server.uri())
         .with_history(history)
@@ -155,19 +155,27 @@ async fn agent_prunes_old_images_sends_markers_and_keeps_raw_history() {
 }
 
 #[tokio::test]
-async fn pinned_image_overflow_fails_before_a_provider_request() {
+async fn image_overflow_omits_instead_of_failing_the_request() {
     let mock_server = MockServer::start().await;
+    let kept = png_part(10, 10);
+    let omitted = png_part(11, 11);
+    let marker = format!(
+        "[image omitted: count; image/png, 11x11, {} bytes; the request image budget is exhausted for this run, so crop or downscale the source, or continue from text]",
+        decoded_len(&omitted)
+    );
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
+        .and(RequestShape {
+            present: vec![kept.data_url()],
+            absent: vec![omitted.data_url()],
+            markers: vec![marker],
+        })
         .respond_with(ResponseTemplate::new(200).set_body_json(final_chat_response()))
-        .expect(0)
+        .expect(1)
         .mount(&mock_server)
         .await;
 
-    let history = vec![user_message(
-        "current",
-        vec![png_part(10, 10), png_part(11, 11)],
-    )];
+    let history = vec![user_message("current", vec![kept, omitted])];
     let mut agent = test_agent(&mock_server.uri())
         .with_history(history)
         .unwrap()
@@ -177,15 +185,13 @@ async fn pinned_image_overflow_fails_before_a_provider_request() {
             max_pixels: 100_000_000,
         });
 
-    let error = agent.send("go".to_string()).await.unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("pinned request images exceed the image count budget"),
-        "{error}"
-    );
+    assert_eq!(agent.send("go".to_string()).await.unwrap(), "Hello!");
     mock_server.verify().await;
-    assert_eq!(agent.history_image_count(), 2);
+    assert_eq!(
+        agent.history_image_count(),
+        2,
+        "the raw conversation must keep the omitted image"
+    );
 }
 
 #[tokio::test]

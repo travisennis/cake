@@ -1,10 +1,12 @@
 ---
-status: accepted
+status: superseded by ADR-063
 date: 2026-11-14
 decision-makers: Travis Ennis
 ---
 
 # Bound request images by count, pixels, and bytes
+
+> Superseded by [ADR 063](063-admit-request-images-without-rewriting-sent-history.md). Its oldest-first eviction and pin policy rewrote history the provider had already accepted, which breaks the tail-only prefix invariant. The settings, source acceptance, downscaling, digest verification, and diagnostics decided here carry forward into 063 unchanged.
 
 ## Context and Problem Statement
 

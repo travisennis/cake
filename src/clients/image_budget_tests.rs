@@ -6,6 +6,7 @@ use image::{DynamicImage, ImageFormat, Rgb, RgbImage, Rgba, RgbaImage};
 use super::*;
 use crate::config::blob_store::ContentId;
 use crate::config::settings::ResolvedImagePolicy;
+use crate::types::Role;
 
 fn loose_policy() -> ResolvedImagePolicy {
     ResolvedImagePolicy {
@@ -56,12 +57,8 @@ fn decoded(part: &ImagePart) -> Vec<u8> {
         .unwrap()
 }
 
-fn plan_parts(
-    parts: &[ImagePart],
-    pinned: &[usize],
-    policy: &ResolvedImagePolicy,
-) -> Result<ImageBudgetPlan, ImageBudgetError> {
-    let slots: Vec<ImageSlot<'_>> = parts
+fn slots<'a>(parts: &'a [ImagePart], pinned: &[usize]) -> Vec<ImageSlot<'a>> {
+    parts
         .iter()
         .enumerate()
         .map(|(index, image)| ImageSlot {
@@ -73,8 +70,24 @@ fn plan_parts(
             image,
             pinned: pinned.contains(&index),
         })
-        .collect();
-    plan_image_budget(&slots, policy)
+        .collect()
+}
+
+/// Plan as checkpoint preparation does, with pins and oldest-first retirement.
+fn checkpoint_parts(
+    parts: &[ImagePart],
+    pinned: &[usize],
+    policy: &ResolvedImagePolicy,
+) -> Result<ImageBudgetPlan, ImageBudgetError> {
+    plan_image_budget(&slots(parts, pinned), policy)
+}
+
+/// Plan as an ordinary provider request does: admission only, no pins.
+fn admit_parts(
+    parts: &[ImagePart],
+    policy: &ResolvedImagePolicy,
+) -> Result<ImageBudgetPlan, ImageBudgetError> {
+    plan_admitted_images(&slots(parts, &[]), policy)
 }
 
 fn count_only_parts() -> Vec<ImagePart> {
@@ -93,16 +106,58 @@ fn user_message(content: &str, images: Vec<ImagePart>) -> ConversationItem {
 }
 
 #[test]
-fn count_budget_drops_the_oldest_unpinned_image_and_marks_it() {
+fn count_budget_admits_in_order_and_marks_the_overflowing_image() {
+    let parts: Vec<ImagePart> = (0..9).map(|_| png_part(10, 10)).collect();
+    let plan = admit_parts(&parts, &policy(8, loose_policy().max_bytes, 100_000_000)).unwrap();
+
+    assert_eq!(plan.report.original_count, 9);
+    assert_eq!(plan.report.emitted_count, 8);
+    for entry in &plan.entries[..8] {
+        assert!(matches!(entry, ImagePlanEntry::Keep));
+    }
+    assert_eq!(
+        plan.report.images[8].change,
+        ImageBudgetChange::Omitted(ImageOmissionReason::Count)
+    );
+    let marker = format!(
+        "[image omitted: count; image/png, 10x10, {} bytes; the request image budget is exhausted for this run, so crop or downscale the source, or continue from text]",
+        decoded(&parts[8]).len()
+    );
+    match &plan.entries[8] {
+        ImagePlanEntry::Omit {
+            reason: ImageOmissionReason::Count,
+            marker: actual,
+        } => assert_eq!(actual, &marker),
+        other => panic!("expected an admission count omission, got {other:?}"),
+    }
+}
+
+#[test]
+fn admission_ignores_pins_and_never_fails_on_a_budget() {
+    let parts = vec![png_part(10, 10), png_part(11, 11)];
+    let plan =
+        plan_admitted_images(&slots(&parts, &[0, 1]), &policy(1, 4096, 100_000_000)).unwrap();
+
+    assert!(matches!(plan.entries[0], ImagePlanEntry::Keep));
+    assert!(matches!(
+        plan.entries[1],
+        ImagePlanEntry::Omit {
+            reason: ImageOmissionReason::Count,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn checkpoint_retires_the_oldest_unpinned_image_and_keeps_the_pinned_newest() {
     let parts = count_only_parts();
-    let plan = plan_parts(
+    let plan = checkpoint_parts(
         &parts,
         &[2],
         &policy(2, loose_policy().max_bytes, 100_000_000),
     )
     .unwrap();
 
-    assert_eq!(plan.report.original_count, 3);
     assert_eq!(plan.report.emitted_count, 2);
     assert_eq!(
         plan.report.images[0].change,
@@ -110,49 +165,42 @@ fn count_budget_drops_the_oldest_unpinned_image_and_marks_it() {
     );
     assert!(matches!(plan.entries[1], ImagePlanEntry::Keep));
     assert!(matches!(plan.entries[2], ImagePlanEntry::Keep));
-    let marker = format!(
-        "[image omitted: count; image/png, 10x10, {} bytes]",
-        decoded(&parts[0]).len()
-    );
     match &plan.entries[0] {
-        ImagePlanEntry::Omit {
-            reason: ImageOmissionReason::Count,
-            marker: actual,
-        } => assert_eq!(actual, &marker),
+        ImagePlanEntry::Omit { marker, .. } => assert_eq!(
+            marker,
+            &format!(
+                "[image omitted: count; image/png, 10x10, {} bytes]",
+                decoded(&parts[0]).len()
+            )
+        ),
         other => panic!("expected a count omission, got {other:?}"),
     }
 }
 
 #[test]
-fn pixel_budget_drops_the_oldest_unpinned_image() {
+fn pixel_budget_omits_the_image_that_would_exceed_it() {
     let parts = vec![png_part(100, 100), png_part(100, 100)];
-    let plan = plan_parts(&parts, &[1], &policy(8, loose_policy().max_bytes, 15_000)).unwrap();
+    let plan = admit_parts(&parts, &policy(8, loose_policy().max_bytes, 15_000)).unwrap();
 
     assert_eq!(plan.report.emitted_count, 1);
     assert_eq!(plan.report.emitted_pixels, 10_000);
     assert_eq!(
-        plan.report.images[0].change,
+        plan.report.images[1].change,
         ImageBudgetChange::Omitted(ImageOmissionReason::Pixels)
     );
-    assert!(matches!(
-        plan.entries[0],
-        ImagePlanEntry::Omit {
-            reason: ImageOmissionReason::Pixels,
-            ..
-        }
-    ));
+    assert!(matches!(plan.entries[0], ImagePlanEntry::Keep));
 }
 
 #[test]
-fn byte_budget_drops_the_oldest_unpinned_image() {
+fn byte_budget_omits_the_image_that_would_exceed_it() {
     let parts = vec![png_part(100, 100), png_part(100, 100)];
     let each = decoded(&parts[0]).len();
-    let plan = plan_parts(&parts, &[1], &policy(8, each + each / 2, 100_000_000)).unwrap();
+    let plan = admit_parts(&parts, &policy(8, each + each / 2, 100_000_000)).unwrap();
 
     assert_eq!(plan.report.emitted_count, 1);
     assert_eq!(plan.report.emitted_bytes, each);
     assert_eq!(
-        plan.report.images[0].change,
+        plan.report.images[1].change,
         ImageBudgetChange::Omitted(ImageOmissionReason::Bytes)
     );
 }
@@ -160,7 +208,7 @@ fn byte_budget_drops_the_oldest_unpinned_image() {
 #[test]
 fn per_image_downscale_preserves_aspect_and_png_format() {
     let parts = vec![png_part(2400, 600)];
-    let plan = plan_parts(&parts, &[0], &loose_policy()).unwrap();
+    let plan = admit_parts(&parts, &loose_policy()).unwrap();
 
     let ImagePlanEntry::Replace(image) = &plan.entries[0] else {
         panic!(
@@ -194,7 +242,7 @@ fn downscaled_jpeg_gif_and_webp_become_jpeg() {
             _ => unreachable!(),
         };
         let parts = vec![image_part(media_type, encode_image(2400, 600, source))];
-        let plan = plan_parts(&parts, &[0], &loose_policy()).unwrap();
+        let plan = admit_parts(&parts, &loose_policy()).unwrap();
 
         let ImagePlanEntry::Replace(image) = &plan.entries[0] else {
             panic!("{source:?} should be downscaled, got {:?}", plan.entries[0]);
@@ -223,7 +271,7 @@ fn transparent_gif_downscales_to_png() {
         .write_to(&mut Cursor::new(&mut bytes), ImageFormat::Gif)
         .unwrap();
     let parts = vec![image_part("image/gif", bytes)];
-    let plan = plan_parts(&parts, &[0], &loose_policy()).unwrap();
+    let plan = admit_parts(&parts, &loose_policy()).unwrap();
 
     let ImagePlanEntry::Replace(image) = &plan.entries[0] else {
         panic!("a transparent GIF should be downscaled");
@@ -239,7 +287,7 @@ fn small_image_is_kept_and_bounded_dimensions_never_upscale() {
     assert_eq!(bounded_dimensions(2400, 600, 100_000_000), (2048, 512));
 
     let parts = vec![png_part(10, 10)];
-    let plan = plan_parts(&parts, &[0], &loose_policy()).unwrap();
+    let plan = admit_parts(&parts, &loose_policy()).unwrap();
     assert!(matches!(plan.entries[0], ImagePlanEntry::Keep));
     assert_eq!(plan.report.emitted_bytes, decoded(&parts[0]).len());
 }
@@ -249,7 +297,7 @@ fn digest_mismatch_is_a_hard_error() {
     let mut part = png_part(10, 10);
     part.content_id = Some(ContentId::from_bytes(b"different bytes").to_string());
 
-    let error = plan_parts(&[part], &[], &loose_policy()).unwrap_err();
+    let error = admit_parts(&[part], &loose_policy()).unwrap_err();
     assert!(matches!(
         error,
         ImageBudgetError::DigestMismatch { slot: 1, .. }
@@ -265,7 +313,7 @@ fn invalid_base64_is_a_hard_error() {
         content_id: None,
     };
 
-    let error = plan_parts(&[part], &[], &loose_policy()).unwrap_err();
+    let error = admit_parts(&[part], &loose_policy()).unwrap_err();
     assert!(matches!(
         error,
         ImageBudgetError::InvalidBase64 { slot: 1, .. }
@@ -275,7 +323,7 @@ fn invalid_base64_is_a_hard_error() {
 #[test]
 fn opaque_image_is_kept_under_budget_and_has_no_pixels() {
     let part = image_part("image/tiff", b"opaque bytes".to_vec());
-    let plan = plan_parts(&[part], &[], &loose_policy()).unwrap();
+    let plan = admit_parts(&[part], &loose_policy()).unwrap();
 
     assert!(matches!(plan.entries[0], ImagePlanEntry::Keep));
     assert_eq!(plan.report.emitted_pixels, 0);
@@ -283,11 +331,11 @@ fn opaque_image_is_kept_under_budget_and_has_no_pixels() {
 }
 
 #[test]
-fn opaque_image_over_budget_is_omitted_or_rejected_when_pinned() {
+fn opaque_image_over_budget_is_omitted_at_admission_or_rejected_when_pinned() {
     let part = image_part("image/tiff", b"opaque bytes".to_vec());
     let tight = policy(8, 4, 100_000_000);
-    let plan = plan_parts(std::slice::from_ref(&part), &[], &tight).unwrap();
-    let marker = "[image omitted: cannot fit; image/tiff, 12 bytes]";
+    let plan = admit_parts(std::slice::from_ref(&part), &tight).unwrap();
+    let marker = "[image omitted: cannot fit; image/tiff, 12 bytes; crop or downscale the source, or continue from text]";
     match &plan.entries[0] {
         ImagePlanEntry::Omit {
             reason: ImageOmissionReason::CannotFit,
@@ -296,7 +344,7 @@ fn opaque_image_over_budget_is_omitted_or_rejected_when_pinned() {
         other => panic!("expected a cannot-fit omission, got {other:?}"),
     }
 
-    let error = plan_parts(&[part], &[0], &tight).unwrap_err();
+    let error = checkpoint_parts(&[part], &[0], &tight).unwrap_err();
     assert!(matches!(
         error,
         ImageBudgetError::PinnedCannotFit { slot: 1, .. }
@@ -304,9 +352,9 @@ fn opaque_image_over_budget_is_omitted_or_rejected_when_pinned() {
 }
 
 #[test]
-fn pinned_images_that_exceed_the_count_budget_error() {
+fn checkpoint_pins_that_exceed_the_count_budget_error() {
     let parts = vec![png_part(10, 10), png_part(10, 10)];
-    let error = plan_parts(
+    let error = checkpoint_parts(
         &parts,
         &[0, 1],
         &policy(1, loose_policy().max_bytes, 100_000_000),
@@ -333,7 +381,7 @@ fn decompression_bomb_is_rejected_before_decode() {
         0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x44, 0x01, 0x00, 0x3b,
     ];
     let parts = vec![image_part("image/gif", bomb.to_vec())];
-    let error = plan_parts(&parts, &[], &loose_policy()).unwrap_err();
+    let error = admit_parts(&parts, &loose_policy()).unwrap_err();
 
     assert!(matches!(
         error,
@@ -354,13 +402,16 @@ fn prune_request_returns_the_borrowed_history_when_every_image_fits() {
 }
 
 #[test]
-fn prune_request_drops_oldest_images_keeps_the_newest_and_leaves_raw_history() {
-    let old_image = png_part(10, 10);
-    let old_bytes = decoded(&old_image).len();
+fn prune_request_omits_the_image_that_overflows_and_leaves_raw_history() {
     let history = vec![
-        user_message("old", vec![old_image, png_part(10, 10)]),
+        user_message("old", vec![png_part(10, 10), png_part(10, 10)]),
         user_message("new", vec![png_part(10, 10)]),
     ];
+    let omitted_bytes = decoded(match &history[1] {
+        ConversationItem::Message { images, .. } => &images[0],
+        _ => panic!("second item should be a message"),
+    })
+    .len();
     let pruned = prune_request(
         Cow::Borrowed(&history),
         &policy(2, loose_policy().max_bytes, 100_000_000),
@@ -376,28 +427,65 @@ fn prune_request_drops_oldest_images_keeps_the_newest_and_leaves_raw_history() {
     else {
         panic!("first item should be a message");
     };
-    assert_eq!(
-        content,
-        &format!("old\n[image omitted: count; image/png, 10x10, {old_bytes} bytes]")
-    );
-    assert_eq!(images.len(), 1);
-    let ConversationItem::Message { images, .. } = &pruned[1] else {
+    assert_eq!(content, "old", "an admitted item must not be rewritten");
+    assert_eq!(images.len(), 2);
+    let ConversationItem::Message {
+        content, images, ..
+    } = &pruned[1]
+    else {
         panic!("second item should be a message");
     };
-    assert_eq!(images.len(), 1);
+    assert_eq!(
+        content,
+        &format!(
+            "new\n[image omitted: count; image/png, 10x10, {omitted_bytes} bytes; the request image budget is exhausted for this run, so crop or downscale the source, or continue from text]"
+        )
+    );
+    assert!(images.is_empty());
 
     let ConversationItem::Message {
         content, images, ..
-    } = &history[0]
+    } = &history[1]
     else {
         panic!("raw history should still be a message");
     };
-    assert_eq!(content, "old");
+    assert_eq!(content, "new");
     assert_eq!(
         images.len(),
-        2,
+        1,
         "raw history must keep every original image"
     );
+}
+
+#[test]
+fn admission_planning_extends_the_previous_projection() {
+    let budgets = policy(2, loose_policy().max_bytes, 100_000_000);
+    let first = vec![
+        user_message("one", vec![png_part(10, 10)]),
+        user_message("two", vec![png_part(10, 10)]),
+    ];
+    let before = prune_request(Cow::Borrowed(&first), &budgets).unwrap();
+
+    let mut extended = first.clone();
+    extended.push(user_message("three", vec![png_part(10, 10)]));
+    let after = prune_request(Cow::Borrowed(&extended), &budgets).unwrap();
+
+    assert_eq!(
+        &after[..before.len()],
+        before.as_ref(),
+        "a new image must not change the projection an earlier request already sent"
+    );
+    let ConversationItem::Message {
+        content, images, ..
+    } = &after[2]
+    else {
+        panic!("third item should be a message");
+    };
+    assert!(
+        images.is_empty(),
+        "the third image overflows the count budget"
+    );
+    assert!(content.contains("[image omitted: count;"));
 }
 
 #[test]
