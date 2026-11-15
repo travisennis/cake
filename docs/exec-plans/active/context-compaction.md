@@ -23,7 +23,7 @@ This is a plan for future implementation, not implementation delivered by task 0
 - [x] (2026-10-20) Allocated implementation children 034e-034j with native dependencies; 034d depends on 034j.
 - [x] (2026-10-22) M1 (034e): delivered validated checkpoint data, the format-4 `compaction` record, the shared request projector, positional restore and fork boundaries, and the durable checkpoint commit on branch `feat/checkpoint-persistence`. Focused evidence: `cargo test compaction`, `cargo test session`, the persist-callback and writer-failure tests in `src/clients/agent/tail_only_growth_tests.rs`, and the replay unit tests; the child's handoff records the integration targets and full gates. No production path creates a checkpoint yet.
 - [x] (2026-11-13) M2 (034f): added `src/clients/compaction.rs` with `prepare`/`summarize`, the content-class estimator, bounded summary batching through a `SummaryCaller` seam, backend cap checks, and purpose-attributed summary usage. `prepare` is pure and returns no-op/no-fit/prepared; `summarize` enforces the prompt, request, time, and checkpoint ceilings. Focused evidence: `cargo test compaction`, `cargo test agent_runner`, `cargo test usage`, `just session-metrics-check`; no production trigger, CLI command, settings, or provider spend was added.
-- [ ] M3 (034g): integrate settings and pre-request compaction, plus task 034a's prefix invariant.
+- [ ] M3 (034g): integrate settings and pre-request compaction, plus task 034a's prefix invariant. Stage plan: `docs/exec-plans/active/automatic-compaction.md` (drafted 2026-11-15).
 - [ ] M4 (034h): integrate task 034b's pressure classification and one compact-and-retry guard.
 - [ ] M5 (034i): deliver manual compaction, raw-history recovery, resume/fork/replay behavior, and user documentation.
 - [ ] M6 (034j): verify deterministic end-to-end continuation and integration checks.
@@ -161,6 +161,8 @@ Include image tool results returned immediately before a threshold crossing: the
 wire requests for supported Chat Completions and Responses configurations.
 
 ### M3: compact before provider requests without changing raw attribution
+
+The stage plan for this milestone is `docs/exec-plans/active/automatic-compaction.md`. It is self-contained for implementation and records the current seam's gaps and the decisions that close them.
 
 Add global/profile field-wise compaction overlays to `src/config/settings.rs`, with the existing settings precedence and unknown-key diagnostics. Pass resolved policy into agent construction in `src/main.rs` and `src/cli/session_factory.rs`. Check backend support when automatic policy is enabled, before starting the run. Compaction appends in place on any format-4 session; a no-fit preparation commits no checkpoint and makes no summary call. A session that already contains a checkpoint honors it even when automatic policy is disabled, including on the Codex backend, because disabled controls automatic creation, not restoration.
 
@@ -368,3 +370,5 @@ No new runtime dependencies, tokenizer downloads, provider/model discovery, tool
 Revision note (2026-10-12): the plan translates the October 9 research into a proposed checkpoint design, native ahm staging, and deterministic delivery milestones. A later same-day review replaced the v5 session-format bump with a self-versioned format-4 record kind, specified the content-class estimator, and fixed the resume boundary to the checkpoint record's position. Only document authoring is complete at this point.
 
 Revision note (2026-10-13): design review added protected image/skill exchanges and input provenance, shared-writer failure handling through cleanup, byte-aware preparation, useful headroom and failure suppression, explicit backend support, raw-history recovery, and the mandatory M7 qualification gate. Trav selected the backend, recovery, qualification, and skill-retention policies; the format-4 and positional-boundary decisions remain unchanged.
+
+Revision note (2026-11-15): 034g drafted `docs/exec-plans/active/automatic-compaction.md` as the self-contained stage plan for M3. No implementation or behavior changed.
