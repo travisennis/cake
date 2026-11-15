@@ -1,12 +1,144 @@
 use std::borrow::Cow;
 
+use crate::types::compaction::{MessageOrigin, SkillRead};
 use crate::types::{
-    CompactionData, ContextSeed, ConversationItem, ImagePart, Role, Usage, project_context,
+    CompactionData, ContextSeed, ConversationItem, ImagePart, ReplaySafety, Role, Usage,
+    project_context,
 };
+
+/// Whether an image-bearing source record reached an accepted main request.
+///
+/// Live records start [`Self::Unconsumed`] and become [`Self::Consumed`] only
+/// after the main response that emitted every image is accepted. A record
+/// restored without checkpoint evidence starts [`Self::Unknown`], which future
+/// selection treats conservatively.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ImageConsumption {
+    Consumed,
+    Unconsumed,
+    Unknown,
+}
+
+/// Checkpoint provenance for one raw-history record.
+///
+/// The table is parallel to [`ConversationState::history`], never becomes a
+/// provider item, and is not persisted on its own. A checkpoint copies the
+/// fields it needs into [`crate::types::compaction::RetainedRecord`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RecordProvenance {
+    /// Who authored a user-role message; absent for every other record and for
+    /// restored records whose origin was not persisted in the seed.
+    pub(super) origin: Option<MessageOrigin>,
+    /// The task that appended the record, when known.
+    pub(super) source_task: Option<String>,
+    /// A successful read of a known skill's instructions.
+    pub(super) skill_read: Option<SkillRead>,
+    /// The execution-time replay declaration for a function call or output.
+    pub(super) replay: Option<ReplaySafety>,
+    /// Whether the record's images reached an accepted main request.
+    pub(super) image_consumption: ImageConsumption,
+}
+
+impl RecordProvenance {
+    const fn consumed(source_task: Option<String>) -> Self {
+        Self {
+            origin: None,
+            source_task,
+            skill_read: None,
+            replay: None,
+            image_consumption: ImageConsumption::Consumed,
+        }
+    }
+
+    /// Provenance for an item appended by the live agent loop.
+    pub(super) const fn live(
+        item: &ConversationItem,
+        source_task: Option<String>,
+        replay: Option<ReplaySafety>,
+    ) -> Self {
+        Self {
+            origin: None,
+            source_task,
+            skill_read: None,
+            replay,
+            image_consumption: if item.image_count() == 0 {
+                ImageConsumption::Consumed
+            } else {
+                ImageConsumption::Unconsumed
+            },
+        }
+    }
+
+    /// Provenance for a restored raw record. Session records are not part of
+    /// this seed, so origin, task, skill, and replay evidence stay unknown.
+    const fn restored(item: &ConversationItem) -> Self {
+        Self {
+            origin: None,
+            source_task: None,
+            skill_read: None,
+            replay: None,
+            image_consumption: if item.image_count() == 0 {
+                ImageConsumption::Consumed
+            } else {
+                ImageConsumption::Unknown
+            },
+        }
+    }
+
+    pub(super) const fn live_tool_output(
+        source_task: Option<String>,
+        replay: Option<ReplaySafety>,
+        skill_read: Option<SkillRead>,
+        has_images: bool,
+    ) -> Self {
+        Self {
+            origin: None,
+            source_task,
+            skill_read,
+            replay,
+            image_consumption: if has_images {
+                ImageConsumption::Unconsumed
+            } else {
+                ImageConsumption::Consumed
+            },
+        }
+    }
+
+    const fn with_origin(mut self, origin: MessageOrigin) -> Self {
+        self.origin = Some(origin);
+        self
+    }
+}
+
+/// One retirable raw-history record in source order.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "checkpoint preparation consumes this ordering in Milestone 2"
+    )
+)]
+#[derive(Debug, Clone, Copy)]
+pub(super) struct RawSourceRecord<'a> {
+    pub(super) raw_index: usize,
+    pub(super) item: &'a ConversationItem,
+    pub(super) provenance: &'a RecordProvenance,
+}
 
 #[derive(Debug)]
 pub(super) struct ConversationState {
     history: Vec<ConversationItem>,
+    /// Provenance aligned one-to-one with `history` by raw index.
+    provenance: Vec<RecordProvenance>,
+    /// Number of leading fresh prompt records. Prompt context is never retired.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "checkpoint preparation consumes this boundary in Milestone 2"
+        )
+    )]
+    prompt_prefix_len: usize,
     /// Repair outputs synthesized by [`Self::with_restored_context`] that have
     /// not yet been streamed and persisted.
     pending_repairs: Vec<ConversationItem>,
@@ -32,6 +164,11 @@ impl ConversationState {
                     images: Vec::new(),
                 })
                 .collect(),
+            provenance: initial_messages
+                .iter()
+                .map(|_| RecordProvenance::consumed(None))
+                .collect(),
+            prompt_prefix_len: initial_messages.len(),
             pending_repairs: Vec::new(),
             checkpoint: None,
             checkpoint_boundary: 0,
@@ -40,6 +177,40 @@ impl ConversationState {
 
     pub(super) fn history(&self) -> &[ConversationItem] {
         &self.history
+    }
+
+    /// Provenance aligned one-to-one with [`Self::history`] by raw index.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "checkpoint preparation consumes the side table in Milestone 2"
+        )
+    )]
+    pub(super) fn provenance(&self) -> &[RecordProvenance] {
+        &self.provenance
+    }
+
+    /// Raw body records in retirement order: oldest first, after the fresh
+    /// prompt prefix and any active checkpoint boundary.
+    ///
+    /// These are candidates, not final eligibility: preparation removes pinned
+    /// exchanges later. Retained records in an active checkpoint are ordered by
+    /// `checkpoint.retained`, not by this raw slice.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "checkpoint preparation consumes this ordering in Milestone 2"
+        )
+    )]
+    pub(super) fn retirable_raw_source_records(&self) -> impl Iterator<Item = RawSourceRecord<'_>> {
+        let start = self.prompt_prefix_len.max(self.checkpoint_boundary);
+        (start..self.history.len()).map(|raw_index| RawSourceRecord {
+            raw_index,
+            item: &self.history[raw_index],
+            provenance: &self.provenance[raw_index],
+        })
     }
 
     /// The provider request derived from raw history and the active checkpoint.
@@ -71,7 +242,12 @@ impl ConversationState {
         self.checkpoint.as_ref()
     }
 
-    pub(super) fn append_developer_context(&mut self, contexts: Vec<String>) {
+    pub(super) fn append_developer_context(
+        &mut self,
+        contexts: Vec<String>,
+        source_task: Option<&str>,
+    ) {
+        self.align_provenance_for_test_history();
         let timestamp = chrono::Utc::now();
         for content in contexts {
             if content.is_empty() {
@@ -85,7 +261,10 @@ impl ConversationState {
                 timestamp: Some(timestamp),
                 images: Vec::new(),
             });
+            self.provenance
+                .push(RecordProvenance::consumed(source_task.map(str::to_owned)));
         }
+        self.assert_provenance_aligned();
     }
 
     /// Restore a persisted conversation, repairing tool calls the previous
@@ -162,14 +341,23 @@ impl ConversationState {
         let repairs = repair_items_for_incomplete_calls(
             messages.get(first_non_prompt..).unwrap_or_default(),
         )?;
+        let restored_provenance: Vec<RecordProvenance> = messages
+            .iter()
+            .skip(first_non_prompt)
+            .map(RecordProvenance::restored)
+            .collect();
         self.history
             .extend(messages.into_iter().skip(first_non_prompt));
+        self.provenance.extend(restored_provenance);
         self.history.extend(repairs.iter().cloned());
+        self.provenance
+            .extend(repairs.iter().map(|_| RecordProvenance::consumed(None)));
         self.pending_repairs.extend(repairs);
         if let (Some(checkpoint), Some(boundary)) = (checkpoint, boundary) {
             self.checkpoint_boundary = prompt_len + boundary.saturating_sub(first_non_prompt);
             self.checkpoint = Some(checkpoint);
         }
+        self.assert_provenance_aligned();
         Ok(())
     }
 
@@ -178,7 +366,31 @@ impl ConversationState {
         std::mem::take(&mut self.pending_repairs)
     }
 
-    pub(super) fn push_user_message(&mut self, content: String) -> ConversationItem {
+    /// Append the real user input for a new invocation.
+    pub(super) fn push_user_message(
+        &mut self,
+        content: String,
+        source_task: Option<&str>,
+    ) -> ConversationItem {
+        self.push_user_message_with_origin(content, MessageOrigin::User, source_task)
+    }
+
+    /// Append a Cake-authored user-role message, such as a correction prompt.
+    pub(super) fn push_synthetic_user_message(
+        &mut self,
+        content: String,
+        source_task: Option<&str>,
+    ) -> ConversationItem {
+        self.push_user_message_with_origin(content, MessageOrigin::Synthetic, source_task)
+    }
+
+    fn push_user_message_with_origin(
+        &mut self,
+        content: String,
+        origin: MessageOrigin,
+        source_task: Option<&str>,
+    ) -> ConversationItem {
+        self.align_provenance_for_test_history();
         let item = ConversationItem::Message {
             role: Role::User,
             content,
@@ -188,11 +400,42 @@ impl ConversationState {
             images: Vec::new(),
         };
         self.history.push(item.clone());
+        self.provenance
+            .push(RecordProvenance::consumed(source_task.map(str::to_owned)).with_origin(origin));
+        self.assert_provenance_aligned();
         item
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "checkpoint preparation consumes this evidence in Milestone 2"
+        )
+    )]
     pub(super) fn extend_turn_items(&mut self, items: Vec<ConversationItem>) {
+        let provenance: Vec<RecordProvenance> = items
+            .iter()
+            .map(|item| RecordProvenance::live(item, None, None))
+            .collect();
+        self.extend_turn_items_with_provenance(items, provenance);
+    }
+
+    /// Append assistant-turn items with the exact provenance captured for each.
+    pub(super) fn extend_turn_items_with_provenance(
+        &mut self,
+        items: Vec<ConversationItem>,
+        provenance: Vec<RecordProvenance>,
+    ) {
+        self.align_provenance_for_test_history();
+        assert_eq!(
+            items.len(),
+            provenance.len(),
+            "every appended turn item needs one provenance entry"
+        );
         self.history.extend(items);
+        self.provenance.extend(provenance);
+        self.assert_provenance_aligned();
     }
 
     /// Remove every inline image from the conversation, returning how many were
@@ -204,8 +447,9 @@ impl ConversationState {
     /// pixels; the text of each result stays, so the conversation keeps the tool
     /// outputs that carried them.
     pub(super) fn drop_images(&mut self) -> usize {
+        self.align_provenance_for_test_history();
         let mut dropped = 0;
-        for item in &mut self.history {
+        for (item, provenance) in self.history.iter_mut().zip(&mut self.provenance) {
             let images = match item {
                 ConversationItem::Message { images, .. }
                 | ConversationItem::FunctionCallOutput { images, .. } => images,
@@ -213,9 +457,14 @@ impl ConversationState {
                     continue;
                 },
             };
+            if images.is_empty() {
+                continue;
+            }
             dropped += images.len();
             images.clear();
+            provenance.image_consumption = ImageConsumption::Consumed;
         }
+        self.assert_provenance_aligned();
         dropped
     }
 
@@ -224,7 +473,9 @@ impl ConversationState {
         call_id: String,
         output: String,
         images: Vec<ImagePart>,
+        provenance: RecordProvenance,
     ) -> ConversationItem {
+        self.align_provenance_for_test_history();
         let item = ConversationItem::FunctionCallOutput {
             call_id,
             output,
@@ -232,6 +483,8 @@ impl ConversationState {
             images,
         };
         self.history.push(item.clone());
+        self.provenance.push(provenance);
+        self.assert_provenance_aligned();
         item
     }
 
@@ -242,6 +495,37 @@ impl ConversationState {
     pub(super) fn resolve_assistant_message_from(&self, start: usize) -> Option<String> {
         resolve_assistant_message(self.history.get(start..).unwrap_or_default())
     }
+
+    fn assert_provenance_aligned(&self) {
+        debug_assert_eq!(
+            self.provenance.len(),
+            self.history.len(),
+            "provenance must stay aligned with raw history"
+        );
+    }
+
+    /// Test helpers may push directly through [`Self::history_mut`]. Backfill
+    /// only in test builds so production misalignment still trips the debug
+    /// assertion instead of inventing evidence.
+    #[cfg(test)]
+    fn align_provenance_for_test_history(&mut self) {
+        if self.provenance.len() >= self.history.len() {
+            return;
+        }
+        let missing: Vec<RecordProvenance> = self.history[self.provenance.len()..]
+            .iter()
+            .map(|item| RecordProvenance::live(item, None, None))
+            .collect();
+        self.provenance.extend(missing);
+    }
+
+    #[cfg(not(test))]
+    #[expect(
+        clippy::unused_self,
+        clippy::needless_pass_by_ref_mut,
+        reason = "the signature mirrors the test-only backfill so call sites stay identical"
+    )]
+    const fn align_provenance_for_test_history(&mut self) {}
 
     #[cfg(test)]
     pub(super) const fn history_mut(&mut self) -> &mut Vec<ConversationItem> {
@@ -446,6 +730,14 @@ mod tests {
         assert_eq!(state.drop_images(), 3);
         assert_eq!(state.drop_images(), 0);
 
+        assert!(
+            state
+                .provenance()
+                .iter()
+                .all(|provenance| provenance.image_consumption == ImageConsumption::Consumed),
+            "dropping images consumes every cleared record"
+        );
+
         let images: Vec<usize> = state
             .history()
             .iter()
@@ -460,6 +752,217 @@ mod tests {
             state.history().len(),
             4,
             "dropping images must not remove the text they accompanied"
+        );
+    }
+
+    #[test]
+    fn provenance_starts_consumed_for_the_prompt_prefix() {
+        let state = ConversationState::new(&[
+            (Role::System, "sys".to_string()),
+            (Role::Developer, "dev".to_string()),
+        ]);
+
+        assert_eq!(state.provenance().len(), 2);
+        for provenance in state.provenance() {
+            assert_eq!(provenance.origin, None);
+            assert_eq!(provenance.source_task, None);
+            assert_eq!(provenance.skill_read, None);
+            assert_eq!(provenance.replay, None);
+            assert_eq!(provenance.image_consumption, ImageConsumption::Consumed);
+        }
+        assert!(
+            state.retirable_raw_source_records().next().is_none(),
+            "prompt context is never a retirement candidate"
+        );
+    }
+
+    #[test]
+    fn live_user_inputs_record_origin_and_source_task() {
+        let mut state = ConversationState::new(&[(Role::System, "sys".to_string())]);
+
+        let user = state.push_user_message("real request".to_string(), Some("task-1"));
+        let synthetic = state.push_synthetic_user_message("corrective".to_string(), Some("task-1"));
+
+        assert!(matches!(
+            user,
+            ConversationItem::Message {
+                role: Role::User,
+                ..
+            }
+        ));
+        assert!(matches!(
+            synthetic,
+            ConversationItem::Message {
+                role: Role::User,
+                ..
+            }
+        ));
+        let provenance = state.provenance();
+        assert_eq!(provenance[1].origin, Some(MessageOrigin::User));
+        assert_eq!(provenance[1].source_task.as_deref(), Some("task-1"));
+        assert_eq!(provenance[2].origin, Some(MessageOrigin::Synthetic));
+        assert_eq!(provenance[2].source_task.as_deref(), Some("task-1"));
+        assert_eq!(provenance[2].image_consumption, ImageConsumption::Consumed);
+    }
+
+    #[test]
+    fn developer_context_records_the_task_without_a_user_origin() {
+        let mut state = ConversationState::new(&[(Role::System, "sys".to_string())]);
+
+        state.append_developer_context(
+            vec!["hook context".to_string(), String::new()],
+            Some("task-1"),
+        );
+
+        assert_eq!(state.provenance().len(), 2, "empty context is not appended");
+        let provenance = &state.provenance()[1];
+        assert_eq!(provenance.origin, None);
+        assert_eq!(provenance.source_task.as_deref(), Some("task-1"));
+        assert_eq!(provenance.image_consumption, ImageConsumption::Consumed);
+    }
+
+    #[test]
+    fn live_tool_output_records_replay_skill_and_image_evidence() {
+        let skill_read = SkillRead {
+            name: "demo".to_string(),
+            path: std::path::PathBuf::from("/skills/demo/SKILL.md"),
+        };
+        let mut state = ConversationState::new(&[(Role::System, "sys".to_string())]);
+
+        state.push_tool_output(
+            "call-1".to_string(),
+            "image output".to_string(),
+            vec![image()],
+            RecordProvenance::live_tool_output(
+                Some("task-1".to_string()),
+                Some(ReplaySafety::Safe),
+                Some(skill_read.clone()),
+                true,
+            ),
+        );
+        state.push_tool_output(
+            "call-2".to_string(),
+            "text output".to_string(),
+            Vec::new(),
+            RecordProvenance::live_tool_output(
+                Some("task-1".to_string()),
+                Some(ReplaySafety::Never),
+                None,
+                false,
+            ),
+        );
+
+        let provenance = state.provenance();
+        assert_eq!(provenance[1].replay, Some(ReplaySafety::Safe));
+        assert_eq!(provenance[1].skill_read, Some(skill_read));
+        assert_eq!(
+            provenance[1].image_consumption,
+            ImageConsumption::Unconsumed
+        );
+        assert_eq!(provenance[2].replay, Some(ReplaySafety::Never));
+        assert_eq!(provenance[2].skill_read, None);
+        assert_eq!(provenance[2].image_consumption, ImageConsumption::Consumed);
+    }
+
+    #[test]
+    fn turn_items_record_the_replay_declaration_and_task() {
+        let mut state = ConversationState::new(&[(Role::System, "sys".to_string())]);
+        let item = function_call("call-1", "Read");
+        let provenance =
+            RecordProvenance::live(&item, Some("task-1".to_string()), Some(ReplaySafety::Safe));
+
+        state.extend_turn_items_with_provenance(vec![item], vec![provenance]);
+
+        let provenance = &state.provenance()[1];
+        assert_eq!(provenance.source_task.as_deref(), Some("task-1"));
+        assert_eq!(provenance.replay, Some(ReplaySafety::Safe));
+        assert_eq!(provenance.image_consumption, ImageConsumption::Consumed);
+    }
+
+    #[test]
+    #[should_panic(expected = "every appended turn item needs one provenance entry")]
+    fn turn_items_require_matching_provenance() {
+        let mut state = ConversationState::new(&[(Role::System, "sys".to_string())]);
+
+        state.extend_turn_items_with_provenance(vec![assistant_message("answer")], Vec::new());
+    }
+
+    #[test]
+    fn retirable_raw_source_records_follow_oldest_first_source_order() {
+        let mut state = ConversationState::new(&[
+            (Role::System, "sys".to_string()),
+            (Role::Developer, "dev".to_string()),
+        ]);
+        state.push_user_message("request".to_string(), Some("task-1"));
+        let answer = assistant_message("answer");
+        let answer_provenance = RecordProvenance::live(&answer, Some("task-1".to_string()), None);
+        state.extend_turn_items_with_provenance(vec![answer], vec![answer_provenance]);
+        state.push_tool_output(
+            "call-1".to_string(),
+            "tool output".to_string(),
+            Vec::new(),
+            RecordProvenance::live_tool_output(Some("task-1".to_string()), None, None, false),
+        );
+
+        let records: Vec<_> = state.retirable_raw_source_records().collect();
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.raw_index)
+                .collect::<Vec<_>>(),
+            vec![2, 3, 4],
+            "the prompt prefix is excluded and raw history order is preserved"
+        );
+        assert_eq!(records[0].provenance.origin, Some(MessageOrigin::User));
+        assert_eq!(records[0].provenance.source_task.as_deref(), Some("task-1"));
+        assert!(matches!(
+            records[0].item,
+            ConversationItem::Message { content, .. } if content == "request"
+        ));
+        assert_eq!(records[2].provenance.source_task.as_deref(), Some("task-1"));
+    }
+
+    #[test]
+    fn restored_images_start_unknown_and_follow_the_checkpoint_boundary() {
+        let checkpoint = test_support::checkpoint("checkpoint-1", "summary", Vec::new());
+        let mut state = ConversationState::new(&[(Role::System, "sys".to_string())]);
+        state
+            .with_restored_context(restored_seed(
+                checkpoint,
+                vec![
+                    user_message("retired request"),
+                    function_call("call-1", "ReadImage"),
+                    ConversationItem::FunctionCallOutput {
+                        call_id: "call-1".to_string(),
+                        output: "image".to_string(),
+                        timestamp: None,
+                        images: vec![image()],
+                    },
+                ],
+                1,
+            ))
+            .unwrap();
+
+        assert_eq!(state.provenance().len(), state.history().len());
+        assert_eq!(
+            state.provenance()[1].image_consumption,
+            ImageConsumption::Consumed
+        );
+        assert_eq!(state.provenance()[1].origin, None);
+        assert_eq!(state.provenance()[2].replay, None);
+        assert_eq!(
+            state.provenance()[3].image_consumption,
+            ImageConsumption::Unknown
+        );
+
+        state.push_user_message("new input".to_string(), Some("task-2"));
+        assert_eq!(
+            state
+                .retirable_raw_source_records()
+                .map(|record| record.raw_index)
+                .collect::<Vec<_>>(),
+            vec![2, 3, 4],
+            "pre-boundary raw records are replaced by the checkpoint"
         );
     }
 
@@ -875,7 +1378,7 @@ mod tests {
             ))
             .unwrap();
 
-        state.push_user_message("new user input".to_string());
+        state.push_user_message("new user input".to_string(), None);
         let projected = state.request_context();
 
         assert_eq!(

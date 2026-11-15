@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use futures::StreamExt;
 
 use crate::clients::agent::{Agent, TurnResult, record_turn_usage};
+use crate::clients::agent_state::RecordProvenance;
 use crate::clients::backend::FinalOutputConstraint;
 use crate::clients::image_budget::prune_request;
 use crate::clients::retry::{RequestOverrides, RetryReason, RetryStatus};
@@ -22,7 +23,10 @@ use crate::session_telemetry::{
     AgentRunnerTelemetryEvent, CompensationEventTelemetry, CompensationKind,
     RetryScheduledTelemetry, ToolCallTelemetry,
 };
-use crate::types::{ConversationItem, CutOffError, ImagePart, LimitExceededError, SessionRecord};
+use crate::types::compaction::SkillRead;
+use crate::types::{
+    ConversationItem, CutOffError, ImagePart, LimitExceededError, ReplaySafety, SessionRecord,
+};
 
 /// Maximum number of corrective turns after a final message fails
 /// output-schema validation.
@@ -87,6 +91,9 @@ struct ToolRunResult {
     output: String,
     /// Inline images returned by the tool, empty for text-only results.
     images: Vec<ImagePart>,
+    /// Known-skill instructions observed on every successful read, including
+    /// rereads after the activation telemetry was already emitted.
+    skill_read: Option<SkillRead>,
     skill_activation: Option<SkillActivation>,
     telemetry: ToolCallTelemetry,
     compensation_events: Vec<CompensationEventTelemetry>,
@@ -151,6 +158,7 @@ fn immediate_tool_error_result(
         call_id: call_id.to_string(),
         output,
         images: Vec::new(),
+        skill_read: None,
         skill_activation: None,
         compensation_events: Vec::new(),
         permission_denials: Vec::new(),
@@ -188,7 +196,8 @@ impl Agent {
         // resumed session's prior tasks must never contribute to this task's
         // partial result.
         let invocation_start = self.conversation.history().len();
-        let user_item = self.conversation.push_user_message(content);
+        let task_id = self.task_id.to_string();
+        let user_item = self.conversation.push_user_message(content, Some(&task_id));
         self.stream_item(&user_item)?;
 
         // Output-schema correction state: when the final message fails
@@ -285,8 +294,21 @@ impl Agent {
 
         // Extract owned function call data before moving items into history.
         let function_calls = Self::function_calls_from_items(&items);
-        self.stream_turn_items(&items, !turn_mode.tools_disabled())?;
-        self.conversation.extend_turn_items(items);
+        let replay_eligible = !turn_mode.tools_disabled();
+        let source_task = self.task_id.to_string();
+        let provenance: Vec<RecordProvenance> = items
+            .iter()
+            .map(|item| {
+                RecordProvenance::live(
+                    item,
+                    Some(source_task.clone()),
+                    self.item_replay(item, replay_eligible),
+                )
+            })
+            .collect();
+        self.stream_turn_items(&items, replay_eligible)?;
+        self.conversation
+            .extend_turn_items_with_provenance(items, provenance);
         Ok(function_calls)
     }
 
@@ -337,9 +359,11 @@ impl Agent {
                 *semantic_recovery_used = true;
                 *turn_mode = TurnMode::SemanticRecovery;
                 self.record_semantic_recovery_retry();
-                let continuation = self
-                    .conversation
-                    .push_user_message(SEMANTIC_RECOVERY_PROMPT.to_string());
+                let task_id = self.task_id.to_string();
+                let continuation = self.conversation.push_synthetic_user_message(
+                    SEMANTIC_RECOVERY_PROMPT.to_string(),
+                    Some(&task_id),
+                );
                 self.stream_item(&continuation)?;
                 return Ok(None);
             }
@@ -382,9 +406,11 @@ impl Agent {
         for (call_id, name, _) in function_calls {
             let output =
                 format!("not executed: correction turn offers no tools for {name}({call_id})");
-            let item = self
-                .conversation
-                .push_tool_output(call_id.clone(), output, Vec::new());
+            let task_id = self.task_id.to_string();
+            let provenance = RecordProvenance::live_tool_output(Some(task_id), None, None, false);
+            let item =
+                self.conversation
+                    .push_tool_output(call_id.clone(), output, Vec::new(), provenance);
             self.stream_item(&item)?;
         }
         if *turn_mode == TurnMode::SchemaCorrection {
@@ -680,16 +706,13 @@ impl Agent {
                     self.tools.repairs_arguments(&name),
                 ));
 
-                let skill_activation = if was_error {
-                    None
-                } else {
-                    detect_skill_activation_if_configured(
-                        &name,
-                        &arguments,
-                        &self.skill_locations,
-                        &self.activated_skills,
-                    )
-                };
+                let (skill_read, skill_activation) = observe_skill_read(
+                    &name,
+                    &arguments,
+                    was_error,
+                    &self.skill_locations,
+                    &self.activated_skills,
+                );
                 if let Some(notice) = prefix_notice {
                     output = format!("{notice}{output}");
                 }
@@ -717,6 +740,7 @@ impl Agent {
                     call_id,
                     output,
                     images,
+                    skill_read,
                     skill_activation,
                     compensation_events,
                     permission_denials,
@@ -750,9 +774,18 @@ impl Agent {
                 };
                 self.persist_record(&record)?;
             }
-            let item =
-                self.conversation
-                    .push_tool_output(result.call_id, result.output, result.images);
+            let has_images = !result.images.is_empty();
+            let item = self.conversation.push_tool_output(
+                result.call_id,
+                result.output,
+                result.images,
+                RecordProvenance::live_tool_output(
+                    Some(self.task_id.to_string()),
+                    replay,
+                    result.skill_read,
+                    has_images,
+                ),
+            );
             self.stream_item_with_replay(&item, replay)?;
         }
         Ok(())
@@ -888,7 +921,10 @@ impl Agent {
              the required output schema. Do not include Markdown code fences, \
              commentary, or any other text."
         );
-        let item = self.conversation.push_user_message(corrective);
+        let task_id = self.task_id.to_string();
+        let item = self
+            .conversation
+            .push_synthetic_user_message(corrective, Some(&task_id));
         self.stream_item(&item)?;
         Ok(())
     }
@@ -941,7 +977,10 @@ impl Agent {
              them. Do not read the same image again as-is: crop or downscale it first, or \
              continue from the text you already have."
         );
-        let item = self.conversation.push_user_message(note);
+        let task_id = self.task_id.to_string();
+        let item = self
+            .conversation
+            .push_synthetic_user_message(note, Some(&task_id));
         self.stream_item(&item)
     }
 
@@ -1085,17 +1124,20 @@ impl Agent {
         replay_eligible: bool,
     ) -> anyhow::Result<()> {
         for item in items {
-            let replay = replay_eligible
-                .then(|| match item {
-                    ConversationItem::FunctionCall { name, .. } => {
-                        Some(self.tools.replay_safety(name))
-                    },
-                    _ => None,
-                })
-                .flatten();
+            let replay = self.item_replay(item, replay_eligible);
             self.stream_item_with_replay(item, replay)?;
         }
         Ok(())
+    }
+
+    /// The replay declaration the live loop records and persists for one item.
+    fn item_replay(&self, item: &ConversationItem, replay_eligible: bool) -> Option<ReplaySafety> {
+        replay_eligible
+            .then(|| match item {
+                ConversationItem::FunctionCall { name, .. } => Some(self.tools.replay_safety(name)),
+                _ => None,
+            })
+            .flatten()
     }
 }
 
@@ -1276,48 +1318,86 @@ async fn post_tool_context(
     }
 }
 
-/// Skip the skill activation probe entirely when no skills were discovered.
-fn detect_skill_activation_if_configured(
+/// Record the read evidence and one-time activation for a tool result.
+fn observe_skill_read(
+    name: &str,
+    arguments: &str,
+    was_error: bool,
+    skill_locations: &std::collections::HashMap<PathBuf, crate::config::skills::Skill>,
+    activated_skills: &std::sync::Mutex<std::collections::HashSet<String>>,
+) -> (Option<SkillRead>, Option<SkillActivation>) {
+    if was_error {
+        return (None, None);
+    }
+    let skill_read = detect_skill_read_if_configured(name, arguments, skill_locations);
+    let activation = skill_read
+        .as_ref()
+        .and_then(|read| activate_skill_if_first(read, activated_skills));
+    (skill_read, activation)
+}
+
+/// Skip the skill read probe entirely when no skills were discovered.
+fn detect_skill_read_if_configured(
     name: &str,
     arguments: &str,
     skill_locations: &std::collections::HashMap<PathBuf, crate::config::skills::Skill>,
-    activated_skills: &std::sync::Mutex<std::collections::HashSet<String>>,
-) -> Option<SkillActivation> {
+) -> Option<SkillRead> {
     if skill_locations.is_empty() {
         return None;
     }
-    detect_skill_activation(name, arguments, skill_locations, activated_skills)
+    detect_skill_read(name, arguments, skill_locations)
 }
 
-/// Check whether a just-executed tool call targeted a known SKILL.md path and,
-/// if so, emit a `SkillActivated` record once per skill per session.
+/// Observe a successful `Read` of a known SKILL.md path, including rereads.
 ///
-/// Activation telemetry is deliberately `Read`-only: the `Read` tool carries a
+/// Skill evidence is deliberately `Read`-only: the `Read` tool carries a
 /// single path argument, while matching a known `SKILL.md` inside arbitrary
 /// shell text is a heuristic that could misattribute activation. A `Bash` read
-/// of a `SKILL.md` does not emit a record (see ADR 002).
-fn detect_skill_activation(
+/// of a `SKILL.md` does not produce evidence (see ADR 002).
+fn detect_skill_read(
     name: &str,
     arguments: &str,
     skill_locations: &std::collections::HashMap<PathBuf, crate::config::skills::Skill>,
-    activated_skills: &std::sync::Mutex<std::collections::HashSet<String>>,
-) -> Option<SkillActivation> {
+) -> Option<SkillRead> {
     if name != "Read" {
         return None;
     }
     let path_str = read_extract_path(arguments)?;
     let path = PathBuf::from(&path_str).canonicalize().ok()?;
     let skill = skill_locations.get(&path)?;
+    Some(SkillRead {
+        name: skill.name.clone(),
+        path,
+    })
+}
+
+/// Emit `SkillActivated` telemetry once per skill per session.
+fn activate_skill_if_first(
+    read: &SkillRead,
+    activated_skills: &std::sync::Mutex<std::collections::HashSet<String>>,
+) -> Option<SkillActivation> {
     let mut activated = activated_skills
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    activated.insert(skill.name.clone()).then(|| {
-        tracing::info!("Skill '{}' activated", skill.name);
+    activated.insert(read.name.clone()).then(|| {
+        tracing::info!("Skill '{}' activated", read.name);
         SkillActivation {
-            name: skill.name.clone(),
-            path,
+            name: read.name.clone(),
+            path: read.path.clone(),
         }
     })
+}
+
+/// Test-facing wrapper: return activation only the first time a skill is read.
+#[cfg(test)]
+fn detect_skill_activation(
+    name: &str,
+    arguments: &str,
+    skill_locations: &std::collections::HashMap<PathBuf, crate::config::skills::Skill>,
+    activated_skills: &std::sync::Mutex<std::collections::HashSet<String>>,
+) -> Option<SkillActivation> {
+    let read = detect_skill_read(name, arguments, skill_locations)?;
+    activate_skill_if_first(&read, activated_skills)
 }
 
 /// Build a [`CutOffError`] describing why no assistant message was produced.
@@ -1469,6 +1549,34 @@ mod skill_activation_tests {
         // insert-once check atomic if calls ever run concurrently.
         assert!(
             detect_skill_activation("Read", &read_args(path), &locations, &activated).is_none()
+        );
+    }
+
+    #[test]
+    fn every_known_skill_read_is_observable_after_activation() {
+        let (_dir, locations) = skill_fixture(&["debugging-cake"]);
+        let path = location_of(&locations, "debugging-cake");
+        let activated = Mutex::new(HashSet::new());
+
+        let first_read = detect_skill_read("Read", &read_args(path), &locations)
+            .expect("the first read records skill evidence");
+        assert_eq!(first_read.name, "debugging-cake");
+        assert_eq!(&first_read.path, path);
+        assert!(
+            activate_skill_if_first(&first_read, &activated).is_some(),
+            "the first read emits activation telemetry"
+        );
+
+        let second_read = detect_skill_read("Read", &read_args(path), &locations)
+            .expect("a reread still records skill evidence");
+        assert_eq!(second_read, first_read);
+        assert!(
+            activate_skill_if_first(&second_read, &activated).is_none(),
+            "a reread never repeats activation telemetry"
+        );
+        assert!(
+            detect_skill_read("Bash", &read_args(path), &locations).is_none(),
+            "only Read produces skill evidence"
         );
     }
 
@@ -1702,6 +1810,7 @@ mod helper_tests {
         ToolRunResult {
             call_id: "call-1".to_string(),
             output: "tool output".to_string(),
+            skill_read: None,
             skill_activation,
             telemetry: ToolCallTelemetry {
                 turn_index: 1,

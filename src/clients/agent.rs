@@ -1186,7 +1186,9 @@ impl Agent {
 
     /// Append hook-provided developer context before the next provider request.
     pub fn append_developer_context(&mut self, contexts: Vec<String>) {
-        self.conversation.append_developer_context(contexts);
+        let task_id = self.task_id.to_string();
+        self.conversation
+            .append_developer_context(contexts, Some(&task_id));
     }
 
     /// Append developer context stating the output-schema requirement for the
@@ -1205,7 +1207,9 @@ impl Agent {
              no surrounding prose. Intermediate tool use and reasoning are \
              unaffected by this requirement.\n\n{schema_json}"
         );
-        self.conversation.append_developer_context(vec![message]);
+        let task_id = self.task_id.to_string();
+        self.conversation
+            .append_developer_context(vec![message], Some(&task_id));
     }
 
     #[cfg(test)]

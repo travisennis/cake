@@ -2,7 +2,7 @@
 
 This ExecPlan is a living document, maintained per `docs/workflow/exec-plans.md`. The sections Progress, Surprises & Discoveries, Decision Log, and Outcomes & Retrospective must be kept current as work proceeds.
 
-This is the stage plan for task 034g (milestone M3 of the parent plan at `docs/exec-plans/active/context-compaction.md`). The governing decision is `docs/adr/047-compact-model-context-with-self-contained-append-only-checkpoints.md` (ADR 047). The parent plan defines the feature; this plan defines the code changes, decisions, and proof for automatic pre-request compaction. No production code changes until this plan is reviewed.
+This is the stage plan for task 034g (milestone M3 of the parent plan at `docs/exec-plans/active/context-compaction.md`). The governing decision is `docs/adr/047-compact-model-context-with-self-contained-append-only-checkpoints.md` (ADR 047). The parent plan defines the feature; this plan defines the code changes, decisions, and proof for automatic pre-request compaction. The plan was reviewed and accepted on 2026-11-15; implementation proceeds by milestone.
 
 ## Purpose / Big Picture
 
@@ -19,6 +19,7 @@ A user can see it working without reading code. In a text run, a long task print
 - [x] (2026-11-15) Drafted this stage ExecPlan; no Rust, settings, CLI, or user-documentation behavior changed.
 - [x] (2026-11-15) Folded five review findings into the plan: request-validated image selection, per-attempt writer health, conservative restored-image evidence, exhaustive selection bounds, and explicit invocation pins across checkpoints. No implementation has started.
 - [x] (2026-11-15) Review verification: `cargo test compaction --offline` passed 65 tests; the image-budget checks passed 22 tests, with three localhost tests rerun outside the sandbox after port-binding denials; documentation checks and `git diff --check master...HEAD` passed. The review changed no files.
+- [x] (2026-11-15) Landed the first provenance slice on `feat/automatic-compaction`: `ConversationState` keeps a side table aligned with raw history, captures live origin/task/skill/replay/image evidence in the push helpers, starts restored image evidence unknown, and exposes oldest-first retirable raw candidates. Preparation-source construction, pin normalization, checkpoint activation, and retained-image clearing remain in Milestone 2.
 - [ ] Milestone 1: add resolved `[compaction]` settings, validation, diagnostics, and agent policy application.
 - [ ] Milestone 2: add live provenance, preparation-source construction, pin normalization, and image-consumption tracking.
 - [ ] Milestone 3: make trigger, measurement, and retained-tail selection explicit and testable.
