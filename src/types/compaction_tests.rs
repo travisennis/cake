@@ -319,6 +319,34 @@ fn compaction_checkpoint_rejects_misplaced_pins() {
         "unexpected error: {error}"
     );
 
+    let mut synthetic_without_origin = message(Role::User, "correction");
+    synthetic_without_origin.pin = Some(PinReason::SyntheticInput);
+    let data = checkpoint("checkpoint-1", "summary", vec![synthetic_without_origin]);
+    let error = data.validate().unwrap_err().to_string();
+    assert!(
+        error.contains("synthetic_input pin requires synthetic origin"),
+        "unexpected error: {error}"
+    );
+
+    let mut developer_on_user = message(Role::User, "not developer");
+    developer_on_user.pin = Some(PinReason::DeveloperContext);
+    let data = checkpoint("checkpoint-1", "summary", vec![developer_on_user]);
+    let error = data.validate().unwrap_err().to_string();
+    assert!(
+        error.contains("developer_context pin is only valid on a retained Developer message"),
+        "unexpected error: {error}"
+    );
+
+    let mut developer_with_origin = message(Role::Developer, "developer");
+    developer_with_origin.pin = Some(PinReason::DeveloperContext);
+    developer_with_origin.origin = Some(MessageOrigin::User);
+    let data = checkpoint("checkpoint-1", "summary", vec![developer_with_origin]);
+    let error = data.validate().unwrap_err().to_string();
+    assert!(
+        error.contains("developer_context pin must not carry a user origin"),
+        "unexpected error: {error}"
+    );
+
     let mut skill_pin_on_message = message(Role::User, "read a skill");
     skill_pin_on_message.pin = Some(PinReason::SkillInstructions {
         name: "debugging-cake".to_string(),
@@ -394,6 +422,12 @@ fn compaction_checkpoint_accepts_correctly_placed_pins() {
     data.images.push(test_image());
     image_message.pin = Some(PinReason::UnconsumedImage);
 
+    let mut synthetic_input = message(Role::User, "schema correction");
+    synthetic_input.pin = Some(PinReason::SyntheticInput);
+    synthetic_input.origin = Some(MessageOrigin::Synthetic);
+    let mut developer_context = message(Role::Developer, "hook context");
+    developer_context.pin = Some(PinReason::DeveloperContext);
+
     let mut retained = exchange("call-2", "image out");
     let RetainedConversationRecord::FunctionCallOutput(data) = &mut retained[1].record else {
         unreachable!()
@@ -401,7 +435,12 @@ fn compaction_checkpoint_accepts_correctly_placed_pins() {
     data.images.push(test_image());
     retained[1].pin = Some(PinReason::UnconsumedImage);
 
-    let mut records = vec![pinned_user, image_message];
+    let mut records = vec![
+        pinned_user,
+        image_message,
+        synthetic_input,
+        developer_context,
+    ];
     records.extend(retained);
     records.extend(skill_exchange);
     records.push(skill_output);
@@ -745,5 +784,13 @@ fn compaction_trigger_and_provenance_values_are_stable() {
     assert_eq!(
         serde_json::to_value(MessageOrigin::Synthetic).unwrap(),
         serde_json::json!("synthetic")
+    );
+    assert_eq!(
+        serde_json::to_value(PinReason::SyntheticInput).unwrap(),
+        serde_json::json!({"kind": "synthetic_input"})
+    );
+    assert_eq!(
+        serde_json::to_value(PinReason::DeveloperContext).unwrap(),
+        serde_json::json!({"kind": "developer_context"})
     );
 }

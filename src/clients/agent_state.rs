@@ -1,23 +1,18 @@
 use std::borrow::Cow;
 
-use crate::types::compaction::{MessageOrigin, SkillRead};
+use crate::clients::compaction::{
+    ImageConsumption, InvocationPin, InvocationPinKind, normalize_source_pins,
+};
+use crate::types::compaction::prompt_context_prefix_len;
+use crate::types::compaction::{
+    MessageOrigin, PinReason, RetainedConversationRecord, RetainedRecord, SkillRead,
+    historical_summary_record,
+};
+use crate::types::session::{FunctionCallData, FunctionCallOutputData, MessageData, ReasoningData};
 use crate::types::{
     CompactionData, ContextSeed, ConversationItem, ImagePart, ReplaySafety, Role, Usage,
     project_context,
 };
-
-/// Whether an image-bearing source record reached an accepted main request.
-///
-/// Live records start [`Self::Unconsumed`] and become [`Self::Consumed`] only
-/// after the main response that emitted every image is accepted. A record
-/// restored without checkpoint evidence starts [`Self::Unknown`], which future
-/// selection treats conservatively.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ImageConsumption {
-    Consumed,
-    Unconsumed,
-    Unknown,
-}
 
 /// Checkpoint provenance for one raw-history record.
 ///
@@ -125,25 +120,48 @@ pub(super) struct RawSourceRecord<'a> {
     pub(super) provenance: &'a RecordProvenance,
 }
 
+/// One source record in a preparation projection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SourceRef {
+    Prompt,
+    Summary,
+    Retained(usize),
+    Raw(usize),
+}
+
+/// The exact projection checkpoint preparation may summarize and retain.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "checkpoint preparation consumes these fields in Milestone 3"
+    )
+)]
+#[derive(Debug)]
+pub(super) struct PreparationSource {
+    pub(super) records: Vec<RetainedRecord>,
+    pub(super) prompt_prefix_len: usize,
+    pub(super) current_user_input: Option<usize>,
+    pub(super) invocation_pins: Vec<InvocationPin>,
+    pub(super) image_consumption: Vec<ImageConsumption>,
+    pub(super) source_refs: Vec<SourceRef>,
+}
+
 #[derive(Debug)]
 pub(super) struct ConversationState {
     history: Vec<ConversationItem>,
     /// Provenance aligned one-to-one with `history` by raw index.
     provenance: Vec<RecordProvenance>,
-    /// Number of leading fresh prompt records. Prompt context is never retired.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "checkpoint preparation consumes this boundary in Milestone 2"
-        )
-    )]
-    prompt_prefix_len: usize,
     /// Repair outputs synthesized by [`Self::with_restored_context`] that have
     /// not yet been streamed and persisted.
     pending_repairs: Vec<ConversationItem>,
     /// The validated checkpoint that replaces retired history in requests.
     checkpoint: Option<CompactionData>,
+    /// Image-consumption evidence aligned with `checkpoint.retained`.
+    ///
+    /// Activation seeds this from the checkpoint's pins; later accepted
+    /// requests and image recovery update it without rewriting the checkpoint.
+    retained_image_consumption: Vec<ImageConsumption>,
     /// Raw-history index of the active checkpoint's positional boundary:
     /// `history[..checkpoint_boundary]` is represented by `checkpoint`.
     checkpoint_boundary: usize,
@@ -168,9 +186,9 @@ impl ConversationState {
                 .iter()
                 .map(|_| RecordProvenance::consumed(None))
                 .collect(),
-            prompt_prefix_len: initial_messages.len(),
             pending_repairs: Vec::new(),
             checkpoint: None,
+            retained_image_consumption: Vec::new(),
             checkpoint_boundary: 0,
         }
     }
@@ -205,7 +223,7 @@ impl ConversationState {
         )
     )]
     pub(super) fn retirable_raw_source_records(&self) -> impl Iterator<Item = RawSourceRecord<'_>> {
-        let start = self.prompt_prefix_len.max(self.checkpoint_boundary);
+        let start = prompt_context_prefix_len(&self.history).max(self.checkpoint_boundary);
         (start..self.history.len()).map(|raw_index| RawSourceRecord {
             raw_index,
             item: &self.history[raw_index],
@@ -234,6 +252,300 @@ impl ConversationState {
     #[cfg(test)]
     pub(super) const fn has_checkpoint(&self) -> bool {
         self.checkpoint.is_some()
+    }
+
+    /// Build the exact source checkpoint preparation may summarize and retain.
+    ///
+    /// The records follow [`Self::request_context`]'s order: prompt prefix,
+    /// active summary, retained tail, then post-boundary raw history. Source
+    /// refs and image states are aligned one-to-one with those records.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "checkpoint preparation consumes this source in Milestone 3"
+        )
+    )]
+    pub(super) fn preparation_source(
+        &self,
+        current_user_raw: usize,
+        invocation_start: usize,
+        current_task_id: &str,
+    ) -> anyhow::Result<PreparationSource> {
+        self.ensure_current_user(current_user_raw, invocation_start)?;
+        let (mut records, source_refs, image_consumption) = self.project_preparation_records();
+        let current_user_input = self.source_index_for_user(current_user_raw, &source_refs)?;
+        let invocation_pins = self.invocation_pins(
+            current_user_input,
+            current_user_raw,
+            invocation_start,
+            current_task_id,
+            &source_refs,
+        );
+        normalize_source_pins(
+            &mut records,
+            current_task_id,
+            &invocation_pins,
+            &image_consumption,
+        )?;
+        Ok(PreparationSource {
+            records,
+            prompt_prefix_len: prompt_context_prefix_len(&self.history),
+            current_user_input: Some(current_user_input),
+            invocation_pins,
+            image_consumption,
+            source_refs,
+        })
+    }
+
+    /// Replace retired history with a validated checkpoint.
+    ///
+    /// The raw boundary moves to the current end of history. Pre-boundary raw
+    /// records stay untouched as audit data but stop being projected; their
+    /// protected copies are the checkpoint's retained records.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the pre-request compaction caller activates checkpoints in Milestone 4"
+        )
+    )]
+    pub(super) fn activate_checkpoint(&mut self, checkpoint: CompactionData) -> anyhow::Result<()> {
+        checkpoint.validate()?;
+        self.align_provenance_for_test_history();
+        self.retained_image_consumption = checkpoint_image_consumption(&checkpoint);
+        self.checkpoint_boundary = self.history.len();
+        self.checkpoint = Some(checkpoint);
+        self.assert_provenance_aligned();
+        Ok(())
+    }
+
+    /// Mark every source record whose images reached an accepted main request.
+    ///
+    /// Call only after the response is accepted and only for records whose
+    /// every image was emitted by the request.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the accepted-response caller records consumed images in Milestone 4"
+        )
+    )]
+    pub(super) fn mark_images_consumed(&mut self, refs: &[SourceRef]) {
+        for source_ref in refs {
+            match *source_ref {
+                SourceRef::Prompt | SourceRef::Summary => {},
+                SourceRef::Raw(raw_index) => {
+                    if let Some(provenance) = self.provenance.get_mut(raw_index) {
+                        provenance.image_consumption = ImageConsumption::Consumed;
+                    }
+                },
+                SourceRef::Retained(index) => {
+                    if let Some(consumption) = self.retained_image_consumption.get_mut(index) {
+                        *consumption = ImageConsumption::Consumed;
+                    }
+                    if let Some(record) = self
+                        .checkpoint
+                        .as_mut()
+                        .and_then(|checkpoint| checkpoint.retained.get_mut(index))
+                        && record.pin == Some(PinReason::UnconsumedImage)
+                    {
+                        record.pin = None;
+                    }
+                },
+            }
+        }
+    }
+
+    fn ensure_current_user(
+        &self,
+        current_user_raw: usize,
+        invocation_start: usize,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            current_user_raw < self.history.len(),
+            "current user index {current_user_raw} exceeds the {} raw records",
+            self.history.len()
+        );
+        anyhow::ensure!(
+            invocation_start <= current_user_raw,
+            "invocation start {invocation_start} is after current user index {current_user_raw}"
+        );
+        anyhow::ensure!(
+            item_role(&self.history[current_user_raw]) == Some(Role::User),
+            "current user index {current_user_raw} is not a user message"
+        );
+        anyhow::ensure!(
+            self.provenance[current_user_raw].origin != Some(MessageOrigin::Synthetic),
+            "current user index {current_user_raw} is synthetic input"
+        );
+        Ok(())
+    }
+
+    fn project_preparation_records(
+        &self,
+    ) -> (Vec<RetainedRecord>, Vec<SourceRef>, Vec<ImageConsumption>) {
+        let prompt_len = prompt_context_prefix_len(&self.history);
+        let mut records = Vec::new();
+        let mut source_refs = Vec::new();
+        let mut image_consumption = Vec::new();
+        for raw_index in 0..prompt_len {
+            records.push(retained_record_from_source(
+                &self.history[raw_index],
+                &self.provenance[raw_index],
+            ));
+            source_refs.push(SourceRef::Prompt);
+            image_consumption.push(ImageConsumption::Consumed);
+        }
+        if let Some(checkpoint) = self.checkpoint.as_ref() {
+            records.push(historical_summary_record(checkpoint));
+            source_refs.push(SourceRef::Summary);
+            image_consumption.push(ImageConsumption::Consumed);
+            for (index, record) in checkpoint.retained.iter().enumerate() {
+                records.push(record.clone());
+                source_refs.push(SourceRef::Retained(index));
+                image_consumption.push(
+                    self.retained_image_consumption
+                        .get(index)
+                        .copied()
+                        .unwrap_or_else(|| retained_image_consumption(record)),
+                );
+            }
+        }
+        let raw_start = if self.checkpoint.is_some() {
+            self.checkpoint_boundary.max(prompt_len)
+        } else {
+            prompt_len
+        };
+        for raw_index in raw_start..self.history.len() {
+            records.push(retained_record_from_source(
+                &self.history[raw_index],
+                &self.provenance[raw_index],
+            ));
+            source_refs.push(SourceRef::Raw(raw_index));
+            image_consumption.push(self.provenance[raw_index].image_consumption);
+        }
+        (records, source_refs, image_consumption)
+    }
+
+    fn source_index_for_user(
+        &self,
+        current_user_raw: usize,
+        source_refs: &[SourceRef],
+    ) -> anyhow::Result<usize> {
+        if let Some(checkpoint) = self.checkpoint.as_ref()
+            && current_user_raw < self.checkpoint_boundary
+        {
+            let retained_index = checkpoint
+                .retained
+                .iter()
+                .rposition(|record| record.pin == Some(PinReason::UserInput))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "current user index {current_user_raw} is before the checkpoint boundary, \
+                         but the checkpoint has no user_input pin"
+                    )
+                })?;
+            anyhow::ensure!(
+                retained_role(&checkpoint.retained[retained_index]) == Some(Role::User),
+                "checkpoint user_input pin at retained index {retained_index} is not a user message"
+            );
+            return source_refs
+                .iter()
+                .position(|source| *source == SourceRef::Retained(retained_index))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "retained index {retained_index} is missing from the preparation source"
+                    )
+                });
+        }
+        source_refs
+            .iter()
+            .position(|source| *source == SourceRef::Raw(current_user_raw))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "current user index {current_user_raw} is not projected into the preparation \
+                     source"
+                )
+            })
+    }
+
+    fn invocation_pins(
+        &self,
+        current_user_input: usize,
+        current_user_raw: usize,
+        invocation_start: usize,
+        current_task_id: &str,
+        source_refs: &[SourceRef],
+    ) -> Vec<InvocationPin> {
+        let mut pins = vec![InvocationPin {
+            source_index: current_user_input,
+            kind: InvocationPinKind::UserInput,
+        }];
+        for (source_index, source_ref) in source_refs.iter().enumerate() {
+            match *source_ref {
+                SourceRef::Prompt | SourceRef::Summary => {},
+                SourceRef::Raw(raw_index) => self.push_raw_invocation_pins(
+                    &mut pins,
+                    source_index,
+                    raw_index,
+                    current_user_raw,
+                    invocation_start,
+                    current_task_id,
+                ),
+                SourceRef::Retained(index) => self.push_retained_developer_pin(
+                    &mut pins,
+                    source_index,
+                    index,
+                    current_task_id,
+                ),
+            }
+        }
+        pins
+    }
+
+    fn push_raw_invocation_pins(
+        &self,
+        pins: &mut Vec<InvocationPin>,
+        source_index: usize,
+        raw_index: usize,
+        current_user_raw: usize,
+        invocation_start: usize,
+        current_task_id: &str,
+    ) {
+        if raw_index == current_user_raw {
+            return;
+        }
+        let provenance = &self.provenance[raw_index];
+        if provenance.origin == Some(MessageOrigin::Synthetic) && raw_index >= invocation_start {
+            push_pin(pins, source_index, InvocationPinKind::SyntheticInput);
+        }
+        if item_role(&self.history[raw_index]) == Some(Role::Developer)
+            && provenance.source_task.as_deref() == Some(current_task_id)
+        {
+            push_pin(pins, source_index, InvocationPinKind::DeveloperContext);
+        }
+    }
+
+    fn push_retained_developer_pin(
+        &self,
+        pins: &mut Vec<InvocationPin>,
+        source_index: usize,
+        index: usize,
+        current_task_id: &str,
+    ) {
+        let Some(record) = self
+            .checkpoint
+            .as_ref()
+            .and_then(|checkpoint| checkpoint.retained.get(index))
+        else {
+            return;
+        };
+        if retained_role(record) == Some(Role::Developer)
+            && record.source_task.as_deref() == Some(current_task_id)
+        {
+            push_pin(pins, source_index, InvocationPinKind::DeveloperContext);
+        }
     }
 
     /// The active checkpoint, for tests that pin its session envelope.
@@ -354,6 +666,7 @@ impl ConversationState {
             .extend(repairs.iter().map(|_| RecordProvenance::consumed(None)));
         self.pending_repairs.extend(repairs);
         if let (Some(checkpoint), Some(boundary)) = (checkpoint, boundary) {
+            self.retained_image_consumption = checkpoint_image_consumption(&checkpoint);
             self.checkpoint_boundary = prompt_len + boundary.saturating_sub(first_non_prompt);
             self.checkpoint = Some(checkpoint);
         }
@@ -445,9 +758,17 @@ impl ConversationState {
     /// error never identifies which image it was. Dropping all of them is the
     /// only recovery that makes the next request independent of the offending
     /// pixels; the text of each result stays, so the conversation keeps the tool
-    /// outputs that carried them.
+    /// outputs that carried them. The active in-memory checkpoint tail is
+    /// cleared too, but the persisted checkpoint is not rewritten, so a resumed
+    /// session may see the same rejected image until later recovery work.
     pub(super) fn drop_images(&mut self) -> usize {
         self.align_provenance_for_test_history();
+        let dropped = self.drop_raw_images() + self.drop_retained_images();
+        self.assert_provenance_aligned();
+        dropped
+    }
+
+    fn drop_raw_images(&mut self) -> usize {
         let mut dropped = 0;
         for (item, provenance) in self.history.iter_mut().zip(&mut self.provenance) {
             let images = match item {
@@ -464,7 +785,35 @@ impl ConversationState {
             images.clear();
             provenance.image_consumption = ImageConsumption::Consumed;
         }
-        self.assert_provenance_aligned();
+        dropped
+    }
+
+    fn drop_retained_images(&mut self) -> usize {
+        let Some(checkpoint) = self.checkpoint.as_mut() else {
+            return 0;
+        };
+        let mut dropped = 0;
+        for (record, consumption) in checkpoint
+            .retained
+            .iter_mut()
+            .zip(&mut self.retained_image_consumption)
+        {
+            let images = match &mut record.record {
+                RetainedConversationRecord::Message(data) => &mut data.images,
+                RetainedConversationRecord::FunctionCallOutput(data) => &mut data.images,
+                RetainedConversationRecord::Reasoning(_)
+                | RetainedConversationRecord::FunctionCall(_) => continue,
+            };
+            if images.is_empty() {
+                continue;
+            }
+            dropped += images.len();
+            images.clear();
+            *consumption = ImageConsumption::Consumed;
+            if record.pin == Some(PinReason::UnconsumedImage) {
+                record.pin = None;
+            }
+        }
         dropped
     }
 
@@ -530,6 +879,120 @@ impl ConversationState {
     #[cfg(test)]
     pub(super) const fn history_mut(&mut self) -> &mut Vec<ConversationItem> {
         &mut self.history
+    }
+}
+
+fn retained_record_from_source(
+    item: &ConversationItem,
+    provenance: &RecordProvenance,
+) -> RetainedRecord {
+    let record = match item {
+        ConversationItem::Message {
+            role,
+            content,
+            id,
+            status,
+            timestamp,
+            images,
+        } => RetainedConversationRecord::Message(MessageData {
+            role: *role,
+            content: content.clone(),
+            id: id.clone(),
+            status: status.clone(),
+            timestamp: *timestamp,
+            images: images.clone(),
+        }),
+        ConversationItem::Reasoning {
+            id,
+            summary,
+            encrypted_content,
+            content,
+            timestamp,
+        } => RetainedConversationRecord::Reasoning(ReasoningData {
+            id: id.clone(),
+            summary: summary.clone(),
+            encrypted_content: encrypted_content.clone(),
+            content: content.clone(),
+            timestamp: *timestamp,
+        }),
+        ConversationItem::FunctionCall {
+            id,
+            call_id,
+            name,
+            arguments,
+            timestamp,
+        } => RetainedConversationRecord::FunctionCall(FunctionCallData {
+            id: id.clone(),
+            call_id: call_id.clone(),
+            name: name.clone(),
+            arguments: arguments.clone(),
+            arguments_parse_error: serde_json::from_str::<serde_json::Value>(arguments)
+                .err()
+                .map(|error| error.to_string()),
+            replay: provenance.replay,
+            timestamp: *timestamp,
+        }),
+        ConversationItem::FunctionCallOutput {
+            call_id,
+            output,
+            timestamp,
+            images,
+        } => RetainedConversationRecord::FunctionCallOutput(FunctionCallOutputData {
+            call_id: call_id.clone(),
+            output: output.clone(),
+            content_id: None,
+            replay: provenance.replay,
+            timestamp: *timestamp,
+            images: images.clone(),
+        }),
+    };
+    RetainedRecord {
+        record,
+        pin: None,
+        source_task: provenance.source_task.clone(),
+        origin: provenance.origin,
+        skill_read: provenance.skill_read.clone(),
+    }
+}
+
+const fn item_role(item: &ConversationItem) -> Option<Role> {
+    match item {
+        ConversationItem::Message { role, .. } => Some(*role),
+        ConversationItem::Reasoning { .. }
+        | ConversationItem::FunctionCall { .. }
+        | ConversationItem::FunctionCallOutput { .. } => None,
+    }
+}
+
+const fn retained_role(record: &RetainedRecord) -> Option<Role> {
+    match &record.record {
+        RetainedConversationRecord::Message(data) => Some(data.role),
+        RetainedConversationRecord::Reasoning(_)
+        | RetainedConversationRecord::FunctionCall(_)
+        | RetainedConversationRecord::FunctionCallOutput(_) => None,
+    }
+}
+
+fn checkpoint_image_consumption(checkpoint: &CompactionData) -> Vec<ImageConsumption> {
+    checkpoint
+        .retained
+        .iter()
+        .map(retained_image_consumption)
+        .collect()
+}
+
+fn retained_image_consumption(record: &RetainedRecord) -> ImageConsumption {
+    if record.pin == Some(PinReason::UnconsumedImage) {
+        ImageConsumption::Unconsumed
+    } else {
+        ImageConsumption::Consumed
+    }
+}
+
+fn push_pin(pins: &mut Vec<InvocationPin>, source_index: usize, kind: InvocationPinKind) {
+    let pin = InvocationPin { source_index, kind };
+    if !pins.contains(&pin) {
+        pins.push(pin);
     }
 }
 
@@ -920,6 +1383,439 @@ mod tests {
             ConversationItem::Message { content, .. } if content == "request"
         ));
         assert_eq!(records[2].provenance.source_task.as_deref(), Some("task-1"));
+    }
+
+    #[test]
+    fn preparation_source_preserves_live_evidence_and_invocation_pins() {
+        let (state, invocation_start, current_user_raw, skill_read) = live_preparation_state();
+        let source = state
+            .preparation_source(current_user_raw, invocation_start, "task-1")
+            .unwrap();
+
+        assert_live_source_shape(&source);
+        assert_live_source_invocation_pins(&source);
+        assert_live_source_records(&source, &skill_read);
+    }
+
+    fn live_preparation_state() -> (ConversationState, usize, usize, SkillRead) {
+        let mut state = ConversationState::new(&[
+            (Role::System, "sys".to_string()),
+            (Role::Developer, "dev".to_string()),
+        ]);
+        state.push_user_message("prior request".to_string(), Some("task-0"));
+        state.extend_turn_items(vec![assistant_message("prior answer")]);
+        state.append_developer_context(vec!["hook context".to_string()], Some("task-1"));
+        let invocation_start = state.history().len();
+        let current_user_raw = invocation_start;
+        state.push_user_message("request".to_string(), Some("task-1"));
+        state.push_synthetic_user_message("correction".to_string(), Some("task-1"));
+        let call = function_call("call-1", "Read");
+        let call_provenance =
+            RecordProvenance::live(&call, Some("task-1".to_string()), Some(ReplaySafety::Safe));
+        state.extend_turn_items_with_provenance(vec![call], vec![call_provenance]);
+        let skill_read = SkillRead {
+            name: "demo".to_string(),
+            path: std::path::PathBuf::from("/skills/demo/SKILL.md"),
+        };
+        state.push_tool_output(
+            "call-1".to_string(),
+            "skill instructions".to_string(),
+            Vec::new(),
+            RecordProvenance::live_tool_output(
+                Some("task-1".to_string()),
+                Some(ReplaySafety::Safe),
+                Some(skill_read.clone()),
+                false,
+            ),
+        );
+        state.push_tool_output(
+            "call-2".to_string(),
+            "image output".to_string(),
+            vec![image()],
+            RecordProvenance::live_tool_output(
+                Some("task-1".to_string()),
+                Some(ReplaySafety::Never),
+                None,
+                true,
+            ),
+        );
+        (state, invocation_start, current_user_raw, skill_read)
+    }
+
+    fn assert_live_source_shape(source: &PreparationSource) {
+        assert_eq!(source.prompt_prefix_len, 2);
+        assert_eq!(
+            source.source_refs,
+            vec![
+                SourceRef::Prompt,
+                SourceRef::Prompt,
+                SourceRef::Raw(2),
+                SourceRef::Raw(3),
+                SourceRef::Raw(4),
+                SourceRef::Raw(5),
+                SourceRef::Raw(6),
+                SourceRef::Raw(7),
+                SourceRef::Raw(8),
+                SourceRef::Raw(9),
+            ]
+        );
+        assert_eq!(source.records.len(), source.source_refs.len());
+        assert_eq!(source.records.len(), source.image_consumption.len());
+    }
+
+    fn assert_live_source_invocation_pins(source: &PreparationSource) {
+        let user_source = source_index_of(source, SourceRef::Raw(5));
+        assert_eq!(source.current_user_input, Some(user_source));
+        let expected = [
+            (user_source, InvocationPinKind::UserInput),
+            (
+                source_index_of(source, SourceRef::Raw(4)),
+                InvocationPinKind::DeveloperContext,
+            ),
+            (
+                source_index_of(source, SourceRef::Raw(6)),
+                InvocationPinKind::SyntheticInput,
+            ),
+        ];
+        for (source_index, kind) in expected {
+            assert!(
+                source
+                    .invocation_pins
+                    .contains(&InvocationPin { source_index, kind }),
+                "missing {kind:?} pin at source index {source_index}"
+            );
+        }
+        assert_eq!(source.records[user_source].pin, Some(PinReason::UserInput));
+        assert_eq!(
+            source.records[user_source].origin,
+            Some(MessageOrigin::User)
+        );
+        let synthetic_source = source_index_of(source, SourceRef::Raw(6));
+        assert_eq!(
+            source.records[synthetic_source].pin,
+            Some(PinReason::SyntheticInput)
+        );
+        assert_eq!(
+            source.records[synthetic_source].origin,
+            Some(MessageOrigin::Synthetic)
+        );
+        assert_eq!(
+            source.records[source_index_of(source, SourceRef::Raw(4))].pin,
+            Some(PinReason::DeveloperContext)
+        );
+    }
+
+    fn assert_live_source_records(source: &PreparationSource, skill_read: &SkillRead) {
+        let call_record = &source.records[source_index_of(source, SourceRef::Raw(7))];
+        assert!(matches!(
+            &call_record.record,
+            RetainedConversationRecord::FunctionCall(data)
+                if data.replay == Some(ReplaySafety::Safe) && data.arguments_parse_error.is_none()
+        ));
+        let skill_record = &source.records[source_index_of(source, SourceRef::Raw(8))];
+        assert_eq!(skill_record.skill_read.as_ref(), Some(skill_read));
+        assert!(matches!(
+            skill_record.pin,
+            Some(PinReason::SkillInstructions { .. })
+        ));
+        let image_source = source_index_of(source, SourceRef::Raw(9));
+        assert_eq!(
+            source.records[image_source].pin,
+            Some(PinReason::UnconsumedImage)
+        );
+        assert_eq!(
+            source.image_consumption[image_source],
+            ImageConsumption::Unconsumed
+        );
+        assert!(
+            source.image_consumption[..image_source]
+                .iter()
+                .all(|state| *state == ImageConsumption::Consumed)
+        );
+    }
+
+    #[test]
+    fn preparation_source_keeps_the_checkpoint_tail_and_clears_stale_pins() {
+        let state = checkpoint_preparation_state();
+        let source = state.preparation_source(1, 1, "task-new").unwrap();
+
+        assert_retained_source_shape(&source);
+        assert_retained_pin_normalization(&source);
+        assert_retained_image_evidence(&source);
+    }
+
+    fn checkpoint_preparation_state() -> ConversationState {
+        let mut old_developer = test_support::message(Role::Developer, "old developer");
+        old_developer.pin = Some(PinReason::DeveloperContext);
+        old_developer.source_task = Some("task-old".to_string());
+        let mut current_developer = test_support::message(Role::Developer, "current developer");
+        current_developer.pin = Some(PinReason::DeveloperContext);
+        current_developer.source_task = Some("task-new".to_string());
+        let mut unpinned_developer = test_support::message(Role::Developer, "unpinned developer");
+        unpinned_developer.source_task = Some("task-new".to_string());
+        let mut user = test_support::as_user_input(test_support::message(Role::User, "request"));
+        user.source_task = Some("task-new".to_string());
+        let mut skill_exchange = test_support::exchange("skill-call", "skill instructions");
+        skill_exchange[1] = test_support::as_skill_read(skill_exchange[1].clone(), "demo");
+        skill_exchange[1].source_task = Some("task-old".to_string());
+        let unconsumed = retained_image_exchange(
+            "image-1",
+            Some(PinReason::UnconsumedImage),
+            Some("task-old"),
+        );
+        let consumed = retained_image_exchange("image-2", None, Some("task-old"));
+        let mut retained = vec![old_developer, current_developer, unpinned_developer, user];
+        retained.extend(skill_exchange);
+        retained.extend(unconsumed);
+        retained.extend(consumed);
+        let checkpoint = test_support::checkpoint("checkpoint-1", "old summary", retained);
+
+        let mut state = ConversationState::new(&[(Role::System, "sys".to_string())]);
+        let current_user_raw = state.history().len();
+        state.push_user_message("request".to_string(), Some("task-new"));
+        state.activate_checkpoint(checkpoint).unwrap();
+        assert_eq!(current_user_raw, 1);
+        state
+    }
+
+    fn assert_retained_source_shape(source: &PreparationSource) {
+        assert_eq!(source.prompt_prefix_len, 1);
+        assert_eq!(
+            source.source_refs[..2],
+            [SourceRef::Prompt, SourceRef::Summary]
+        );
+        assert!(matches!(
+            source.source_refs.last(),
+            Some(SourceRef::Retained(9))
+        ));
+        let summary_count = source
+            .records
+            .iter()
+            .filter(|record| {
+                matches!(
+                    &record.record,
+                    RetainedConversationRecord::Message(data)
+                        if data.content.starts_with(crate::types::compaction::HISTORICAL_SUMMARY_MARKER)
+                )
+            })
+            .count();
+        assert_eq!(summary_count, 1, "the active summary appears exactly once");
+    }
+
+    fn assert_retained_pin_normalization(source: &PreparationSource) {
+        let old_developer_source = source_index_of(source, SourceRef::Retained(0));
+        let current_developer_source = source_index_of(source, SourceRef::Retained(1));
+        let unpinned_developer_source = source_index_of(source, SourceRef::Retained(2));
+        let user_source = source_index_of(source, SourceRef::Retained(3));
+        let skill_source = source_index_of(source, SourceRef::Retained(5));
+        assert_eq!(source.current_user_input, Some(user_source));
+        assert_eq!(source.records[old_developer_source].pin, None);
+        assert_eq!(
+            source.records[current_developer_source].pin,
+            Some(PinReason::DeveloperContext)
+        );
+        assert_eq!(
+            source
+                .invocation_pins
+                .iter()
+                .filter(|pin| {
+                    pin.source_index == current_developer_source
+                        && pin.kind == InvocationPinKind::DeveloperContext
+                })
+                .count(),
+            1
+        );
+        assert_eq!(
+            source.records[unpinned_developer_source].pin,
+            Some(PinReason::DeveloperContext)
+        );
+        assert_eq!(source.records[user_source].pin, Some(PinReason::UserInput));
+        assert!(source.invocation_pins.contains(&InvocationPin {
+            source_index: user_source,
+            kind: InvocationPinKind::UserInput,
+        }));
+        assert_eq!(source.records[skill_source].pin, None);
+        assert!(source.records[skill_source].skill_read.is_some());
+    }
+
+    fn assert_retained_image_evidence(source: &PreparationSource) {
+        let unconsumed_source = source_index_of(source, SourceRef::Retained(7));
+        let consumed_source = source_index_of(source, SourceRef::Retained(9));
+        assert_eq!(
+            source.records[unconsumed_source].pin,
+            Some(PinReason::UnconsumedImage)
+        );
+        assert_eq!(
+            source.image_consumption[unconsumed_source],
+            ImageConsumption::Unconsumed
+        );
+        assert_eq!(source.records[consumed_source].pin, None);
+        assert_eq!(
+            source.image_consumption[consumed_source],
+            ImageConsumption::Consumed
+        );
+    }
+
+    #[test]
+    fn activation_seeds_retained_images_and_drop_images_consumes_them() {
+        let checkpoint = test_support::checkpoint(
+            "checkpoint-1",
+            "summary",
+            retained_image_exchange("image-1", Some(PinReason::UnconsumedImage), None)
+                .into_iter()
+                .chain(retained_image_exchange("image-2", None, None))
+                .collect(),
+        );
+        let mut state = ConversationState::new(&[(Role::System, "sys".to_string())]);
+
+        state.activate_checkpoint(checkpoint).unwrap();
+
+        assert_eq!(
+            state.retained_image_consumption,
+            vec![
+                ImageConsumption::Consumed,
+                ImageConsumption::Unconsumed,
+                ImageConsumption::Consumed,
+                ImageConsumption::Consumed,
+            ]
+        );
+        assert_eq!(state.drop_images(), 2);
+        assert_eq!(
+            state.retained_image_consumption,
+            vec![ImageConsumption::Consumed; 4]
+        );
+        let retained = &state.checkpoint().unwrap().retained;
+        assert!(matches!(
+            &retained[1].record,
+            RetainedConversationRecord::FunctionCallOutput(data) if data.images.is_empty()
+        ));
+        assert_eq!(retained[1].pin, None);
+    }
+
+    #[test]
+    fn mark_images_consumed_updates_raw_and_retained_evidence() {
+        let checkpoint = test_support::checkpoint(
+            "checkpoint-1",
+            "summary",
+            retained_image_exchange("retained-image", Some(PinReason::UnconsumedImage), None),
+        );
+        let mut state = ConversationState::new(&[(Role::System, "sys".to_string())]);
+        state.activate_checkpoint(checkpoint).unwrap();
+        state.push_tool_output(
+            "raw-image".to_string(),
+            "image".to_string(),
+            vec![image()],
+            RecordProvenance::live_tool_output(Some("task-1".to_string()), None, None, true),
+        );
+        let raw_index = state.history().len() - 1;
+
+        state.mark_images_consumed(&[SourceRef::Retained(1), SourceRef::Raw(raw_index)]);
+
+        assert_eq!(
+            state.provenance()[raw_index].image_consumption,
+            ImageConsumption::Consumed
+        );
+        assert_eq!(
+            state.retained_image_consumption[1],
+            ImageConsumption::Consumed
+        );
+        assert_eq!(state.checkpoint().unwrap().retained[1].pin, None);
+    }
+
+    #[test]
+    fn restored_checkpoint_seeds_retained_image_state() {
+        let checkpoint = test_support::checkpoint(
+            "checkpoint-1",
+            "summary",
+            retained_image_exchange("image-1", Some(PinReason::UnconsumedImage), None),
+        );
+        let mut state = ConversationState::new(&[(Role::System, "sys".to_string())]);
+
+        state
+            .with_restored_context(restored_seed(
+                checkpoint,
+                vec![user_message("retired request")],
+                1,
+            ))
+            .unwrap();
+
+        assert_eq!(
+            state.retained_image_consumption,
+            vec![ImageConsumption::Consumed, ImageConsumption::Unconsumed]
+        );
+    }
+
+    #[test]
+    fn preparation_source_aligns_the_prompt_prefix_with_the_projector() {
+        let mut state = ConversationState::new(&[
+            (Role::System, "sys".to_string()),
+            (Role::Developer, "dev".to_string()),
+        ]);
+        state.append_developer_context(vec!["leading hook context".to_string()], Some("task-1"));
+        let current_user_raw = state.history().len();
+        state.push_user_message("request".to_string(), Some("task-1"));
+
+        let source = state
+            .preparation_source(current_user_raw, current_user_raw, "task-1")
+            .unwrap();
+
+        assert_eq!(source.prompt_prefix_len, 3);
+        assert_eq!(
+            source.source_refs[..4],
+            [
+                SourceRef::Prompt,
+                SourceRef::Prompt,
+                SourceRef::Prompt,
+                SourceRef::Raw(3),
+            ]
+        );
+        assert!(matches!(
+            &source.records[2].record,
+            RetainedConversationRecord::Message(data)
+                if data.role == Role::Developer && data.content == "leading hook context"
+        ));
+        assert_eq!(source.current_user_input, Some(3));
+    }
+
+    #[test]
+    fn preparation_source_rejects_a_pre_boundary_user_without_a_pin() {
+        let checkpoint = test_support::checkpoint(
+            "checkpoint-1",
+            "summary",
+            vec![test_support::message(Role::Assistant, "retired answer")],
+        );
+        let mut state = ConversationState::new(&[(Role::System, "sys".to_string())]);
+        let current_user_raw = state.history().len();
+        state.push_user_message("request".to_string(), Some("task-1"));
+        state.activate_checkpoint(checkpoint).unwrap();
+
+        let error = state
+            .preparation_source(current_user_raw, current_user_raw, "task-1")
+            .expect_err("a current user input before the boundary needs checkpoint evidence");
+
+        assert!(error.to_string().contains("no user_input pin"), "{error}");
+    }
+
+    fn source_index_of(source: &PreparationSource, target: SourceRef) -> usize {
+        source
+            .source_refs
+            .iter()
+            .position(|source_ref| *source_ref == target)
+            .unwrap_or_else(|| panic!("missing source ref {target:?}"))
+    }
+
+    fn retained_image_exchange(
+        call_id: &str,
+        pin: Option<PinReason>,
+        source_task: Option<&str>,
+    ) -> Vec<RetainedRecord> {
+        let mut exchange = test_support::exchange(call_id, "image output");
+        if let RetainedConversationRecord::FunctionCallOutput(data) = &mut exchange[1].record {
+            data.images.push(image());
+        }
+        exchange[1].pin = pin;
+        exchange[1].source_task = source_task.map(str::to_owned);
+        exchange
     }
 
     #[test]

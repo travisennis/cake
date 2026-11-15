@@ -198,6 +198,37 @@ pub struct FixedRequest<'a> {
     pub output_schema: Option<&'a serde_json::Value>,
 }
 
+/// Whether an image-bearing source record reached an accepted main request.
+///
+/// Live records start [`Self::Unconsumed`] and become [`Self::Consumed`] only
+/// after the main response that emitted every image is accepted. A record
+/// restored without checkpoint evidence starts [`Self::Unknown`], which
+/// selection treats conservatively.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageConsumption {
+    Consumed,
+    Unconsumed,
+    Unknown,
+}
+
+/// The kind of exact record an invocation may not retire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvocationPinKind {
+    /// The real user input for the current invocation.
+    UserInput,
+    /// A Cake-authored correction or recovery message in this invocation.
+    SyntheticInput,
+    /// Text-only Developer context owned by the current task.
+    DeveloperContext,
+}
+
+/// One source index whose record the current invocation protects exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvocationPin {
+    pub source_index: usize,
+    pub kind: InvocationPinKind,
+}
+
 /// Everything [`prepare`] needs. The source is the immutable projected request
 /// the caller is about to send: fresh prompt prefix first, then the active
 /// checkpoint's summary and retained tail, then subsequent raw history.
@@ -599,6 +630,159 @@ fn pin_skill_read(record: &mut RetainedRecord, current_task_id: &str) {
         && let Some(SkillRead { name, path }) = record.skill_read.clone()
     {
         record.pin = Some(PinReason::SkillInstructions { name, path });
+    }
+}
+
+/// Normalize exact pins and image evidence for one projection.
+///
+/// Prior-task invocation and skill pins stop applying. The current invocation's
+/// explicit pins are re-applied by source index, and image evidence either adds
+/// a conservative pin or clears one the accepted request satisfied.
+pub(super) fn normalize_source_pins(
+    records: &mut [RetainedRecord],
+    current_task_id: &str,
+    invocation_pins: &[InvocationPin],
+    image_consumption: &[ImageConsumption],
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        records.len() == image_consumption.len(),
+        "compaction source has {} records but {} image-consumption states",
+        records.len(),
+        image_consumption.len()
+    );
+    for pin in invocation_pins {
+        anyhow::ensure!(
+            pin.source_index < records.len(),
+            "compaction invocation pin source index {} exceeds the {} source records",
+            pin.source_index,
+            records.len()
+        );
+    }
+    for (index, record) in records.iter_mut().enumerate() {
+        anyhow::ensure!(
+            record.skill_read.is_none() || record.source_task.is_some(),
+            "compaction source index {index} has skill-read provenance with no source task; \
+             ambiguous legacy provenance yields no fit"
+        );
+        clear_stale_exact_pin(record, current_task_id, index)?;
+        pin_skill_read(record, current_task_id);
+        for pin in invocation_pins
+            .iter()
+            .filter(|pin| pin.source_index == index)
+        {
+            apply_invocation_pin(record, index, pin.kind)?;
+        }
+        apply_image_consumption(record, index, image_consumption[index])?;
+    }
+    Ok(())
+}
+
+fn clear_stale_exact_pin(
+    record: &mut RetainedRecord,
+    current_task_id: &str,
+    index: usize,
+) -> anyhow::Result<()> {
+    let Some(pin) = record.pin.as_ref() else {
+        return Ok(());
+    };
+    if !matches!(
+        pin,
+        PinReason::UserInput
+            | PinReason::SyntheticInput
+            | PinReason::DeveloperContext
+            | PinReason::SkillInstructions { .. }
+    ) || record.source_task.as_deref() == Some(current_task_id)
+    {
+        return Ok(());
+    }
+    if matches!(pin, PinReason::SkillInstructions { .. }) {
+        anyhow::ensure!(
+            record.skill_read.is_some(),
+            "compaction source index {index} has skill instructions without skill-read \
+             provenance"
+        );
+    }
+    record.pin = None;
+    Ok(())
+}
+
+fn apply_invocation_pin(
+    record: &mut RetainedRecord,
+    index: usize,
+    kind: InvocationPinKind,
+) -> anyhow::Result<()> {
+    match kind {
+        InvocationPinKind::UserInput => {
+            anyhow::ensure!(
+                record_role(record) == Some(Role::User),
+                "current_user_input index {index} is not a user message"
+            );
+            anyhow::ensure!(
+                record.origin != Some(MessageOrigin::Synthetic),
+                "current_user_input index {index} is synthetic input"
+            );
+            record.pin = Some(PinReason::UserInput);
+            record.origin = Some(MessageOrigin::User);
+        },
+        InvocationPinKind::SyntheticInput => {
+            anyhow::ensure!(
+                record_role(record) == Some(Role::User),
+                "synthetic_input pin at source index {index} is not a user message"
+            );
+            anyhow::ensure!(
+                record.origin == Some(MessageOrigin::Synthetic),
+                "synthetic_input pin at source index {index} has no synthetic origin"
+            );
+            record.pin = Some(PinReason::SyntheticInput);
+        },
+        InvocationPinKind::DeveloperContext => {
+            anyhow::ensure!(
+                record_role(record) == Some(Role::Developer),
+                "developer_context pin at source index {index} is not a Developer message"
+            );
+            anyhow::ensure!(
+                record.origin.is_none(),
+                "developer_context pin at source index {index} carries a user origin"
+            );
+            record.pin = Some(PinReason::DeveloperContext);
+        },
+    }
+    Ok(())
+}
+
+fn apply_image_consumption(
+    record: &mut RetainedRecord,
+    index: usize,
+    consumption: ImageConsumption,
+) -> anyhow::Result<()> {
+    let images = record_images(record);
+    anyhow::ensure!(
+        !images.is_empty() || record.pin != Some(PinReason::UnconsumedImage),
+        "compaction source index {index} has an unconsumed-image pin but carries no images"
+    );
+    match consumption {
+        ImageConsumption::Consumed => {
+            if record.pin == Some(PinReason::UnconsumedImage) {
+                record.pin = None;
+            }
+        },
+        ImageConsumption::Unconsumed | ImageConsumption::Unknown => {
+            anyhow::ensure!(
+                !images.is_empty(),
+                "compaction source index {index} has image-consumption evidence but no images"
+            );
+            record.pin = Some(PinReason::UnconsumedImage);
+        },
+    }
+    Ok(())
+}
+
+const fn record_role(record: &RetainedRecord) -> Option<Role> {
+    match &record.record {
+        RetainedConversationRecord::Message(data) => Some(data.role),
+        RetainedConversationRecord::Reasoning(_)
+        | RetainedConversationRecord::FunctionCall(_)
+        | RetainedConversationRecord::FunctionCallOutput(_) => None,
     }
 }
 

@@ -115,6 +115,10 @@ pub enum MessageOrigin {
 pub enum PinReason {
     /// A user input retained exactly as sent.
     UserInput,
+    /// Cake-authored user input, such as a schema-correction prompt.
+    SyntheticInput,
+    /// A text-only Developer message owned by the current task.
+    DeveloperContext,
     /// Observed skill instructions the exchange must keep verbatim.
     SkillInstructions { name: String, path: PathBuf },
     /// An image result not yet included in an accepted main request.
@@ -202,56 +206,116 @@ impl RetainedRecord {
 
     /// Local provenance rules: each metadata field belongs to one payload kind.
     fn validate_provenance(&self) -> anyhow::Result<()> {
-        let message = match &self.record {
-            RetainedConversationRecord::Message(data) => Some(data),
-            _ => None,
-        };
-        let output = match &self.record {
-            RetainedConversationRecord::FunctionCallOutput(data) => Some(data),
-            _ => None,
-        };
         anyhow::ensure!(
-            message.is_some() || self.origin.is_none(),
+            self.message_data().is_some() || self.origin.is_none(),
             "Compaction checkpoint origin is only valid on a retained message"
         );
         anyhow::ensure!(
-            output.is_some() || self.skill_read.is_none(),
+            self.output_data().is_some() || self.skill_read.is_none(),
             "Compaction checkpoint skill_read is only valid on a retained function call output"
         );
+        self.validate_pin()
+    }
+
+    fn validate_pin(&self) -> anyhow::Result<()> {
         match &self.pin {
             None => Ok(()),
-            Some(PinReason::UserInput) => {
-                anyhow::ensure!(
-                    message.is_some_and(|data| data.role == Role::User),
-                    "Compaction checkpoint user_input pin is only valid on a retained user message"
-                );
-                Ok(())
-            },
+            Some(PinReason::UserInput) => self.validate_user_input_pin(),
+            Some(PinReason::SyntheticInput) => self.validate_synthetic_input_pin(),
+            Some(PinReason::DeveloperContext) => self.validate_developer_context_pin(),
             Some(PinReason::SkillInstructions { name, path }) => {
-                anyhow::ensure!(
-                    output.is_some(),
-                    "Compaction checkpoint skill_instructions pin is only valid on a retained \
-                     function call output"
-                );
-                anyhow::ensure!(
-                    self.skill_read
-                        .as_ref()
-                        .is_some_and(|read| { read.name == *name && read.path == *path }),
-                    "Compaction checkpoint skill_instructions pin must match the retained output's \
-                     skill_read provenance"
-                );
-                Ok(())
+                self.validate_skill_instructions_pin(name, path)
             },
-            Some(PinReason::UnconsumedImage) => {
-                let carries_images = message.is_some_and(|data| !data.images.is_empty())
-                    || output.is_some_and(|data| !data.images.is_empty());
-                anyhow::ensure!(
-                    carries_images,
-                    "Compaction checkpoint unconsumed_image pin is only valid on a retained message \
-                     or function call output carrying images"
-                );
-                Ok(())
-            },
+            Some(PinReason::UnconsumedImage) => self.validate_unconsumed_image_pin(),
+        }
+    }
+
+    fn validate_user_input_pin(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.message_data()
+                .is_some_and(|data| data.role == Role::User),
+            "Compaction checkpoint user_input pin is only valid on a retained user message"
+        );
+        anyhow::ensure!(
+            self.origin != Some(MessageOrigin::Synthetic),
+            "Compaction checkpoint user_input pin is not valid on synthetic input"
+        );
+        Ok(())
+    }
+
+    fn validate_synthetic_input_pin(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.message_data()
+                .is_some_and(|data| data.role == Role::User),
+            "Compaction checkpoint synthetic_input pin is only valid on a retained user message"
+        );
+        anyhow::ensure!(
+            self.origin == Some(MessageOrigin::Synthetic),
+            "Compaction checkpoint synthetic_input pin requires synthetic origin"
+        );
+        Ok(())
+    }
+
+    fn validate_developer_context_pin(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.message_data()
+                .is_some_and(|data| data.role == Role::Developer),
+            "Compaction checkpoint developer_context pin is only valid on a retained Developer \
+             message"
+        );
+        anyhow::ensure!(
+            self.origin.is_none(),
+            "Compaction checkpoint developer_context pin must not carry a user origin"
+        );
+        Ok(())
+    }
+
+    fn validate_skill_instructions_pin(
+        &self,
+        name: &str,
+        path: &std::path::Path,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.output_data().is_some(),
+            "Compaction checkpoint skill_instructions pin is only valid on a retained function \
+             call output"
+        );
+        anyhow::ensure!(
+            self.skill_read
+                .as_ref()
+                .is_some_and(|read| { read.name == name && read.path == path }),
+            "Compaction checkpoint skill_instructions pin must match the retained output's \
+             skill_read provenance"
+        );
+        Ok(())
+    }
+
+    fn validate_unconsumed_image_pin(&self) -> anyhow::Result<()> {
+        let carries_images = self
+            .message_data()
+            .is_some_and(|data| !data.images.is_empty())
+            || self
+                .output_data()
+                .is_some_and(|data| !data.images.is_empty());
+        anyhow::ensure!(
+            carries_images,
+            "Compaction checkpoint unconsumed_image pin is only valid on a retained message or \
+             function call output carrying images"
+        );
+        Ok(())
+    }
+
+    const fn message_data(&self) -> Option<&MessageData> {
+        match &self.record {
+            RetainedConversationRecord::Message(data) => Some(data),
+            _ => None,
+        }
+    }
+
+    const fn output_data(&self) -> Option<&FunctionCallOutputData> {
+        match &self.record {
+            RetainedConversationRecord::FunctionCallOutput(data) => Some(data),
+            _ => None,
         }
     }
 }
@@ -777,7 +841,7 @@ pub fn project_context(
         return history.to_vec();
     };
     let boundary = boundary.min(history.len());
-    let prompt_len = prompt_context_prefix(history).count();
+    let prompt_len = prompt_context_prefix_len(history);
     let mut projected = Vec::with_capacity(checkpoint.retained.len() + history.len() + 1);
     projected.extend(history[..prompt_len].iter().cloned());
     projected.push(historical_summary_item(checkpoint));
@@ -791,10 +855,11 @@ pub fn project_context(
     projected
 }
 
-/// The fresh invocation prompts at the head of raw history survive retirement.
-fn prompt_context_prefix(
-    items: &[ConversationItem],
-) -> impl Iterator<Item = ConversationItem> + '_ {
+/// Number of leading fresh invocation prompts in raw history.
+///
+/// Live preparation and the projector use this same count, so their source
+/// references cannot disagree about which records are never retired.
+pub fn prompt_context_prefix_len(items: &[ConversationItem]) -> usize {
     items
         .iter()
         .take_while(|item| {
@@ -806,19 +871,33 @@ fn prompt_context_prefix(
                 }
             )
         })
-        .cloned()
+        .count()
+}
+
+/// The summary as a retained record, before projection.
+///
+/// Checkpoint preparation and the projector share this shape so the summary a
+/// checkpoint summarizes is the exact record the next request already saw.
+pub fn historical_summary_record(checkpoint: &CompactionData) -> RetainedRecord {
+    RetainedRecord {
+        record: RetainedConversationRecord::Message(MessageData {
+            role: Role::User,
+            content: format!("{HISTORICAL_SUMMARY_MARKER}\n\n{}", checkpoint.summary),
+            id: None,
+            status: None,
+            timestamp: Some(checkpoint.timestamp),
+            images: Vec::new(),
+        }),
+        pin: None,
+        source_task: Some(checkpoint.task_id.clone()),
+        origin: Some(MessageOrigin::Synthetic),
+        skill_read: None,
+    }
 }
 
 /// The summary as a clearly marked user-role historical message.
 fn historical_summary_item(checkpoint: &CompactionData) -> ConversationItem {
-    ConversationItem::Message {
-        role: Role::User,
-        content: format!("{HISTORICAL_SUMMARY_MARKER}\n\n{}", checkpoint.summary),
-        id: None,
-        status: None,
-        timestamp: Some(checkpoint.timestamp),
-        images: Vec::new(),
-    }
+    historical_summary_record(checkpoint).to_conversation_item()
 }
 
 #[cfg(test)]

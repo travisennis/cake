@@ -336,6 +336,64 @@ fn prepare_rejects_a_200_token_reduction_against_an_80k_trigger() {
 }
 
 #[test]
+fn normalize_source_pins_rejects_unbacked_evidence() {
+    let mut skill = output("skill-call", "skill instructions");
+    skill.skill_read = Some(SkillRead {
+        name: "demo".to_string(),
+        path: "/skills/demo/SKILL.md".into(),
+    });
+    let error = normalize_source_pins(&mut [skill], "task-1", &[], &[ImageConsumption::Consumed])
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("ambiguous legacy provenance"),
+        "{error}"
+    );
+
+    let mut image_without_images = user("text");
+    image_without_images.pin = Some(PinReason::UnconsumedImage);
+    let error = normalize_source_pins(
+        &mut [image_without_images],
+        "task-1",
+        &[],
+        &[ImageConsumption::Consumed],
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("carries no images"), "{error}");
+
+    let mut synthetic_without_origin = user("correction");
+    synthetic_without_origin.source_task = Some("task-1".to_string());
+    let error = normalize_source_pins(
+        &mut [synthetic_without_origin],
+        "task-1",
+        &[InvocationPin {
+            source_index: 0,
+            kind: InvocationPinKind::SyntheticInput,
+        }],
+        &[ImageConsumption::Consumed],
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("no synthetic origin"), "{error}");
+
+    let mut developer_with_origin = message(Role::Developer, "developer");
+    developer_with_origin.source_task = Some("task-1".to_string());
+    developer_with_origin.origin = Some(MessageOrigin::User);
+    let error = normalize_source_pins(
+        &mut [developer_with_origin],
+        "task-1",
+        &[InvocationPin {
+            source_index: 0,
+            kind: InvocationPinKind::DeveloperContext,
+        }],
+        &[ImageConsumption::Consumed],
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("carries a user origin"),
+        "{error}"
+    );
+}
+
+#[test]
 fn pins_keep_current_input_skills_and_unconsumed_images() {
     let mut skill_output = output("skill-call", "skill instructions");
     skill_output.skill_read = Some(SkillRead {
