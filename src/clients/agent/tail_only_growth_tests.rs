@@ -13,15 +13,19 @@
 //! exactly. Summary requests are lifecycle work, not part of either projection,
 //! so the invariant compares only main-agent requests.
 
+use std::io::Cursor;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use base64::Engine as _;
+use image::{DynamicImage, ImageFormat, Rgb, RgbImage};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 use super::*;
 use crate::config::model::{ApiType, ResolvedModelConfig};
 use crate::config::output_schema::OutputSchema;
+use crate::types::ImagePart;
 
 /// One recorded provider request.
 ///
@@ -245,6 +249,43 @@ fn compaction_policy() -> crate::config::settings::CompactionPolicy {
         retained_tokens: 1_000,
         summary_tokens: 512,
     }
+}
+
+/// A policy whose trigger leaves room for seeded images while a later read
+/// pushes the request over the line.
+fn image_compaction_policy() -> crate::config::settings::CompactionPolicy {
+    crate::config::settings::CompactionPolicy {
+        enabled: true,
+        threshold_percent: 10,
+        trigger_tokens: None,
+        retained_tokens: 20_000,
+        summary_tokens: 512,
+    }
+}
+
+/// Write prose the deterministic estimator sees as ordinary text.
+///
+/// Each line repeats `alpha ` so it never classifies as opaque or code, and
+/// stays well below the Read line cap.
+fn write_prose_fixture(
+    dir: &std::path::Path,
+    name: &str,
+    marker: &str,
+    lines: usize,
+    line_chars: usize,
+) -> String {
+    let unit = "alpha ";
+    let line = unit.repeat(line_chars / unit.len());
+    let content = format!(
+        "{marker}\n{}\n",
+        (0..lines)
+            .map(|_| line.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    let path = dir.join(name);
+    std::fs::write(&path, content).unwrap();
+    path.display().to_string()
 }
 
 fn responses_tool_call(call_id: &str, read_path: &str) -> serde_json::Value {
@@ -675,6 +716,368 @@ fn assert_continuation_records(records: &[SessionRecord]) {
     assert_eq!(outputs("call-read"), 1);
     assert_eq!(outputs("call-write"), 1);
     assert_eq!(outputs("call-after"), 1);
+}
+
+const SEEDED_IMAGE_CALL_ID: &str = "call-seeded-image";
+const SEEDED_OLD_CONTEXT_SENTINEL: &str = "SEEDED_OLD_IMAGE_CONTEXT";
+
+struct ImageScenario {
+    recorded: Vec<RecordedRequest>,
+    records: Vec<SessionRecord>,
+    checkpoints: usize,
+    has_checkpoint: bool,
+    turn_count: u32,
+    images: [ImagePart; 2],
+}
+
+fn png_part(width: u32, height: u32, color: [u8; 3]) -> ImagePart {
+    let image = DynamicImage::ImageRgb8(RgbImage::from_pixel(width, height, Rgb(color)));
+    let mut bytes = Vec::new();
+    image
+        .write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
+        .unwrap();
+    ImagePart {
+        media_type: "image/png".to_string(),
+        data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+        content_id: None,
+    }
+}
+
+fn seeded_image_history(old_context: String, images: Vec<ImagePart>) -> Vec<ConversationItem> {
+    vec![
+        ConversationItem::Message {
+            role: Role::User,
+            content: old_context,
+            id: None,
+            status: None,
+            timestamp: None,
+            images: Vec::new(),
+        },
+        ConversationItem::FunctionCall {
+            id: format!("fc-{SEEDED_IMAGE_CALL_ID}"),
+            call_id: SEEDED_IMAGE_CALL_ID.to_string(),
+            name: "ReadImage".to_string(),
+            arguments: "{}".to_string(),
+            timestamp: None,
+        },
+        ConversationItem::FunctionCallOutput {
+            call_id: SEEDED_IMAGE_CALL_ID.to_string(),
+            output: "ReadImage seeded-ordinals.png (two images)".to_string(),
+            timestamp: None,
+            images,
+        },
+    ]
+}
+
+fn seeded_image_blocks(images: &[ImagePart; 2]) -> Vec<serde_json::Value> {
+    images
+        .iter()
+        .map(|image| {
+            serde_json::json!({
+                "type": "input_image",
+                "image_url": image.data_url(),
+            })
+        })
+        .collect()
+}
+
+fn function_output_blocks(body: &serde_json::Value, call_id: &str) -> Vec<serde_json::Value> {
+    let item = message_sequence(body, "input")
+        .into_iter()
+        .find(|item| {
+            item.get("type").and_then(serde_json::Value::as_str) == Some("function_call_output")
+                && item.get("call_id").and_then(serde_json::Value::as_str) == Some(call_id)
+        })
+        .unwrap_or_else(|| panic!("request has no output for call {call_id}: {body}"));
+    item.get("output")
+        .and_then(serde_json::Value::as_array)
+        .unwrap_or_else(|| panic!("image-bearing output must be a block array: {item}"))
+        .clone()
+}
+
+fn count_image_blocks(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::Object(map) => {
+            let own = usize::from(
+                map.get("type").and_then(serde_json::Value::as_str) == Some("input_image"),
+            );
+            own + map.values().map(count_image_blocks).sum::<usize>()
+        },
+        serde_json::Value::Array(items) => items.iter().map(count_image_blocks).sum(),
+        _ => 0,
+    }
+}
+
+fn assert_seeded_image_projection(body: &serde_json::Value, expected: &[serde_json::Value]) {
+    let blocks = function_output_blocks(body, SEEDED_IMAGE_CALL_ID);
+    assert_eq!(
+        blocks.len(),
+        expected.len() + 1,
+        "the output must keep one text block plus each image exactly once: {blocks:?}"
+    );
+    assert_eq!(blocks[0]["type"], "input_text", "{blocks:?}");
+    assert_eq!(
+        &blocks[1..],
+        expected,
+        "image blocks must keep their ordinal identity"
+    );
+    assert_eq!(
+        count_image_blocks(body),
+        expected.len(),
+        "the request must carry no duplicate or extra image blocks"
+    );
+}
+
+async fn run_image_scenario(summary_succeeds: bool) -> ImageScenario {
+    let server = MockServer::start().await;
+    let fixture_dir = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+    let read_path = write_prose_fixture(
+        fixture_dir.path(),
+        "image-checkpoint-growth.txt",
+        "IMAGE_CHECKPOINT_GROWTH_SENTINEL",
+        100,
+        200,
+    );
+    let images = [png_part(2, 2, [220, 30, 30]), png_part(3, 3, [30, 30, 220])];
+    let old_context = format!("{SEEDED_OLD_CONTEXT_SENTINEL}\n{}", "alpha ".repeat(6_667));
+
+    let provider = ScriptedProvider::new();
+    let summary_responses = if summary_succeeds {
+        vec![ResponseTemplate::new(200).set_body_json(responses_text(
+            "Earlier work read a large old-context message; its two images remain exactly as seeded.",
+        ))]
+    } else {
+        vec![ResponseTemplate::new(400).set_body_string("summary rejected")]
+    };
+    provider
+        .mount_split(
+            &server,
+            "/responses",
+            vec![
+                ResponseTemplate::new(200)
+                    .set_body_json(responses_tool_call_without_usage("call-read", &read_path)),
+                ResponseTemplate::new(200).set_body_json(responses_text("done")),
+            ],
+            summary_responses,
+        )
+        .await;
+
+    let checkpoints = provider.checkpoint_counter();
+    let counter = Arc::clone(&checkpoints);
+    let persisted = Arc::new(Mutex::new(Vec::<SessionRecord>::new()));
+    let sink = Arc::clone(&persisted);
+    let mut agent = test_agent_with_window(ApiType::Responses, &server.uri(), 200_000)
+        .with_history(seeded_image_history(old_context, images.to_vec()))
+        .unwrap()
+        .with_compaction_policy(image_compaction_policy())
+        .unwrap()
+        .with_persist_callback(move |record| {
+            if matches!(record, SessionRecord::Compaction(_)) {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+            sink.lock().unwrap().push(record.clone());
+            Ok(())
+        })
+        .with_tools(crate::clients::tools::read_tool_registry());
+
+    let result = agent
+        .send("checkpoint the seeded image blocks".to_string())
+        .await
+        .expect("the retry below the window must complete");
+    assert_eq!(result, "done");
+
+    ImageScenario {
+        recorded: provider.recorded(),
+        records: persisted.lock().unwrap().clone(),
+        checkpoints: checkpoints.load(Ordering::SeqCst),
+        has_checkpoint: agent.conversation.has_checkpoint(),
+        turn_count: agent.turn_count(),
+        images,
+    }
+}
+
+/// A checkpoint that retires the seeded old text keeps the image-bearing tool
+/// output in the retained tail. Its two image blocks must appear before and
+/// after the boundary with the same order, owner, and bytes.
+#[tokio::test]
+async fn checkpoint_preserves_image_blocks_in_their_ordinals() {
+    let scenario = run_image_scenario(true).await;
+    assert!(scenario.has_checkpoint);
+    assert_eq!(scenario.checkpoints, 1);
+    assert_eq!(scenario.turn_count, 2);
+
+    let main: Vec<_> = scenario
+        .recorded
+        .iter()
+        .filter(|request| !request.summary)
+        .collect();
+    assert_eq!(scenario.recorded.len(), 3, "main, summary, main");
+    assert_eq!(main.len(), 2);
+    assert_eq!(main[0].checkpoint_epoch, 0);
+    assert_eq!(main[1].checkpoint_epoch, 1);
+    assert_tail_only_growth(&scenario.recorded, "input");
+
+    let expected = seeded_image_blocks(&scenario.images);
+    assert_seeded_image_projection(&main[0].body, &expected);
+    assert_seeded_image_projection(&main[1].body, &expected);
+
+    let summary = scenario
+        .recorded
+        .iter()
+        .find(|request| request.summary)
+        .expect("one summary request");
+    assert!(
+        summary
+            .body
+            .to_string()
+            .contains(SEEDED_OLD_CONTEXT_SENTINEL),
+        "the summary receives the retired old context"
+    );
+    assert_eq!(
+        count_image_blocks(&summary.body),
+        0,
+        "a retained image exchange is not part of the summary"
+    );
+
+    let post_checkpoint = main[1].body.to_string();
+    assert!(!post_checkpoint.contains(SEEDED_OLD_CONTEXT_SENTINEL));
+    assert!(post_checkpoint.contains(crate::types::compaction::HISTORICAL_SUMMARY_MARKER));
+    assert!(post_checkpoint.contains("its two images remain exactly as seeded"));
+
+    let checkpoint = scenario
+        .records
+        .iter()
+        .find_map(|record| match record {
+            SessionRecord::Compaction(data) => Some(data),
+            _ => None,
+        })
+        .expect("one committed checkpoint");
+    let retained_images: Vec<_> = checkpoint
+        .retained
+        .iter()
+        .filter_map(|record| match &record.record {
+            crate::types::compaction::RetainedConversationRecord::FunctionCallOutput(data)
+                if data.call_id == SEEDED_IMAGE_CALL_ID =>
+            {
+                Some((data, record.pin.clone()))
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        retained_images.len(),
+        1,
+        "the image output is retained once"
+    );
+    assert_eq!(retained_images[0].0.images, scenario.images.to_vec());
+    assert_eq!(
+        retained_images[0].1, None,
+        "the accepted pre-checkpoint request consumed both images"
+    );
+
+    let start = scenario
+        .records
+        .iter()
+        .find_map(|record| match record {
+            SessionRecord::CompactionStart(data) => Some(data),
+            _ => None,
+        })
+        .expect("one compaction start");
+    let end = scenario
+        .records
+        .iter()
+        .find_map(|record| match record {
+            SessionRecord::CompactionEnd(data) => Some(data),
+            _ => None,
+        })
+        .expect("one compaction end");
+    assert!(start.estimated_before_tokens >= 20_000, "{start:?}");
+    assert_eq!(
+        end.status,
+        crate::types::compaction::CompactionStatus::Committed
+    );
+    assert!(
+        end.estimated_after_tokens
+            .is_some_and(|after| after <= 15_000),
+        "the post-checkpoint projection must hit the outer target: {end:?}"
+    );
+    assert_eq!(end.retired_count, Some(1), "only the old text is retired");
+}
+
+/// A failed summary leaves no checkpoint and sends the same raw projection on
+/// the next main request. The two seeded image blocks must be byte-identical,
+/// in order, and present exactly once each.
+#[tokio::test]
+async fn failed_summary_sends_the_same_image_blocks_once() {
+    let scenario = run_image_scenario(false).await;
+    assert!(!scenario.has_checkpoint);
+    assert_eq!(scenario.checkpoints, 0);
+    assert_eq!(scenario.turn_count, 2);
+
+    let main: Vec<_> = scenario
+        .recorded
+        .iter()
+        .filter(|request| !request.summary)
+        .collect();
+    let summaries: Vec<_> = scenario
+        .recorded
+        .iter()
+        .filter(|request| request.summary)
+        .collect();
+    assert_eq!(scenario.recorded.len(), 3, "main, failed summary, main");
+    assert_eq!(main.len(), 2);
+    assert_eq!(summaries.len(), 1, "a failed summary is not retried");
+    assert_eq!(main[0].checkpoint_epoch, 0);
+    assert_eq!(main[1].checkpoint_epoch, 0);
+    assert_tail_only_growth(&scenario.recorded, "input");
+
+    let expected = seeded_image_blocks(&scenario.images);
+    assert_seeded_image_projection(&main[0].body, &expected);
+    assert_seeded_image_projection(&main[1].body, &expected);
+    assert_eq!(
+        function_output_blocks(&main[0].body, SEEDED_IMAGE_CALL_ID),
+        function_output_blocks(&main[1].body, SEEDED_IMAGE_CALL_ID),
+        "failure must not rewrite, duplicate, or drop an image block"
+    );
+
+    let summary_text = summaries[0].body.to_string();
+    assert!(summary_text.contains(SEEDED_OLD_CONTEXT_SENTINEL));
+    assert_eq!(count_image_blocks(&summaries[0].body), 0);
+    let after = main[1].body.to_string();
+    assert!(after.contains(SEEDED_OLD_CONTEXT_SENTINEL));
+    assert!(!after.contains(crate::types::compaction::HISTORICAL_SUMMARY_MARKER));
+
+    assert!(
+        !scenario
+            .records
+            .iter()
+            .any(|record| matches!(record, SessionRecord::Compaction(_))),
+        "a failed summary must not persist a checkpoint"
+    );
+    let starts: Vec<_> = scenario
+        .records
+        .iter()
+        .filter_map(|record| match record {
+            SessionRecord::CompactionStart(data) => Some(data),
+            _ => None,
+        })
+        .collect();
+    let ends: Vec<_> = scenario
+        .records
+        .iter()
+        .filter_map(|record| match record {
+            SessionRecord::CompactionEnd(data) => Some(data),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(starts.len(), 1);
+    assert_eq!(ends.len(), 1);
+    assert!(starts[0].estimated_before_tokens >= 20_000);
+    assert_eq!(
+        ends[0].status,
+        crate::types::compaction::CompactionStatus::Failed
+    );
+    assert_eq!(ends[0].reason.as_deref(), Some("summary generation failed"));
 }
 
 /// A failed summary does not abort while the raw projection still fits, so the

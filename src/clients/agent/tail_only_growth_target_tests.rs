@@ -20,31 +20,6 @@ struct CommittedAttempt {
     retained: usize,
 }
 
-/// Write prose the deterministic estimator sees as ordinary text.
-///
-/// Each line repeats `alpha ` so it never classifies as opaque or code, and
-/// stays well below the Read line cap.
-fn write_prose_fixture(
-    dir: &std::path::Path,
-    name: &str,
-    marker: &str,
-    lines: usize,
-    line_chars: usize,
-) -> String {
-    let unit = "alpha ";
-    let line = unit.repeat(line_chars / unit.len());
-    let content = format!(
-        "{marker}\n{}\n",
-        (0..lines)
-            .map(|_| line.as_str())
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
-    let path = dir.join(name);
-    std::fs::write(&path, content).unwrap();
-    path.display().to_string()
-}
-
 fn recording_read_agent(
     server: &MockServer,
     window: u32,
