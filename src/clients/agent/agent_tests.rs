@@ -43,6 +43,53 @@ fn test_agent() -> Agent {
 }
 
 #[test]
+fn disabled_compaction_policy_is_stored_without_a_window() {
+    let policy = CompactionPolicy::default();
+    let agent = test_agent().with_compaction_policy(policy).unwrap();
+
+    assert_eq!(agent.compaction_policy(), Some(&policy));
+    let resolved = agent.resolved_compaction_policy().unwrap();
+    assert!(!resolved.enabled);
+    assert_eq!(resolved.trigger_tokens, None);
+    assert_eq!(resolved.retained_tokens, 20_000);
+    assert_eq!(resolved.summary_tokens, 4_096);
+}
+
+#[test]
+fn enabled_compaction_requires_a_window_and_a_bounded_backend() {
+    let enabled = CompactionPolicy {
+        enabled: true,
+        ..CompactionPolicy::default()
+    };
+    let error = test_agent()
+        .with_compaction_policy(enabled)
+        .err()
+        .expect("enabled policy without a window must fail");
+    assert!(error.to_string().contains("no context_window"), "{error}");
+
+    let agent = test_agent()
+        .with_context_window(Some(100_000))
+        .with_compaction_policy(enabled)
+        .unwrap();
+    let resolved = agent.resolved_compaction_policy().unwrap();
+    assert_eq!(resolved.trigger_tokens, Some(80_000));
+    assert_eq!(resolved.target_tokens, Some(60_000));
+
+    let codex = test_agent_for(ApiType::Responses, "https://chatgpt.com/backend-api/codex")
+        .with_context_window(Some(100_000));
+    let error = codex
+        .with_compaction_policy(enabled)
+        .err()
+        .expect("a Codex backend must reject a bounded summary");
+    assert!(
+        error
+            .to_string()
+            .contains("does not support a bounded summary generation cap"),
+        "{error}"
+    );
+}
+
+#[test]
 fn read_only_tool_context_removes_edit_and_write() {
     let mut context = ToolContext::from_current_process();
     context.set_sandbox_policy(SandboxPolicy::ReadOnly);
@@ -2331,6 +2378,7 @@ printf 'completed:%s' "$index"
             judge: crate::config::settings::JudgeSettings::default(),
             limits: crate::config::settings::ResolvedLimits::default(),
             images: crate::config::settings::ResolvedImagePolicy::default(),
+            compaction: crate::config::settings::CompactionPolicy::default(),
             warnings: Vec::new(),
         }
     }

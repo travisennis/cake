@@ -18,7 +18,9 @@ use crate::clients::tools::{
 };
 use crate::config::model::ResolvedModelConfig;
 use crate::config::output_schema::OutputSchema;
-use crate::config::settings::{ResolvedImagePolicy, ResolvedLimits};
+use crate::config::settings::{
+    CompactionPolicy, ResolvedCompactionPolicy, ResolvedImagePolicy, ResolvedLimits,
+};
 use crate::config::skills::Skill;
 use crate::config::toolbox::ToolboxTool;
 use crate::hooks::HookRunner;
@@ -230,6 +232,11 @@ pub struct Agent {
     max_tool_calls: Option<u32>,
     /// Per-request image budgets applied to the provider request projection.
     image_policy: ResolvedImagePolicy,
+    /// Configured automatic compaction policy. `None` until the run applies a
+    /// loaded policy; automatic compaction does not run without one.
+    compaction_policy: Option<CompactionPolicy>,
+    /// The configured policy after model-window validation and clamping.
+    resolved_compaction_policy: Option<ResolvedCompactionPolicy>,
     /// Maps SKILL.md paths to skills for path-watching `SkillActivated` records.
     /// When the Read tool targets one of these paths, a `SkillActivated`
     /// record is emitted once per skill per session.
@@ -290,6 +297,8 @@ impl Agent {
             max_turns: None,
             max_tool_calls: None,
             image_policy: ResolvedImagePolicy::defaults(),
+            compaction_policy: None,
+            resolved_compaction_policy: None,
             skill_locations: Arc::new(HashMap::new()),
             activated_skills: Arc::new(Mutex::new(HashSet::new())),
             permission_denials: Vec::new(),
@@ -1049,6 +1058,47 @@ impl Agent {
     pub const fn with_image_policy(mut self, policy: &ResolvedImagePolicy) -> Self {
         self.image_policy = *policy;
         self
+    }
+
+    /// Validate and apply the loaded automatic compaction policy.
+    ///
+    /// The policy is validated against the resolved model context window.
+    /// Enabling automatic compaction without a known window is an error, and
+    /// an enabled policy also requires a backend that preserves the bounded
+    /// summary generation cap. These checks make no network call.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid policy, enabled compaction without a
+    /// context window, or a backend that cannot bound a summary.
+    pub fn with_compaction_policy(mut self, policy: CompactionPolicy) -> anyhow::Result<Self> {
+        let window = self.config.model_config.context_window;
+        let resolved = policy.validate(window)?;
+        if resolved.enabled && window.is_none() {
+            anyhow::bail!(
+                "automatic compaction is enabled for model '{}' but no context_window is \
+                 configured",
+                self.config.model_config.model
+            );
+        }
+        if resolved.enabled {
+            crate::clients::compaction::validate_summary_backend(&self.config)?;
+        }
+        self.compaction_policy = Some(policy);
+        self.resolved_compaction_policy = Some(resolved);
+        Ok(self)
+    }
+
+    /// Returns the configured compaction policy (for test fixtures).
+    #[cfg(test)]
+    pub(super) const fn compaction_policy(&self) -> Option<&CompactionPolicy> {
+        self.compaction_policy.as_ref()
+    }
+
+    /// Returns the resolved compaction policy (for test fixtures).
+    #[cfg(test)]
+    pub(super) const fn resolved_compaction_policy(&self) -> Option<&ResolvedCompactionPolicy> {
+        self.resolved_compaction_policy.as_ref()
     }
 
     /// Sets the conversation history from raw conversation items.

@@ -344,6 +344,11 @@ pub struct ProfileSettings {
     /// lower-precedence value.
     #[serde(default)]
     pub images: Option<ImagesSettingsOverlay>,
+    /// Automatic compaction policy overlaid onto the merged top-level
+    /// `[compaction]` section. Each configured key overrides the
+    /// lower-precedence value.
+    #[serde(default)]
+    pub compaction: Option<CompactionSettingsOverlay>,
     /// Model definitions are intentionally not supported in profiles.
     #[serde(default)]
     pub models: Option<Vec<ModelDefinition>>,
@@ -395,14 +400,17 @@ pub struct Settings {
     /// Per-request image budgets.
     #[serde(default)]
     pub images: Option<ImagesSettingsOverlay>,
+    /// Automatic pre-request compaction policy.
+    #[serde(default)]
+    pub compaction: Option<CompactionSettingsOverlay>,
 }
 
 impl Settings {
     /// Return a copy with every authority-bearing project key removed.
     ///
     /// Low-authority fields (`default_model`, `[limits]`, `[images]`,
-    /// narrowing `[tools].enabled`, profile selection, and skill filters) are
-    /// preserved.
+    /// `[compaction]`, narrowing `[tools].enabled`, profile selection, and
+    /// skill filters) are preserved.
     #[must_use]
     pub fn without_authority(&self) -> Self {
         let mut stripped = self.clone();
@@ -837,6 +845,213 @@ impl Default for ResolvedImagePolicy {
     }
 }
 
+/// TOML-facing automatic compaction overlay.
+///
+/// Each key is optional so a project or profile section overrides only the
+/// keys it sets. There is deliberately no `"unlimited"` sentinel: every budget
+/// remains a finite positive integer.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CompactionSettingsOverlay {
+    /// Whether automatic pre-request compaction runs.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// Fallback trigger as a percentage of the model context window.
+    #[serde(default)]
+    pub threshold_percent: Option<u8>,
+    /// Absolute trigger line that replaces the percentage fallback.
+    #[serde(default)]
+    pub trigger_tokens: Option<PositiveLimit>,
+    /// Token target for the retained tail after a checkpoint.
+    #[serde(default)]
+    pub keep_recent_tokens: Option<PositiveLimit>,
+    /// Token target for the generated summary text.
+    #[serde(default)]
+    pub summary_tokens: Option<PositiveLimit>,
+}
+
+impl CompactionSettingsOverlay {
+    /// Apply the compiled defaults to every absent key.
+    ///
+    /// Each setting has exactly one consumer in the resolved policy:
+    /// `enabled` becomes [`CompactionPolicy::enabled`], `threshold_percent`
+    /// becomes the fallback trigger percentage, `trigger_tokens` becomes the
+    /// absolute trigger and its post-compaction target, `keep_recent_tokens`
+    /// becomes the retained-tail target, and `summary_tokens` becomes the
+    /// summary-text target.
+    #[must_use]
+    pub const fn resolve(&self) -> CompactionPolicy {
+        CompactionPolicy {
+            enabled: match self.enabled {
+                Some(enabled) => enabled,
+                None => false,
+            },
+            threshold_percent: match self.threshold_percent {
+                Some(threshold_percent) => threshold_percent,
+                None => DEFAULT_THRESHOLD_PERCENT,
+            },
+            trigger_tokens: Self::optional_tokens(self.trigger_tokens),
+            retained_tokens: Self::tokens_or(self.keep_recent_tokens, DEFAULT_RETAINED_TOKENS),
+            summary_tokens: Self::tokens_or(self.summary_tokens, DEFAULT_SUMMARY_TOKENS),
+        }
+    }
+
+    const fn optional_tokens(limit: Option<PositiveLimit>) -> Option<u64> {
+        match limit {
+            Some(limit) => Some(limit.value() as u64),
+            None => None,
+        }
+    }
+
+    const fn tokens_or(limit: Option<PositiveLimit>, default: u64) -> u64 {
+        match limit {
+            Some(limit) => limit.value() as u64,
+            None => default,
+        }
+    }
+}
+
+/// Default automatic threshold percentage.
+pub const DEFAULT_THRESHOLD_PERCENT: u8 = 80;
+
+/// Default retained-tail token target.
+pub const DEFAULT_RETAINED_TOKENS: u64 = 20_000;
+
+/// Default summary-text token target.
+pub const DEFAULT_SUMMARY_TOKENS: u64 = 4_096;
+
+/// A configured compaction policy before window clamping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompactionPolicy {
+    /// Whether automatic pre-request compaction runs.
+    pub enabled: bool,
+    /// Fallback trigger as a percentage of the model context window.
+    pub threshold_percent: u8,
+    /// Absolute trigger line that replaces the percentage fallback.
+    pub trigger_tokens: Option<u64>,
+    /// Token target for the retained tail after a checkpoint.
+    pub retained_tokens: u64,
+    /// Token target for the generated summary text.
+    pub summary_tokens: u64,
+}
+
+impl Default for CompactionPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            threshold_percent: DEFAULT_THRESHOLD_PERCENT,
+            trigger_tokens: None,
+            retained_tokens: DEFAULT_RETAINED_TOKENS,
+            summary_tokens: DEFAULT_SUMMARY_TOKENS,
+        }
+    }
+}
+
+impl CompactionPolicy {
+    /// Validate the policy and clamp its budgets to the known window.
+    ///
+    /// An absolute trigger replaces the percentage-derived line and must be
+    /// strictly below a known window. The post-compaction target is three
+    /// quarters of the effective trigger. The retained tail is clamped to one
+    /// quarter of the window and the summary text to one sixteenth. A zero
+    /// effective budget, a threshold outside 10 through 80, or a window that
+    /// cannot express a positive trigger and target is rejected.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for any invalid or unsatisfiable policy.
+    pub fn validate(self, window: Option<u32>) -> anyhow::Result<ResolvedCompactionPolicy> {
+        anyhow::ensure!(
+            (10..=80).contains(&self.threshold_percent),
+            "compaction threshold_percent must be between 10 and 80, got {}",
+            self.threshold_percent
+        );
+        anyhow::ensure!(
+            self.retained_tokens > 0,
+            "compaction retained target must be positive"
+        );
+        anyhow::ensure!(
+            self.summary_tokens > 0,
+            "compaction summary target must be positive"
+        );
+        anyhow::ensure!(
+            self.trigger_tokens.is_none_or(|trigger| trigger > 0),
+            "compaction trigger_tokens must be positive"
+        );
+        if let Some(window) = window {
+            anyhow::ensure!(window > 0, "compaction window must be positive");
+        }
+
+        let trigger_tokens = match (self.trigger_tokens, window) {
+            (Some(trigger), Some(window)) => {
+                anyhow::ensure!(
+                    trigger < u64::from(window),
+                    "compaction trigger_tokens {trigger} must be below the {window}-token \
+                     context window"
+                );
+                Some(trigger)
+            },
+            (Some(trigger), None) => Some(trigger),
+            (None, Some(window)) => {
+                Some(u64::from(window).saturating_mul(u64::from(self.threshold_percent)) / 100)
+            },
+            (None, None) => None,
+        };
+        if let Some(trigger) = trigger_tokens {
+            anyhow::ensure!(trigger > 0, "compaction trigger must be positive");
+        }
+        let target_tokens = trigger_tokens.map(|trigger| trigger.saturating_mul(3) / 4);
+        if let Some(target) = target_tokens {
+            anyhow::ensure!(
+                target > 0,
+                "compaction trigger produces a zero post-compaction target"
+            );
+        }
+
+        let retained_tokens = window.map_or(self.retained_tokens, |window| {
+            self.retained_tokens.min(u64::from(window) / 4)
+        });
+        let summary_tokens = window.map_or(self.summary_tokens, |window| {
+            self.summary_tokens.min(u64::from(window) / 16)
+        });
+        anyhow::ensure!(
+            retained_tokens > 0,
+            "compaction retained target clamps to zero for a {}-token window",
+            window.unwrap_or_default()
+        );
+        anyhow::ensure!(
+            summary_tokens > 0,
+            "compaction summary target clamps to zero for a {}-token window",
+            window.unwrap_or_default()
+        );
+
+        Ok(ResolvedCompactionPolicy {
+            enabled: self.enabled,
+            threshold_percent: self.threshold_percent,
+            retained_tokens,
+            summary_tokens,
+            trigger_tokens,
+            target_tokens,
+        })
+    }
+}
+
+/// A policy after window clamping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedCompactionPolicy {
+    /// Whether automatic pre-request compaction runs.
+    pub enabled: bool,
+    /// Fallback trigger percentage retained for diagnostics.
+    pub threshold_percent: u8,
+    /// Token target for the retained tail after a checkpoint.
+    pub retained_tokens: u64,
+    /// Token target for the generated summary text.
+    pub summary_tokens: u64,
+    /// Effective trigger line, when the policy or window supplies one.
+    pub trigger_tokens: Option<u64>,
+    /// Post-compaction input target.
+    pub target_tokens: Option<u64>,
+}
+
 /// Resolved runtime limits for the agent loop and tools.
 ///
 /// This type contains no TOML sentinel values or absent-key state. It is
@@ -1036,6 +1251,9 @@ pub struct LoadedSettings {
     pub limits: ResolvedLimits,
     /// Effective per-request image budgets after all overlays resolve.
     pub images: ResolvedImagePolicy,
+    /// Effective automatic compaction policy after all overlays resolve and
+    /// before model-window validation.
+    pub compaction: CompactionPolicy,
     /// Warnings about unrecognized keys in settings files, one per issue and
     /// already formatted with the source file path. Unrecognized keys are
     /// ignored (existing behavior); these warnings surface them instead of
@@ -1730,6 +1948,7 @@ impl SettingsLoader {
         Self::merge_tools_settings(settings.tools.clone(), origin, source_path, acc)?;
         Self::merge_limits(settings.limits.clone(), acc);
         Self::merge_images(settings.images.clone(), acc);
+        Self::merge_compaction(settings.compaction.clone(), acc);
         for (name, profile) in &settings.profiles {
             acc.profiles
                 .entry(name.clone())
@@ -1820,6 +2039,35 @@ impl SettingsLoader {
         }
         if images.max_pixels.is_some() {
             acc.image_max_pixels = images.max_pixels;
+        }
+    }
+
+    /// Merge `[compaction]` fields into the accumulator.
+    ///
+    /// Absent keys keep lower-precedence values, so a project or profile
+    /// `[compaction]` section overrides only the keys it sets. Every budget
+    /// is a positive integer; there is no `"unlimited"` sentinel.
+    const fn merge_compaction(
+        compaction: Option<CompactionSettingsOverlay>,
+        acc: &mut SettingsAccumulator,
+    ) {
+        let Some(compaction) = compaction else {
+            return;
+        };
+        if compaction.enabled.is_some() {
+            acc.compaction.enabled = compaction.enabled;
+        }
+        if compaction.threshold_percent.is_some() {
+            acc.compaction.threshold_percent = compaction.threshold_percent;
+        }
+        if compaction.trigger_tokens.is_some() {
+            acc.compaction.trigger_tokens = compaction.trigger_tokens;
+        }
+        if compaction.keep_recent_tokens.is_some() {
+            acc.compaction.keep_recent_tokens = compaction.keep_recent_tokens;
+        }
+        if compaction.summary_tokens.is_some() {
+            acc.compaction.summary_tokens = compaction.summary_tokens;
         }
     }
 
@@ -2094,6 +2342,7 @@ struct SettingsAccumulator {
     image_max_images: Option<PositiveLimit>,
     image_max_bytes: Option<PositiveLimit>,
     image_max_pixels: Option<PositiveLimit>,
+    compaction: CompactionSettingsOverlay,
     warnings: Vec<String>,
 }
 
@@ -2136,6 +2385,7 @@ impl SettingsAccumulator {
         self.apply_tools_overlay(&settings.tools, overlay)?;
         SettingsLoader::merge_limits(settings.limits.clone(), self);
         SettingsLoader::merge_images(settings.images.clone(), self);
+        SettingsLoader::merge_compaction(settings.compaction.clone(), self);
         Ok(())
     }
 
@@ -2216,6 +2466,7 @@ impl SettingsAccumulator {
                 max_pixels: self.image_max_pixels,
             }
             .resolve(),
+            compaction: self.compaction.resolve(),
             warnings: self.warnings,
         }
     }

@@ -237,6 +237,37 @@ fn policy_defaults_and_window_clamps() {
 }
 
 #[test]
+fn absolute_trigger_replaces_the_percentage_and_requires_a_window_above_it() {
+    let policy = CompactionPolicy {
+        trigger_tokens: Some(350_000),
+        ..CompactionPolicy::default()
+    };
+    let resolved = policy.validate(Some(400_000)).unwrap();
+    assert_eq!(resolved.trigger_tokens, Some(350_000));
+    assert_eq!(resolved.target_tokens, Some(262_500));
+    assert_eq!(resolved.retained_tokens, 20_000);
+    assert_eq!(resolved.summary_tokens, 4_096);
+
+    let no_window = policy.validate(None).unwrap();
+    assert_eq!(no_window.trigger_tokens, Some(350_000));
+    assert_eq!(no_window.target_tokens, Some(262_500));
+
+    let error = policy.validate(Some(350_000)).unwrap_err();
+    assert!(
+        error.to_string().contains("must be below the 350000-token"),
+        "{error}"
+    );
+    assert!(
+        CompactionPolicy {
+            trigger_tokens: Some(0),
+            ..CompactionPolicy::default()
+        }
+        .validate(None)
+        .is_err()
+    );
+}
+
+#[test]
 fn estimator_is_deterministic_and_content_classed() {
     assert_eq!(classify_text("plain prose"), ContentClass::Prose);
     assert_eq!(classify_text(r#"{"a":1}"#), ContentClass::Code);
@@ -1074,6 +1105,25 @@ fn codex_support_check_fails_without_a_request() {
         &chat
     ));
     assert_eq!(summary_generation_cap(&codex), 16_384);
+
+    assert!(validate_summary_backend(&codex).is_err());
+    let responses = config("https://api.openai.com/v1", ApiType::Responses);
+    assert!(validate_summary_backend(&responses).is_ok());
+
+    let mut oversized_reasoning = responses.clone();
+    oversized_reasoning.model_config.reasoning_max_tokens = Some(20_000);
+    let error = validate_summary_backend(&oversized_reasoning).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("exceeds the summary generation cap"),
+        "{error}"
+    );
+
+    let mut bounded = responses;
+    bounded.model_config.max_output_tokens = Some(8_000);
+    bounded.model_config.reasoning_max_tokens = Some(8_000);
+    assert!(validate_summary_backend(&bounded).is_ok());
 }
 
 #[test]

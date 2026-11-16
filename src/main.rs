@@ -744,6 +744,26 @@ impl CodingAssistant {
         )?)
     }
 
+    /// Prepare the invocation directory and load every run resource.
+    async fn prepare_run_context(
+        &self,
+        data_dir: &DataDir,
+        project_config_mode: ProjectConfigMode,
+    ) -> anyhow::Result<(PreparedRun, RunResources)> {
+        let prepared = self.prepare_run(project_config_mode)?;
+        let resources = self
+            .load_run_resources(
+                &prepared.current_dir,
+                data_dir,
+                prepared.additional_dirs.clone(),
+                &prepared.toolbox_dirs,
+                &prepared.mcp_config_paths,
+                project_config_mode,
+            )
+            .await?;
+        Ok((prepared, resources))
+    }
+
     async fn load_run_resources(
         &self,
         current_dir: &Path,
@@ -1637,16 +1657,8 @@ impl CmdRunner for CodingAssistant {
             return self.run_subcommand(data_dir, options).await;
         }
 
-        let prepared = self.prepare_run(options.project_config_mode)?;
-        let resources = self
-            .load_run_resources(
-                &prepared.current_dir,
-                data_dir,
-                prepared.additional_dirs.clone(),
-                &prepared.toolbox_dirs,
-                &prepared.mcp_config_paths,
-                options.project_config_mode,
-            )
+        let (prepared, resources) = self
+            .prepare_run_context(data_dir, options.project_config_mode)
             .await?;
         let task_id = uuid::Uuid::new_v4();
         let run_mode = RunMode::from_cli(self)?;
@@ -1685,6 +1697,9 @@ impl CmdRunner for CodingAssistant {
             .agent
             .with_limits(&resources.loaded.limits)
             .with_image_policy(&resources.loaded.images);
+        run_session.agent = run_session
+            .agent
+            .with_compaction_policy(resources.loaded.compaction)?;
         run_session.attach_output_schema(prepared.output_schema.as_ref());
 
         let session_start_source =

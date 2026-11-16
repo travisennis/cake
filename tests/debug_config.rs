@@ -140,6 +140,9 @@ fn debug_config_text_reports_effective_sections_without_the_credential() {
     assert!(report.contains(
         "images: max_images=8, max_bytes=16777216, max_pixels=24000000, read_image_max_bytes=33554432, max_edge=2048"
     ));
+    assert!(report.contains(
+        "compaction: enabled=false, threshold_percent=80, trigger_tokens=unset, keep_recent_tokens=20000, summary_tokens=4096"
+    ));
     assert!(report.contains("Hooks\n"));
     assert!(report.contains("Toolbox (describe probing skipped)"));
     assert!(!report.contains("actual-secret-value"));
@@ -149,6 +152,49 @@ fn debug_config_text_reports_effective_sections_without_the_credential() {
         fs::read_dir(env.data_dir.join("sessions")).unwrap().count(),
         0,
         "a diagnostic command must not create a session"
+    );
+}
+
+#[test]
+fn debug_config_reports_configured_compaction_policy() {
+    let env = config_env();
+    fs::create_dir_all(env.home_dir.join(".config/cake")).expect("create global config directory");
+    env.write_global_settings(
+        r#"default_model = "zen"
+
+[[models]]
+name = "zen"
+model = "glm-5.1"
+base_url = "https://example.invalid/v1"
+api_key_env = "CONFIG_TEST_KEY"
+
+[compaction]
+enabled = true
+threshold_percent = 70
+trigger_tokens = 350000
+keep_recent_tokens = 15000
+summary_tokens = 2048
+"#,
+    );
+
+    let text = run_with_key(&env, &["debug", "config"], "actual-secret-value");
+    assert_eq!(text.status.code(), Some(0), "stderr: {}", stderr(&text));
+    assert!(stdout(&text).contains(
+        "compaction: enabled=true, threshold_percent=70, trigger_tokens=350000, keep_recent_tokens=15000, summary_tokens=2048"
+    ));
+
+    let json = run_with_key(&env, &["debug", "config", "--json"], "actual-secret-value");
+    assert_eq!(json.status.code(), Some(0), "stderr: {}", stderr(&json));
+    let document = parse_document(&json);
+    assert_eq!(
+        document["data"]["settings"]["compaction"],
+        serde_json::json!({
+            "enabled": true,
+            "threshold_percent": 70,
+            "trigger_tokens": 350_000,
+            "keep_recent_tokens": 15_000,
+            "summary_tokens": 2_048,
+        })
     );
 }
 
@@ -214,6 +260,16 @@ fn assert_config_json_document(env: &TestEnv, document: &serde_json::Value) {
             "max_pixels": 24_000_000,
             "read_image_max_bytes": 33_554_432,
             "max_edge": 2048,
+        })
+    );
+    assert_eq!(
+        document["data"]["settings"]["compaction"],
+        serde_json::json!({
+            "enabled": false,
+            "threshold_percent": 80,
+            "trigger_tokens": serde_json::Value::Null,
+            "keep_recent_tokens": 20_000,
+            "summary_tokens": 4_096,
         })
     );
     assert_eq!(

@@ -289,6 +289,19 @@ const DEFAULT_SETTINGS: &str = r#"# Cake project settings, created by `cake init
 # max_images = 8          # images per request
 # max_bytes = 16777216    # encoded image bytes per request (16 MiB)
 # max_pixels = 24000000   # decoded pixels per request (24 MP)
+
+# Automatic pre-request compaction is opt-in. Enabling it requires the selected
+# model to declare context_window. threshold_percent is the fallback trigger;
+# trigger_tokens replaces it with an absolute input-token line. The retained
+# tail and generated summary are capped by their token targets. See
+# docs/configuration.md. A selected profile can also set
+# [profiles.NAME.compaction]; profile values override top-level values per key.
+# [compaction]
+# enabled = false          # opt in to automatic pre-request compaction
+# threshold_percent = 80   # fallback trigger as a percent of context_window
+# trigger_tokens = 350000  # absolute trigger; must be below context_window
+# keep_recent_tokens = 20000 # retained-tail token target
+# summary_tokens = 4096    # generated summary token target
 "#;
 
 /// Generated inert `.cake/hooks.json.example` content.

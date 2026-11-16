@@ -2523,6 +2523,182 @@ max_pixels = 12000000
 }
 
 #[test]
+fn compaction_settings_resolve_defaults_and_values() {
+    let overlay: CompactionSettingsOverlay = toml::from_str("").unwrap();
+    assert_eq!(overlay.resolve(), CompactionPolicy::default());
+    assert!(!overlay.resolve().enabled);
+    assert_eq!(DEFAULT_THRESHOLD_PERCENT, 80);
+    assert_eq!(DEFAULT_RETAINED_TOKENS, 20_000);
+    assert_eq!(DEFAULT_SUMMARY_TOKENS, 4_096);
+    assert_eq!(overlay.resolve().trigger_tokens, None);
+
+    let overlay: CompactionSettingsOverlay = toml::from_str(
+        "enabled = true\nthreshold_percent = 70\ntrigger_tokens = 350000\nkeep_recent_tokens = 12000\nsummary_tokens = 2048\n",
+    )
+    .unwrap();
+    let policy = overlay.resolve();
+    assert!(policy.enabled);
+    assert_eq!(policy.threshold_percent, 70);
+    assert_eq!(policy.trigger_tokens, Some(350_000));
+    assert_eq!(policy.retained_tokens, 12_000);
+    assert_eq!(policy.summary_tokens, 2_048);
+}
+
+#[test]
+fn compaction_settings_reject_non_positive_budgets() {
+    for key in ["trigger_tokens", "keep_recent_tokens", "summary_tokens"] {
+        for invalid in ["0", "-1", "\"unlimited\""] {
+            assert!(
+                toml::from_str::<CompactionSettingsOverlay>(&format!("{key} = {invalid}")).is_err(),
+                "{key} accepted {invalid}"
+            );
+        }
+    }
+    assert!(toml::from_str::<CompactionSettingsOverlay>("threshold_percent = -1").is_err());
+    assert!(toml::from_str::<CompactionSettingsOverlay>("threshold_percent = 256").is_err());
+}
+
+#[test]
+fn compaction_settings_global_project_and_profile_precedence() {
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"
+[[models]]
+name = "test-model"
+model = "test/model"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+
+[compaction]
+enabled = true
+threshold_percent = 70
+trigger_tokens = 300000
+keep_recent_tokens = 15000
+summary_tokens = 3000
+
+[profiles.review.compaction]
+enabled = false
+threshold_percent = 60
+trigger_tokens = 250000
+keep_recent_tokens = 12000
+summary_tokens = 2500
+"#,
+    );
+    let project = create_project_settings(
+        r"
+[compaction]
+threshold_percent = 75
+keep_recent_tokens = 18000
+
+[profiles.review.compaction]
+trigger_tokens = 200000
+summary_tokens = 2000
+",
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(project.path()))
+    })
+    .unwrap();
+    assert!(loaded.compaction.enabled);
+    assert_eq!(loaded.compaction.threshold_percent, 75);
+    assert_eq!(loaded.compaction.trigger_tokens, Some(300_000));
+    assert_eq!(loaded.compaction.retained_tokens, 18_000);
+    assert_eq!(loaded.compaction.summary_tokens, 3_000);
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load_with_profile(Some(project.path()), Some("review"))
+    })
+    .unwrap();
+    assert!(!loaded.compaction.enabled);
+    assert_eq!(loaded.compaction.threshold_percent, 60);
+    assert_eq!(loaded.compaction.trigger_tokens, Some(200_000));
+    assert_eq!(loaded.compaction.retained_tokens, 12_000);
+    assert_eq!(loaded.compaction.summary_tokens, 2_000);
+    assert!(loaded.warnings.is_empty(), "{:#?}", loaded.warnings);
+}
+
+#[test]
+fn unknown_compaction_keys_warn_with_file_and_section() {
+    let dir = create_project_settings(
+        r"
+[compaction]
+trigger_token = 300000
+
+[profiles.review.compaction]
+summary_token = 1000
+",
+    );
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
+name = "test-model"
+model = "test/model"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+"#,
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(dir.path()))
+    })
+    .unwrap();
+
+    let warnings = &loaded.warnings;
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert!(
+        warnings.iter().any(|w| w.contains("trigger_token")
+            && w.contains("[compaction]")
+            && w.contains("settings.toml")),
+        "{warnings:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("summary_token") && w.contains("[profiles.review.compaction]")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn compaction_settings_survive_without_authority() {
+    let settings: Settings = toml::from_str(
+        r#"
+directories = ["/tmp/work"]
+
+[compaction]
+enabled = true
+threshold_percent = 70
+trigger_tokens = 300000
+keep_recent_tokens = 15000
+summary_tokens = 2048
+
+[profiles.review.compaction]
+enabled = false
+trigger_tokens = 250000
+"#,
+    )
+    .unwrap();
+
+    let stripped = settings.without_authority();
+    assert!(stripped.directories.is_empty());
+    let compaction = stripped.compaction.expect("compaction must be preserved");
+    assert_eq!(compaction.enabled, Some(true));
+    assert_eq!(compaction.threshold_percent, Some(70));
+    assert_eq!(compaction.trigger_tokens.unwrap().value(), 300_000);
+    assert_eq!(compaction.keep_recent_tokens.unwrap().value(), 15_000);
+    assert_eq!(compaction.summary_tokens.unwrap().value(), 2_048);
+    let profile = stripped.profiles["review"]
+        .compaction
+        .as_ref()
+        .expect("profile compaction must be preserved");
+    assert_eq!(profile.enabled, Some(false));
+    assert_eq!(profile.trigger_tokens.unwrap().value(), 250_000);
+}
+
+#[test]
 fn test_limits_output_budgets_default_to_compiled_values() {
     let dir = create_project_settings("");
 
@@ -2840,6 +3016,13 @@ max_images = 6
 max_bytes = 12000000
 max_pixels = 20000000
 
+[compaction]
+enabled = true
+threshold_percent = 70
+trigger_tokens = 300000
+keep_recent_tokens = 15000
+summary_tokens = 2048
+
 [profiles.review]
 default_model = "zen"
 directories = ["../standards"]
@@ -2853,6 +3036,13 @@ read_max_output_bytes = "unlimited"
 
 [profiles.review.images]
 max_images = 4
+
+[profiles.review.compaction]
+enabled = false
+threshold_percent = 60
+trigger_tokens = 250000
+keep_recent_tokens = 12000
+summary_tokens = 1024
 
 [profiles.review.tools]
 enabled = ["Read"]

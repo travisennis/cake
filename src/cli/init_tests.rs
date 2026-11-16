@@ -106,6 +106,12 @@ fn initialize_creates_behavior_preserving_settings() {
         "max_bytes = 16777216",
         "max_pixels = 24000000",
         "separate from [limits].read_image_max_bytes",
+        "[compaction]",
+        "enabled = false",
+        "threshold_percent = 80",
+        "trigger_tokens = 350000",
+        "keep_recent_tokens = 20000",
+        "summary_tokens = 4096",
     ] {
         assert!(
             content.contains(expected),

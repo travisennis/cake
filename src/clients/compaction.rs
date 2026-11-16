@@ -35,6 +35,7 @@ use crate::clients::tools::Tool;
 use crate::config::blob_store::TOOL_OUTPUT_EXTERNALIZATION_THRESHOLD_BYTES;
 use crate::config::model::ResolvedModelConfig;
 use crate::config::settings::ResolvedImagePolicy;
+pub use crate::config::settings::{CompactionPolicy, ResolvedCompactionPolicy};
 use crate::session_telemetry::{AgentRunnerTelemetryEvent, ProviderTermination};
 use crate::types::compaction::{
     CompactionData, CompactionTrigger, EstimateBasis, EstimatedInput, HISTORICAL_SUMMARY_MARKER,
@@ -65,117 +66,6 @@ pub const SUMMARY_RESERVATION_BYTES: usize = 256 * 1024;
 
 /// The minimum reduction: `ceil(source / 10)`.
 pub const MIN_REDUCTION_DIVISOR: u64 = 10;
-
-/// Default automatic threshold percentage.
-pub const DEFAULT_THRESHOLD_PERCENT: u8 = 80;
-
-/// Default retained-tail token target.
-pub const DEFAULT_RETAINED_TOKENS: u64 = 20_000;
-
-/// Default summary-text token target.
-pub const DEFAULT_SUMMARY_TOKENS: u64 = 4_096;
-
-/// A configured compaction policy before window clamping.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CompactionPolicy {
-    pub enabled: bool,
-    pub threshold_percent: u8,
-    pub retained_tokens: u64,
-    pub summary_tokens: u64,
-}
-
-impl Default for CompactionPolicy {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            threshold_percent: DEFAULT_THRESHOLD_PERCENT,
-            retained_tokens: DEFAULT_RETAINED_TOKENS,
-            summary_tokens: DEFAULT_SUMMARY_TOKENS,
-        }
-    }
-}
-
-impl CompactionPolicy {
-    /// Validate the policy and clamp its budgets to the known window.
-    ///
-    /// The retained tail is clamped to one quarter of the window and the
-    /// summary text to one sixteenth. A zero effective budget, a threshold
-    /// outside 10 through 80, or a window that cannot express a positive
-    /// trigger and target is rejected.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for any invalid or unsatisfiable policy.
-    pub fn validate(self, window: Option<u32>) -> anyhow::Result<ResolvedCompactionPolicy> {
-        anyhow::ensure!(
-            (10..=80).contains(&self.threshold_percent),
-            "compaction threshold_percent must be between 10 and 80, got {}",
-            self.threshold_percent
-        );
-        anyhow::ensure!(
-            self.retained_tokens > 0,
-            "compaction retained target must be positive"
-        );
-        anyhow::ensure!(
-            self.summary_tokens > 0,
-            "compaction summary target must be positive"
-        );
-
-        let (retained_tokens, summary_tokens, trigger_tokens, target_tokens) = match window {
-            Some(window) => {
-                anyhow::ensure!(window > 0, "compaction window must be positive");
-                let window = u64::from(window);
-                let retained_tokens = self.retained_tokens.min(window / 4);
-                let summary_tokens = self.summary_tokens.min(window / 16);
-                anyhow::ensure!(
-                    retained_tokens > 0,
-                    "compaction retained target clamps to zero for a {window}-token window"
-                );
-                anyhow::ensure!(
-                    summary_tokens > 0,
-                    "compaction summary target clamps to zero for a {window}-token window"
-                );
-                let trigger_tokens = window.saturating_mul(u64::from(self.threshold_percent)) / 100;
-                anyhow::ensure!(
-                    trigger_tokens > 0,
-                    "compaction threshold produces a zero trigger for a {window}-token window"
-                );
-                let target_tokens = trigger_tokens.saturating_mul(3) / 4;
-                anyhow::ensure!(
-                    target_tokens > 0,
-                    "compaction trigger produces a zero target for a {window}-token window"
-                );
-                (
-                    retained_tokens,
-                    summary_tokens,
-                    Some(trigger_tokens),
-                    Some(target_tokens),
-                )
-            },
-            None => (self.retained_tokens, self.summary_tokens, None, None),
-        };
-
-        Ok(ResolvedCompactionPolicy {
-            enabled: self.enabled,
-            threshold_percent: self.threshold_percent,
-            retained_tokens,
-            summary_tokens,
-            trigger_tokens,
-            target_tokens,
-        })
-    }
-}
-
-/// A policy after window clamping.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ResolvedCompactionPolicy {
-    pub enabled: bool,
-    pub threshold_percent: u8,
-    pub retained_tokens: u64,
-    pub summary_tokens: u64,
-    pub trigger_tokens: Option<u64>,
-    pub target_tokens: Option<u64>,
-}
 
 /// A complete main-request measurement the estimator may anchor on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1805,6 +1695,33 @@ pub async fn summarize<C: SummaryCaller>(
     Ok(checkpoint)
 }
 
+/// Validate that the resolved backend can serve a bounded summary request.
+///
+/// The check makes no network call. It rejects a backend that drops the
+/// generation cap and a configured reasoning allowance that cannot fit the
+/// summary cap without changing effort.
+///
+/// # Errors
+///
+/// Returns an error when the backend or reasoning allowance cannot support a
+/// bounded summary.
+pub fn validate_summary_backend(config: &ResolvedModelConfig) -> anyhow::Result<()> {
+    let backend = Backend::from_api_type(config.model_config.api_type);
+    anyhow::ensure!(
+        backend_supports_generation_cap(backend, config),
+        "the configured backend does not support a bounded summary generation cap"
+    );
+    let cap = summary_generation_cap(config);
+    if let Some(reasoning) = config.model_config.reasoning_max_tokens {
+        anyhow::ensure!(
+            reasoning <= cap,
+            "configured reasoning_max_tokens {reasoning} exceeds the summary generation \
+             cap {cap}; refusing to change effort silently"
+        );
+    }
+    Ok(())
+}
+
 /// The production summary caller through the existing provider transport.
 pub struct AgentSummaryCaller<'a> {
     config: ResolvedModelConfig,
@@ -1828,19 +1745,7 @@ impl<'a> AgentSummaryCaller<'a> {
         telemetry: &'a mut (dyn FnMut(AgentRunnerTelemetryEvent) + Send),
         settle: &'a mut (dyn FnMut(TurnUsageSettlement) + Send),
     ) -> anyhow::Result<Self> {
-        let backend = Backend::from_api_type(config.model_config.api_type);
-        anyhow::ensure!(
-            backend_supports_generation_cap(backend, config),
-            "the configured backend does not support a bounded summary generation cap"
-        );
-        let cap = summary_generation_cap(config);
-        if let Some(reasoning) = config.model_config.reasoning_max_tokens {
-            anyhow::ensure!(
-                reasoning <= cap,
-                "configured reasoning_max_tokens {reasoning} exceeds the summary generation \
-                 cap {cap}; refusing to change effort silently"
-            );
-        }
+        validate_summary_backend(config)?;
         Ok(Self {
             config: config.clone(),
             session_id,

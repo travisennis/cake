@@ -23,7 +23,9 @@ use crate::cli::{
 use crate::clients::{GrantReport, SandboxPolicy, builtin_tool_inventory};
 use crate::config::hooks::{HookGroup, HookMatcher, HooksLoader};
 use crate::config::settings::MAX_IMAGE_EDGE;
-use crate::config::settings::{JudgeSettings, LoadedSettings, ResolvedImagePolicy, ResolvedLimits};
+use crate::config::settings::{
+    CompactionPolicy, JudgeSettings, LoadedSettings, ResolvedImagePolicy, ResolvedLimits,
+};
 use crate::config::skills::{
     SkillCatalog, SkillConfig, SkillDiagnostic, discover_skills_with_paths, parse_skill_path_list,
 };
@@ -196,6 +198,7 @@ struct SettingsSnapshot {
     tools_enabled: Option<Vec<String>>,
     limits: LimitsSnapshot,
     images: ImagesSnapshot,
+    compaction: CompactionSnapshot,
     judge: JudgeSnapshot,
 }
 
@@ -277,6 +280,28 @@ impl ImagesSnapshot {
     }
 }
 
+/// Configured automatic compaction policy before window validation.
+#[derive(Debug, Serialize)]
+struct CompactionSnapshot {
+    enabled: bool,
+    threshold_percent: u8,
+    trigger_tokens: Option<u64>,
+    keep_recent_tokens: u64,
+    summary_tokens: u64,
+}
+
+impl From<&CompactionPolicy> for CompactionSnapshot {
+    fn from(policy: &CompactionPolicy) -> Self {
+        Self {
+            enabled: policy.enabled,
+            threshold_percent: policy.threshold_percent,
+            trigger_tokens: policy.trigger_tokens,
+            keep_recent_tokens: policy.retained_tokens,
+            summary_tokens: policy.summary_tokens,
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct JudgeSnapshot {
     enabled: bool,
@@ -320,6 +345,7 @@ impl SettingsSnapshot {
             tools_enabled: loaded.tools_enabled.clone(),
             limits: LimitsSnapshot::from(&loaded.limits),
             images: ImagesSnapshot::build(&loaded.images, &loaded.limits),
+            compaction: CompactionSnapshot::from(&loaded.compaction),
             judge: JudgeSnapshot::from(&loaded.judge),
         }
     }
@@ -1123,6 +1149,16 @@ impl ConfigReport {
             images.max_pixels,
             option_label(images.read_image_max_bytes, "unlimited"),
             images.max_edge,
+        );
+        let compaction = &self.settings.compaction;
+        _ = writeln!(
+            output,
+            "  compaction: enabled={}, threshold_percent={}, trigger_tokens={}, keep_recent_tokens={}, summary_tokens={}",
+            compaction.enabled,
+            compaction.threshold_percent,
+            option_label(compaction.trigger_tokens, "unset"),
+            compaction.keep_recent_tokens,
+            compaction.summary_tokens,
         );
         let judge = &self.settings.judge;
         _ = writeln!(
