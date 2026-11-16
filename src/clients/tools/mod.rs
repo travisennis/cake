@@ -2137,6 +2137,21 @@ pub(super) fn read_tool_registry() -> ToolRegistry {
     ])
 }
 
+/// Returns a registry containing only the Read and Write tools, for fixtures
+/// that need one large observation and one observable side effect.
+#[cfg(test)]
+pub(super) fn read_write_tool_registry() -> ToolRegistry {
+    ToolRegistry::new(vec![
+        ToolEntry::new(read::read_tool(), execute_read_tool)
+            .read_safe()
+            .replay_safe()
+            .observes_path(read::path_target),
+        ToolEntry::new(write::write_tool(), execute_write_tool)
+            .repairs_arguments()
+            .mutates_path(write::mutating_target),
+    ])
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
