@@ -554,17 +554,31 @@ async fn runner_health_failure_before_a_retry_sends_only_the_first_attempt() {
 }
 
 #[tokio::test]
-async fn unretirable_current_input_emits_no_fit_end_without_summary_call() {
+async fn no_fit_at_trigger_emits_skip_and_suppresses_later_attempts() {
     let mock_server = MockServer::start().await;
     let sink = RecordSink::default();
+    let progress = Arc::new(Mutex::new(Vec::<String>::new()));
+    let progress_sink = Arc::clone(&progress);
     let system = "large system context ".repeat(20_000);
     let mut agent = test_agent_with_system(&mock_server.uri(), &system)
         .with_history(vec![message(Role::User, "finish the task")])
         .unwrap()
         .with_compaction_policy(enabled_policy())
         .unwrap()
-        .with_persist_callback(sink.callback());
+        .with_persist_callback(sink.callback())
+        .with_progress_callback(move |message| {
+            progress_sink.lock().unwrap().push(message.to_string());
+        });
     let mut invocation = invocation_for(&agent);
+    let measured = agent
+        .measure_for_request(TurnMode::Normal, &invocation)
+        .unwrap();
+    let trigger_tokens = agent
+        .resolved_compaction_policy()
+        .and_then(|policy| policy.trigger_tokens)
+        .expect("a percentage policy resolves a trigger line");
+    assert!(measured.trigger_reached);
+    assert!(measured.before_tokens >= trigger_tokens);
 
     agent
         .maybe_compact_before_request(TurnMode::Normal, &mut invocation)
@@ -572,6 +586,7 @@ async fn unretirable_current_input_emits_no_fit_end_without_summary_call() {
         .unwrap();
 
     assert!(invocation.failed);
+    assert!(!agent.conversation.has_checkpoint());
     assert_eq!(sink.kinds(), vec!["compaction_end"]);
     assert!(
         mock_server
@@ -579,7 +594,7 @@ async fn unretirable_current_input_emits_no_fit_end_without_summary_call() {
             .await
             .expect("received requests")
             .is_empty(),
-        "a no-op above the trigger must not spend on a summary"
+        "a no-fit must not spend on a summary"
     );
     let end = sink
         .records()
@@ -588,9 +603,51 @@ async fn unretirable_current_input_emits_no_fit_end_without_summary_call() {
             SessionRecord::CompactionEnd(data) => Some(data),
             _ => None,
         })
-        .unwrap();
+        .expect("no-fit skip record");
     assert_eq!(end.status, CompactionStatus::NoFit);
-    assert!(end.reason.is_some());
+    assert_eq!(end.estimated_before_tokens, Some(measured.before_tokens));
+    assert_eq!(end.estimated_after_tokens, None);
+    assert_eq!(end.retired_count, None);
+    assert_eq!(end.retained_count, None);
+    let reason = end.reason.expect("no-fit reason");
+    assert!(!reason.is_empty());
+    let messages = progress.lock().unwrap().clone();
+    assert_eq!(
+        messages,
+        vec![format!("Context compaction skipped: {reason}")]
+    );
+
+    let records_after_skip = sink.records();
+    let requests_after_skip = mock_server
+        .received_requests()
+        .await
+        .expect("received requests")
+        .len();
+    let remeasured = agent
+        .measure_for_request(TurnMode::Normal, &invocation)
+        .unwrap();
+    assert!(
+        remeasured.trigger_reached,
+        "the later proactive attempt is still above the trigger"
+    );
+
+    agent
+        .maybe_compact_before_request(TurnMode::Normal, &mut invocation)
+        .await
+        .unwrap();
+
+    assert_eq!(sink.records().len(), records_after_skip.len());
+    assert_eq!(
+        mock_server
+            .received_requests()
+            .await
+            .expect("received requests")
+            .len(),
+        requests_after_skip
+    );
+    assert_eq!(progress.lock().unwrap().len(), 1);
+    assert!(invocation.failed);
+    assert!(!agent.conversation.has_checkpoint());
 }
 
 #[test]
