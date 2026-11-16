@@ -156,17 +156,6 @@ fn summary_requests(recorded: &[RecordedRequest]) -> usize {
     recorded.iter().filter(|request| request.summary).count()
 }
 
-/// A deterministic provider omits measured input usage, so the estimator uses
-/// the full projected request and small turns accumulate instead of collapsing
-/// to the last tool output.
-fn responses_tool_call_without_usage(call_id: &str, read_path: &str) -> serde_json::Value {
-    let mut body = responses_tool_call(call_id, read_path);
-    body.as_object_mut()
-        .expect("a response body is an object")
-        .remove("usage");
-    body
-}
-
 /// An absolute trigger replaces the percentage fallback, and the next request
 /// targets three quarters of that line. The source is above the absolute line
 /// but below the 80% fallback, so the percentage path could not explain it.

@@ -261,6 +261,17 @@ fn responses_tool_call(call_id: &str, read_path: &str) -> serde_json::Value {
     })
 }
 
+/// The same call without reported usage. Omitting usage forces the full
+/// projected request estimate instead of a measured-input basis that only
+/// accumulates the newest appended items.
+fn responses_tool_call_without_usage(call_id: &str, read_path: &str) -> serde_json::Value {
+    let mut body = responses_tool_call(call_id, read_path);
+    body.as_object_mut()
+        .expect("a response body is an object")
+        .remove("usage");
+    body
+}
+
 fn responses_text(text: &str) -> serde_json::Value {
     serde_json::json!({
         "id": "resp-text",
@@ -664,6 +675,184 @@ fn assert_continuation_records(records: &[SessionRecord]) {
     assert_eq!(outputs("call-read"), 1);
     assert_eq!(outputs("call-write"), 1);
     assert_eq!(outputs("call-after"), 1);
+}
+
+/// A failed summary does not abort while the raw projection still fits, so the
+/// next turn adds more content. When that growth crosses the context window,
+/// the suppressed invocation must stop before another provider request instead
+/// of retrying compaction or spending on another summary.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the end-to-end stop covers the failed lifecycle, both growth turns, refusal of a second summary, and the over-window error together"
+)]
+#[tokio::test]
+async fn summary_failure_then_growth_stops_before_an_over_window_request() {
+    let server = MockServer::start().await;
+    let fixture_dir = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+    let line = "alpha ".repeat(40);
+    let fixture = |name: &str, marker: &str| {
+        let path = fixture_dir.path().join(name);
+        std::fs::write(
+            &path,
+            format!(
+                "{marker}\n{}\n",
+                (0..80)
+                    .map(|_| line.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+        )
+        .unwrap();
+        path.display().to_string()
+    };
+    let first_path = fixture("first-growth.txt", "FIRST_GROWTH_SENTINEL");
+    let second_path = fixture("second-growth.txt", "SECOND_GROWTH_SENTINEL");
+
+    let provider = ScriptedProvider::new();
+    provider
+        .mount_split(
+            &server,
+            "/responses",
+            vec![
+                ResponseTemplate::new(200)
+                    .set_body_json(responses_tool_call_without_usage("call-first", &first_path)),
+                ResponseTemplate::new(200).set_body_json(responses_tool_call_without_usage(
+                    "call-second",
+                    &second_path,
+                )),
+            ],
+            vec![ResponseTemplate::new(400).set_body_string("summary rejected")],
+        )
+        .await;
+
+    let checkpoints = provider.checkpoint_counter();
+    let checkpoint_counter = Arc::clone(&checkpoints);
+    let persisted = Arc::new(Mutex::new(Vec::<SessionRecord>::new()));
+    let sink = Arc::clone(&persisted);
+    let progress = Arc::new(Mutex::new(Vec::<String>::new()));
+    let progress_sink = Arc::clone(&progress);
+    let mut agent = test_agent_with_window(ApiType::Responses, &server.uri(), 10_000)
+        .with_compaction_policy(compaction_policy())
+        .unwrap()
+        .with_persist_callback(move |record| {
+            if matches!(record, SessionRecord::Compaction(_)) {
+                checkpoint_counter.fetch_add(1, Ordering::SeqCst);
+            }
+            sink.lock().unwrap().push(record.clone());
+            Ok(())
+        })
+        .with_progress_callback(move |message| {
+            progress_sink.lock().unwrap().push(message.to_string());
+        })
+        .with_tools(crate::clients::tools::read_tool_registry());
+
+    let error = agent
+        .send("read the growing fixtures".to_string())
+        .await
+        .expect_err("growth past the window must stop the invocation");
+    let detail = format!("{error:#}");
+    assert!(
+        detail.contains("Context compaction could not reduce the projected request"),
+        "{detail}"
+    );
+    assert!(
+        detail.contains("configured context window (10000 tokens"),
+        "{detail}"
+    );
+    assert!(detail.contains("start a new session"), "{detail}");
+
+    assert_eq!(agent.turn_count(), 2, "two completed provider turns");
+    assert!(!agent.conversation.has_checkpoint());
+    assert_eq!(checkpoints.load(Ordering::SeqCst), 0);
+
+    let recorded = provider.recorded();
+    assert_eq!(recorded.len(), 3, "main, failed summary, main");
+    let main: Vec<_> = recorded.iter().filter(|request| !request.summary).collect();
+    let summaries: Vec<_> = recorded.iter().filter(|request| request.summary).collect();
+    assert_eq!(main.len(), 2, "the loop continued below the window");
+    assert_eq!(summaries.len(), 1, "a failed summary is never retried");
+    assert_tail_only_growth(&recorded, "input");
+
+    let first_main = main[0].body.to_string();
+    let second_main = main[1].body.to_string();
+    assert!(!first_main.contains("FIRST_GROWTH_SENTINEL"));
+    assert!(second_main.contains("FIRST_GROWTH_SENTINEL"));
+    assert!(
+        !second_main.contains("SECOND_GROWTH_SENTINEL"),
+        "the second fixture arrives only after the second request"
+    );
+    assert!(
+        summaries[0]
+            .body
+            .to_string()
+            .contains("FIRST_GROWTH_SENTINEL"),
+        "the failed summary receives the retired growth"
+    );
+
+    let records = persisted.lock().unwrap().clone();
+    assert!(
+        !records
+            .iter()
+            .any(|record| matches!(record, SessionRecord::Compaction(_))),
+        "a failed summary must not persist a checkpoint"
+    );
+    let ends: Vec<_> = records
+        .iter()
+        .filter_map(|record| match record {
+            SessionRecord::CompactionEnd(data) => Some(data),
+            _ => None,
+        })
+        .collect();
+    let starts = records
+        .iter()
+        .filter(|record| matches!(record, SessionRecord::CompactionStart(_)))
+        .count();
+    assert_eq!(starts, 1, "one attempt starts, and none is retried");
+    assert_eq!(ends.len(), 1, "one failed attempt, no repeated lifecycle");
+    assert_eq!(
+        ends[0].status,
+        crate::types::compaction::CompactionStatus::Failed
+    );
+    assert_eq!(ends[0].reason.as_deref(), Some("summary generation failed"));
+    let failed_before = ends[0]
+        .estimated_before_tokens
+        .expect("a failed end carries the before estimate");
+    assert!(
+        failed_before < 10_000,
+        "the first attempt failed below the window, so the loop could continue: {failed_before}"
+    );
+    assert!(ends[0].estimated_after_tokens.is_some());
+
+    let outputs: Vec<_> = records
+        .iter()
+        .filter_map(|record| match record {
+            SessionRecord::FunctionCallOutput(data) => Some(data),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(outputs.len(), 2, "each turn's growth ran exactly once");
+    assert!(outputs[0].output.contains("FIRST_GROWTH_SENTINEL"));
+    assert!(outputs[1].output.contains("SECOND_GROWTH_SENTINEL"));
+    let grown = crate::types::compaction::estimate_items_tokens(agent.history());
+    assert!(
+        grown >= 10_000,
+        "the second growth crosses the configured window: {grown}"
+    );
+
+    let messages = progress.lock().unwrap().clone();
+    assert_eq!(
+        messages.len(),
+        2,
+        "no later compaction attempt reports progress"
+    );
+    assert!(
+        messages[0].starts_with("Compacting context:"),
+        "{messages:?}"
+    );
+    assert_eq!(
+        messages[1],
+        "Context compaction failed: summary generation failed"
+    );
 }
 
 /// A checkpoint commit failure reported through the production persist
