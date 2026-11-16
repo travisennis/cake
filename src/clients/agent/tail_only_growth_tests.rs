@@ -840,3 +840,7 @@ async fn failed_append_stops_before_the_next_provider_request() {
         "the pending tool must not run after the append failure"
     );
 }
+
+#[cfg(test)]
+#[path = "tail_only_growth_target_tests.rs"]
+mod target_tests;
