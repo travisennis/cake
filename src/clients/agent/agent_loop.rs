@@ -74,14 +74,14 @@ impl PressureRecoveryGuard {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TurnMode {
+pub(super) enum TurnMode {
     Normal,
     SchemaCorrection,
     SemanticRecovery,
 }
 
 impl TurnMode {
-    const fn tools_disabled(self) -> bool {
+    pub(super) const fn tools_disabled(self) -> bool {
         !matches!(self, Self::Normal)
     }
 }
@@ -200,6 +200,11 @@ impl Agent {
         let task_id = self.task_id.to_string();
         let user_item = self.conversation.push_user_message(content, Some(&task_id));
         self.stream_item(&user_item)?;
+        let mut compaction = super::compaction::InvocationCompactionState::new(
+            invocation_start,
+            invocation_start,
+            task_id,
+        );
 
         // Output-schema correction state: when the final message fails
         // validation, the loop re-enters with tools disabled for at most
@@ -220,6 +225,12 @@ impl Agent {
             // turn. Reconcile before the request so it carries one coherent
             // tool set; tool calls from the just-finished turn already ran.
             self.refresh_changed_mcp_tools().await;
+
+            // Replace retired history before the request is built. Recovery
+            // and schema-correction modes are part of the same invocation, so
+            // their synthetic context stays pinned.
+            self.maybe_compact_before_request(turn_mode, &mut compaction)
+                .await?;
 
             let provider_turn_start = self.conversation.history().len();
             let TurnResult {
@@ -1041,6 +1052,7 @@ impl Agent {
         };
         let turn_index = self.turn_count.saturating_add(1);
         self.last_measurement = None;
+        let health = self.health_callback();
         let runner = &self.runner;
         let runner_telemetry = self.runner_telemetry_sink();
         let observer = &mut self.observer;
@@ -1056,6 +1068,7 @@ impl Agent {
                 tool_definitions,
                 constraint,
                 None,
+                health.as_ref(),
                 next_attempt,
                 |event| {
                     if let Some(sink) = &runner_telemetry {

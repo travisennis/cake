@@ -10,7 +10,9 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::types::compaction::{CompactionData, RetainedConversationRecord};
+use crate::types::compaction::{
+    CompactionData, CompactionEndData, CompactionStartData, RetainedConversationRecord,
+};
 use crate::types::conversation::{
     ConversationItem, ImagePart, ReasoningContent, ReasoningSummary, Role,
 };
@@ -686,6 +688,12 @@ pub enum SessionRecord {
     /// Per-attempt token usage for a main-agent provider attempt.
     TurnUsage(TurnUsageData),
 
+    /// One automatic or explicit compaction started summary generation.
+    CompactionStart(CompactionStartData),
+
+    /// One compaction operation ended, whether or not it committed.
+    CompactionEnd(CompactionEndData),
+
     /// One self-contained context checkpoint: a summary of retired history plus
     /// the retained tail that replaces it. The record carries its own version,
     /// so the session `format_version` does not change. Validation runs when the
@@ -796,6 +804,13 @@ pub enum StreamRecord {
     /// or tool events.
     Compaction(CompactionData),
 
+    /// One compaction operation started summary generation.
+    CompactionStart(CompactionStartData),
+
+    /// One compaction operation ended, whether or not it committed. A
+    /// committed checkpoint precedes its end record in physical order.
+    CompactionEnd(CompactionEndData),
+
     /// Per-attempt usage for a main-agent provider attempt.
     ///
     /// Live streams emit one record for every main-agent attempt that reported
@@ -855,54 +870,65 @@ impl From<StreamRecord> for SessionRecord {
                 system_prompt,
                 git,
             },
-            StreamRecord::TaskStart(d) => Self::TaskStart(d),
-            StreamRecord::PromptContext {
-                session_id,
-                task_id,
-                role,
-                content,
-                timestamp,
-            } => Self::PromptContext {
-                session_id,
-                task_id,
-                role,
-                content,
-                timestamp,
-            },
-            StreamRecord::Message(d) => Self::Message(d),
-            StreamRecord::FunctionCall(d) => Self::FunctionCall(d),
-            StreamRecord::FunctionCallOutput(d) => Self::FunctionCallOutput(d),
-            StreamRecord::SkillActivated {
-                session_id,
-                task_id,
-                timestamp,
-                name,
-                path,
-            } => Self::SkillActivated {
-                session_id,
-                task_id,
-                timestamp,
-                name,
-                path,
-            },
-            StreamRecord::McpToolsActivated {
-                session_id,
-                task_id,
-                timestamp,
-                tools,
-            } => Self::McpToolsActivated {
-                session_id,
-                task_id,
-                timestamp,
-                tools,
-            },
-            StreamRecord::HookEvent(d) => Self::HookEvent(d),
-            StreamRecord::Reasoning(d) => Self::Reasoning(d),
-            StreamRecord::TaskComplete(d) => Self::TaskComplete(d),
-            record @ (StreamRecord::Compaction(_)
-            | StreamRecord::TurnUsage(_)
-            | StreamRecord::ReplayError { .. }) => session_record_from_stream_metadata(record),
+            record => session_record_from_task_stream(record),
         }
+    }
+}
+
+/// Convert a task-scoped stream record to its persisted counterpart.
+fn session_record_from_task_stream(record: StreamRecord) -> SessionRecord {
+    match record {
+        StreamRecord::TaskStart(d) => SessionRecord::TaskStart(d),
+        StreamRecord::PromptContext {
+            session_id,
+            task_id,
+            role,
+            content,
+            timestamp,
+        } => SessionRecord::PromptContext {
+            session_id,
+            task_id,
+            role,
+            content,
+            timestamp,
+        },
+        StreamRecord::Message(d) => SessionRecord::Message(d),
+        StreamRecord::FunctionCall(d) => SessionRecord::FunctionCall(d),
+        StreamRecord::FunctionCallOutput(d) => SessionRecord::FunctionCallOutput(d),
+        record => session_record_from_audit_stream(record),
+    }
+}
+
+fn session_record_from_audit_stream(record: StreamRecord) -> SessionRecord {
+    match record {
+        StreamRecord::SkillActivated {
+            session_id,
+            task_id,
+            timestamp,
+            name,
+            path,
+        } => SessionRecord::SkillActivated {
+            session_id,
+            task_id,
+            timestamp,
+            name,
+            path,
+        },
+        StreamRecord::McpToolsActivated {
+            session_id,
+            task_id,
+            timestamp,
+            tools,
+        } => SessionRecord::McpToolsActivated {
+            session_id,
+            task_id,
+            timestamp,
+            tools,
+        },
+        StreamRecord::HookEvent(d) => SessionRecord::HookEvent(d),
+        StreamRecord::Reasoning(d) => SessionRecord::Reasoning(d),
+        StreamRecord::TaskComplete(d) => SessionRecord::TaskComplete(d),
+        record => session_record_from_stream_metadata(record),
     }
 }
 
@@ -911,6 +937,8 @@ impl From<StreamRecord> for SessionRecord {
 fn session_record_from_stream_metadata(record: StreamRecord) -> SessionRecord {
     match record {
         StreamRecord::Compaction(d) => SessionRecord::Compaction(d),
+        StreamRecord::CompactionStart(d) => SessionRecord::CompactionStart(d),
+        StreamRecord::CompactionEnd(d) => SessionRecord::CompactionEnd(d),
         StreamRecord::TurnUsage(d) => SessionRecord::TurnUsage(d),
         // `replay_error` is emitted only by `cake replay`, which never writes
         // to a session file; there is no persisted counterpart.
@@ -953,31 +981,52 @@ impl From<SessionRecord> for StreamRecord {
                 system_prompt,
                 git,
             },
-            SessionRecord::TaskStart(d) => Self::TaskStart(d),
-            SessionRecord::PromptContext {
-                session_id,
-                task_id,
-                role,
-                content,
-                timestamp,
-            } => Self::PromptContext {
-                session_id,
-                task_id,
-                role,
-                content,
-                timestamp,
-            },
-            SessionRecord::Message(d) => Self::Message(d),
-            SessionRecord::FunctionCall(d) => Self::FunctionCall(d),
-            SessionRecord::FunctionCallOutput(d) => Self::FunctionCallOutput(d),
-            record @ (SessionRecord::SkillActivated { .. }
-            | SessionRecord::McpToolsActivated { .. }) => session_activation_stream_record(record),
-            SessionRecord::HookEvent(d) => Self::HookEvent(d),
-            SessionRecord::Reasoning(d) => Self::Reasoning(d),
-            SessionRecord::TaskComplete(d) => Self::TaskComplete(d),
-            SessionRecord::Compaction(d) => Self::Compaction(d),
-            SessionRecord::TurnUsage(d) => Self::TurnUsage(d),
+            record => session_record_to_task_stream(record),
         }
+    }
+}
+
+fn session_record_to_task_stream(record: SessionRecord) -> StreamRecord {
+    match record {
+        SessionRecord::TaskStart(d) => StreamRecord::TaskStart(d),
+        SessionRecord::PromptContext {
+            session_id,
+            task_id,
+            role,
+            content,
+            timestamp,
+        } => StreamRecord::PromptContext {
+            session_id,
+            task_id,
+            role,
+            content,
+            timestamp,
+        },
+        SessionRecord::Message(d) => StreamRecord::Message(d),
+        SessionRecord::FunctionCall(d) => StreamRecord::FunctionCall(d),
+        SessionRecord::FunctionCallOutput(d) => StreamRecord::FunctionCallOutput(d),
+        record => session_record_to_audit_stream(record),
+    }
+}
+
+fn session_record_to_audit_stream(record: SessionRecord) -> StreamRecord {
+    match record {
+        record @ (SessionRecord::SkillActivated { .. }
+        | SessionRecord::McpToolsActivated { .. }) => session_activation_stream_record(record),
+        SessionRecord::HookEvent(d) => StreamRecord::HookEvent(d),
+        SessionRecord::Reasoning(d) => StreamRecord::Reasoning(d),
+        SessionRecord::TaskComplete(d) => StreamRecord::TaskComplete(d),
+        record => session_record_to_compaction_stream(record),
+    }
+}
+
+fn session_record_to_compaction_stream(record: SessionRecord) -> StreamRecord {
+    match record {
+        SessionRecord::Compaction(d) => StreamRecord::Compaction(d),
+        SessionRecord::CompactionStart(d) => StreamRecord::CompactionStart(d),
+        SessionRecord::CompactionEnd(d) => StreamRecord::CompactionEnd(d),
+        SessionRecord::TurnUsage(d) => StreamRecord::TurnUsage(d),
+        _ => unreachable!("only checkpoint and usage records reach this conversion"),
     }
 }
 
@@ -1039,6 +1088,8 @@ impl StreamRecord {
             | Self::HookEvent(_)
             | Self::Reasoning(_)
             | Self::TaskComplete(_)
+            | Self::CompactionStart(_)
+            | Self::CompactionEnd(_)
             | Self::TurnUsage(_)
             | Self::ReplayError { .. } => {},
         }
@@ -1157,6 +1208,8 @@ impl SessionRecord {
             | Self::HookEvent(_)
             | Self::Reasoning(_)
             | Self::TaskComplete(_)
+            | Self::CompactionStart(_)
+            | Self::CompactionEnd(_)
             | Self::TurnUsage(_) => Vec::new(),
         }
     }
@@ -1193,6 +1246,8 @@ impl SessionRecord {
             | Self::HookEvent(_)
             | Self::Reasoning(_)
             | Self::TaskComplete(_)
+            | Self::CompactionStart(_)
+            | Self::CompactionEnd(_)
             | Self::TurnUsage(_) => {},
         }
         self.image_parts()
@@ -1227,6 +1282,8 @@ impl SessionRecord {
             | Self::HookEvent(_)
             | Self::Reasoning(_)
             | Self::TaskComplete(_)
+            | Self::CompactionStart(_)
+            | Self::CompactionEnd(_)
             | Self::TurnUsage(_) => {},
         }
     }
@@ -1248,6 +1305,8 @@ impl SessionRecord {
             | Self::HookEvent(_)
             | Self::TaskComplete(_)
             | Self::Compaction(_)
+            | Self::CompactionStart(_)
+            | Self::CompactionEnd(_)
             | Self::TurnUsage(_) => {},
         }
     }
@@ -1321,6 +1380,8 @@ impl SessionRecord {
             | Self::HookEvent(_)
             | Self::TaskComplete(_)
             | Self::Compaction(_)
+            | Self::CompactionStart(_)
+            | Self::CompactionEnd(_)
             | Self::TurnUsage(_) => None,
         }
     }

@@ -9,14 +9,10 @@
 //! bounded requests and validates every result before it can become a
 //! checkpoint.
 //!
-//! No production path calls this module yet: automatic compaction is task
-//! 034g and manual compaction is task 034i. Keeping preparation and
-//! summarization separate lets both use one selection rule and one set of
-//! bounds.
-#![allow(
-    dead_code,
-    reason = "the seam lands before its automatic and manual callers"
-)]
+//! Automatic pre-request compaction calls [`measure`], [`prepare`], and
+//! [`summarize`] from the agent loop; manual compaction (task 034i) will share
+//! the same rule and bounds. Preparation stays side-effect free so the trigger
+//! decision, selection, and explicit manual call cannot drift.
 
 use std::ops::Range;
 use std::time::{Duration, Instant};
@@ -26,6 +22,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use crate::clients::agent::{AttemptPurpose, TurnUsageSettlement};
+use crate::clients::agent_observer::HealthCallback;
 use crate::clients::agent_runner::AgentRunner;
 use crate::clients::backend::Backend;
 use crate::clients::image_budget::{
@@ -178,11 +175,25 @@ pub struct Preparation {
 
 impl Preparation {
     /// The no-op reason, when the outcome is a no-op.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "preparation accessors are consumed by tests and the manual caller"
+        )
+    )]
     pub fn no_op_reason(&self) -> Option<&str> {
         self.outcome.no_op_reason()
     }
 
     /// The no-fit reason, when the outcome is a no-fit.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "preparation accessors are consumed by tests and the manual caller"
+        )
+    )]
     pub fn no_fit_reason(&self) -> Option<&str> {
         self.outcome.no_fit_reason()
     }
@@ -201,6 +212,13 @@ pub enum PrepareOutcome {
 
 impl PrepareOutcome {
     /// The no-op reason, when this outcome is a no-op.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "preparation accessors are consumed by tests and the manual caller"
+        )
+    )]
     pub fn no_op_reason(&self) -> Option<&str> {
         match self {
             Self::NoOp { reason } => Some(reason),
@@ -209,6 +227,13 @@ impl PrepareOutcome {
     }
 
     /// The no-fit reason, when this outcome is a no-fit.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "preparation accessors are consumed by tests and the manual caller"
+        )
+    )]
     pub fn no_fit_reason(&self) -> Option<&str> {
         match self {
             Self::NoFit { reason } => Some(reason),
@@ -226,6 +251,13 @@ pub struct PreparedCompaction {
     ///
     /// Retained records keep their original image references; this plan is
     /// used only to estimate the request projection.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the selected plan is verified by preparation tests; activation uses the checkpoint"
+        )
+    )]
     pub image_plan: ImageBudgetPlan,
     /// Retired whole exchanges, oldest first, for the summary caller.
     pub retired_exchanges: Vec<Vec<RetainedRecord>>,
@@ -255,7 +287,6 @@ pub struct SummaryTurn {
     /// Every attempt that reported usage, once each, including failed and
     /// discarded attempts.
     pub attempts: Vec<ReportedUsage>,
-    pub elapsed: Duration,
 }
 
 /// The summary-call seam.
@@ -2008,6 +2039,7 @@ pub struct AgentSummaryCaller<'a> {
     config: ResolvedModelConfig,
     session_id: Uuid,
     task_id: Uuid,
+    health: Option<HealthCallback>,
     telemetry: &'a mut (dyn FnMut(AgentRunnerTelemetryEvent) + Send),
     settle: &'a mut (dyn FnMut(TurnUsageSettlement) + Send),
 }
@@ -2023,6 +2055,7 @@ impl<'a> AgentSummaryCaller<'a> {
         config: &ResolvedModelConfig,
         session_id: Uuid,
         task_id: Uuid,
+        health: Option<HealthCallback>,
         telemetry: &'a mut (dyn FnMut(AgentRunnerTelemetryEvent) + Send),
         settle: &'a mut (dyn FnMut(TurnUsageSettlement) + Send),
     ) -> anyhow::Result<Self> {
@@ -2031,6 +2064,7 @@ impl<'a> AgentSummaryCaller<'a> {
             config: config.clone(),
             session_id,
             task_id,
+            health,
             telemetry,
             settle,
         })
@@ -2061,13 +2095,13 @@ impl SummaryCaller for AgentSummaryCaller<'_> {
     async fn call(&mut self, request: SummaryCallRequest<'_>) -> anyhow::Result<SummaryTurn> {
         let config = summary_config(&self.config, request.max_output_tokens);
         let runner = AgentRunner::new(Backend::from_api_type(config.model_config.api_type));
-        let started = Instant::now();
         let purpose = AttemptPurpose::compaction(request.checkpoint_id, request.step);
         let mut next_attempt = 1;
         let mut attempts = Vec::new();
         let Self {
             session_id,
             task_id,
+            health,
             telemetry,
             settle,
             ..
@@ -2082,6 +2116,7 @@ impl SummaryCaller for AgentSummaryCaller<'_> {
                 &[],
                 None,
                 Some(purpose),
+                health.as_ref(),
                 &mut next_attempt,
                 telemetry,
                 |settlement| {
@@ -2095,7 +2130,6 @@ impl SummaryCaller for AgentSummaryCaller<'_> {
             termination: turn.termination,
             usage: turn.usage,
             attempts,
-            elapsed: started.elapsed(),
         })
     }
 }

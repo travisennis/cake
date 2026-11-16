@@ -67,6 +67,87 @@ impl EstimateBasis {
     }
 }
 
+/// Maximum bytes kept from a lifecycle failure or skip reason.
+///
+/// Reasons are audit metadata, never provider context. Bounding them keeps a
+/// provider body or summary text from leaking into a session record through an
+/// error message.
+pub const MAX_COMPACTION_REASON_BYTES: usize = 1024;
+
+/// Bound an error or skip reason to [`MAX_COMPACTION_REASON_BYTES`].
+///
+/// The result always ends on a character boundary and never exceeds the cap.
+pub fn bounded_compaction_reason(reason: &str) -> String {
+    let reason = reason.trim();
+    if reason.len() <= MAX_COMPACTION_REASON_BYTES {
+        return reason.to_string();
+    }
+    let suffix = "...";
+    let mut end = MAX_COMPACTION_REASON_BYTES.saturating_sub(suffix.len());
+    while !reason.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    format!("{}{suffix}", reason.get(..end).unwrap_or_default())
+}
+
+/// Terminal status of one automatic or explicit compaction operation.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionStatus {
+    /// A checkpoint was persisted and activated.
+    Committed,
+    /// Nothing useful could be retired.
+    NoOp,
+    /// Every candidate dropped pinned content or violated a hard bound.
+    NoFit,
+    /// Preparation or summary generation failed before a checkpoint existed.
+    Failed,
+}
+
+/// One attempted compaction before provider work starts.
+///
+/// Start metadata is emitted only for a prepared candidate. A no-op or no-fit
+/// emits only [`CompactionEndData`].
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CompactionStartData {
+    pub session_id: String,
+    pub task_id: String,
+    pub checkpoint_id: String,
+    pub timestamp: DateTime<Utc>,
+    pub trigger: CompactionTrigger,
+    pub estimated_before_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+    pub summary_instruction_version: u32,
+}
+
+/// Terminal metadata for one attempted compaction.
+///
+/// A committed checkpoint emits this after its checkpoint record. A skipped or
+/// failed attempt emits it without a checkpoint. The reason is bounded and is
+/// never projected into model context.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CompactionEndData {
+    pub session_id: String,
+    pub task_id: String,
+    pub checkpoint_id: String,
+    pub timestamp: DateTime<Utc>,
+    pub trigger: CompactionTrigger,
+    pub status: CompactionStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_before_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_after_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub basis: Option<EstimateBasis>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retired_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retained_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 /// Estimated input tokens before and after the checkpoint, with their basis.
 ///
 /// These are estimates, not provider measurements of the projected request.
@@ -436,13 +517,6 @@ impl CompactionData {
     ///
     /// Rejects everything [`Self::validate_structure`] rejects, plus a record
     /// above the serialized size ceiling.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the writer commits through to_record_bytes, which performs the same validation; this names the validation contract for callers and tests"
-        )
-    )]
     pub fn validate(&self) -> anyhow::Result<()> {
         self.to_record_bytes().map(|_| ())
     }

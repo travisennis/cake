@@ -260,20 +260,37 @@ fn validate_meta(meta: &SessionRecord, session_id: Uuid) -> Result<(), ReplayErr
     }
 }
 
-/// Validate a checkpoint's session envelope while replaying records.
-fn validate_checkpoint_envelope(
-    record: &SessionRecord,
-    session_id: &Uuid,
-) -> Result<(), ReplayError> {
-    let SessionRecord::Compaction(checkpoint) = record else {
-        return Ok(());
-    };
-    ensure_checkpoint_matches_session(checkpoint, &session_id.to_string()).map_err(|error| {
+/// Validate a checkpoint's or lifecycle record's session envelope while
+/// replaying records.
+fn validate_record_envelope(record: &SessionRecord, session_id: &Uuid) -> Result<(), ReplayError> {
+    let invalid = |kind: &str, found: &str| {
         ReplayError::Corrupt(
             session_id.to_string(),
-            format!("invalid compaction checkpoint: {error:#}"),
+            format!(
+                "invalid {kind} lifecycle record: session_id '{found}' does not match requested \
+                 session {session_id}"
+            ),
         )
-    })
+    };
+    match record {
+        SessionRecord::Compaction(checkpoint) => {
+            ensure_checkpoint_matches_session(checkpoint, &session_id.to_string()).map_err(
+                |error| {
+                    ReplayError::Corrupt(
+                        session_id.to_string(),
+                        format!("invalid compaction checkpoint: {error:#}"),
+                    )
+                },
+            )
+        },
+        SessionRecord::CompactionStart(data) if data.session_id != session_id.to_string() => {
+            Err(invalid("compaction_start", &data.session_id))
+        },
+        SessionRecord::CompactionEnd(data) if data.session_id != session_id.to_string() => {
+            Err(invalid("compaction_end", &data.session_id))
+        },
+        _ => Ok(()),
+    }
 }
 
 /// Parse one JSONL session record, mapping parse failures to [`ReplayError::Corrupt`].
@@ -284,7 +301,7 @@ fn parse_record(line: &str, session_id: &Uuid) -> Result<SessionRecord, ReplayEr
             format!("invalid session record: {error}"),
         )
     })?;
-    validate_checkpoint_envelope(&record, session_id)?;
+    validate_record_envelope(&record, session_id)?;
     Ok(record)
 }
 
@@ -371,6 +388,98 @@ mod tests {
             SessionRecord::McpToolsActivated { tools, .. }
                 if tools == &["mcp__fixture__echo"]
         ));
+    }
+
+    #[test]
+    fn load_records_preserves_compaction_lifecycle_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let start = serde_json::to_string(&SessionRecord::CompactionStart(
+            crate::types::compaction::CompactionStartData {
+                session_id: SESSION_ID.to_string(),
+                task_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                checkpoint_id: "checkpoint-1".to_string(),
+                timestamp: chrono::Utc::now(),
+                trigger: crate::types::compaction::CompactionTrigger::Threshold,
+                estimated_before_tokens: 80_000,
+                context_window: Some(100_000),
+                summary_instruction_version: 1,
+            },
+        ))
+        .unwrap();
+        let mut checkpoint = crate::types::compaction::test_support::checkpoint(
+            "checkpoint-1",
+            "summary",
+            Vec::new(),
+        );
+        checkpoint.session_id = SESSION_ID.to_string();
+        let checkpoint = serde_json::to_string(&SessionRecord::Compaction(checkpoint)).unwrap();
+        let end = serde_json::to_string(&SessionRecord::CompactionEnd(
+            crate::types::compaction::CompactionEndData {
+                session_id: SESSION_ID.to_string(),
+                task_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                checkpoint_id: "checkpoint-1".to_string(),
+                timestamp: chrono::Utc::now(),
+                trigger: crate::types::compaction::CompactionTrigger::Threshold,
+                status: crate::types::compaction::CompactionStatus::Committed,
+                estimated_before_tokens: Some(80_000),
+                estimated_after_tokens: Some(10_000),
+                basis: Some(crate::types::compaction::EstimateBasis::ContentClass),
+                retired_count: Some(4),
+                retained_count: Some(2),
+                reason: None,
+            },
+        ))
+        .unwrap();
+        let path = write_session(dir.path(), &[&meta_line(), &start, &checkpoint, &end]);
+
+        let records = load_records(&path, Uuid::parse_str(SESSION_ID).unwrap()).unwrap();
+
+        let kinds: Vec<&str> = records
+            .iter()
+            .filter_map(|record| match record {
+                SessionRecord::CompactionStart(_) => Some("start"),
+                SessionRecord::Compaction(_) => Some("checkpoint"),
+                SessionRecord::CompactionEnd(_) => Some("end"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(kinds, vec!["start", "checkpoint", "end"]);
+        assert!(
+            records
+                .iter()
+                .skip(1)
+                .all(|record| record.to_conversation_item().is_none()),
+            "lifecycle and checkpoint records are audit metadata, not model context"
+        );
+    }
+
+    #[test]
+    fn load_records_rejects_lifecycle_for_another_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let start = serde_json::to_string(&SessionRecord::CompactionStart(
+            crate::types::compaction::CompactionStartData {
+                session_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                task_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                checkpoint_id: "checkpoint-1".to_string(),
+                timestamp: chrono::Utc::now(),
+                trigger: crate::types::compaction::CompactionTrigger::Threshold,
+                estimated_before_tokens: 1,
+                context_window: None,
+                summary_instruction_version: 1,
+            },
+        ))
+        .unwrap();
+        let path = write_session(dir.path(), &[&meta_line(), &start]);
+
+        let error = load_records(&path, Uuid::parse_str(SESSION_ID).unwrap()).unwrap_err();
+
+        match error {
+            ReplayError::Corrupt(_, detail) => assert!(
+                detail.contains("compaction_start") && detail.contains("does not match"),
+                "unexpected detail: {detail}"
+            ),
+            other => panic!("expected a corrupt-session error, got {other}"),
+        }
     }
 
     #[test]

@@ -187,14 +187,37 @@ impl SessionWriter {
         Ok(())
     }
 
-    /// Whether the shared writer has failed terminally (for tests).
-    #[cfg(test)]
-    pub(crate) fn is_failed(&self) -> bool {
+    /// Return the preserved cause when the shared writer has failed terminally.
+    ///
+    /// Callers check this before any paid provider work so a terminal append
+    /// failure cannot be hidden by a disabled feature or a later retry.
+    pub fn failure(&self) -> Option<String> {
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .failure
-            .is_some()
+            .clone()
+    }
+
+    /// Reject a terminal writer failure before another append or provider call.
+    ///
+    /// # Errors
+    ///
+    /// Returns the preserved first failure with the same cause every later
+    /// append would report.
+    pub fn ensure_healthy(&self) -> anyhow::Result<()> {
+        if let Some(cause) = self.failure() {
+            anyhow::bail!(
+                "Session writer is permanently failed after an earlier write error: {cause}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Whether the shared writer has failed terminally (for tests).
+    #[cfg(test)]
+    pub(crate) fn is_failed(&self) -> bool {
+        self.failure().is_some()
     }
 
     /// Arm a one-shot failure at the next matching checkpoint commit stage.
@@ -342,30 +365,38 @@ impl Session {
             .rposition(|record| matches!(record, SessionRecord::Compaction(_)))
     }
 
-    /// Returns the usage of the most recent provider attempt that reported it.
+    /// Returns the usage of the most recent provider attempt that reported it
+    /// after the newest checkpoint.
     ///
     /// Scans from the end of the record history so later task-boundary
     /// records (for example `TaskComplete`) do not hide the last usage audit.
-    /// Lets a resumed session know its current context size before the
-    /// first new provider request.
+    /// A checkpoint starts a new projected context, so usage written before it
+    /// describes retired history and never seeds a resume. Lets a resumed
+    /// session know its current context size before the first new provider
+    /// request.
     pub fn last_turn_usage(&self) -> Option<Usage> {
-        self.records.iter().rev().find_map(|record| match record {
-            SessionRecord::TurnUsage(TurnUsageData {
-                usage,
-                purpose: None | Some(crate::types::TurnUsagePurpose::Main),
-                usage_presence,
-                ..
-            }) if !matches!(
-                usage_presence,
-                Some(
-                    crate::types::UsagePresence::Partial | crate::types::UsagePresence::Unreported
-                )
-            ) =>
-            {
-                Some(*usage)
-            },
-            _ => None,
-        })
+        self.records
+            .iter()
+            .rev()
+            .take_while(|record| !matches!(record, SessionRecord::Compaction(_)))
+            .find_map(|record| match record {
+                SessionRecord::TurnUsage(TurnUsageData {
+                    usage,
+                    purpose: None | Some(crate::types::TurnUsagePurpose::Main),
+                    usage_presence,
+                    ..
+                }) if !matches!(
+                    usage_presence,
+                    Some(
+                        crate::types::UsagePresence::Partial
+                            | crate::types::UsagePresence::Unreported
+                    )
+                ) =>
+                {
+                    Some(*usage)
+                },
+                _ => None,
+            })
     }
 
     /// Returns the names of skills activated during this session.
@@ -988,6 +1019,26 @@ mod tests {
         }
         session.records.push(partial);
 
+        assert_eq!(session.last_turn_usage().unwrap().input_tokens, 1000);
+    }
+
+    #[test]
+    fn last_turn_usage_stops_at_the_newest_checkpoint() {
+        let mut session = make_test_session();
+        session.records.push(meta_record(&session));
+        session.records.push(task_start(&session, "task-1"));
+        session.records.push(turn_usage(&session, "task-1", 5));
+        session
+            .records
+            .push(checkpoint_record(&session, "checkpoint-1", "summary"));
+        session.records.push(task_complete(&session, "task-1"));
+
+        assert!(
+            session.last_turn_usage().is_none(),
+            "pre-checkpoint usage describes retired context"
+        );
+
+        session.records.push(turn_usage(&session, "task-2", 1));
         assert_eq!(session.last_turn_usage().unwrap().input_tokens, 1000);
     }
 

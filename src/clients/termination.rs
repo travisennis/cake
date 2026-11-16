@@ -178,13 +178,6 @@ impl TerminationVerdict {
     /// caller --- may accept this turn. Every stop short of a normal completion
     /// is rejected, whether or not it is pressure: a summary must never be built
     /// from truncated, refused, or failed output (ADR 047).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the summary caller that consumes this lands with compaction (034h)"
-        )
-    )]
     pub const fn accepts_complete_output(&self) -> bool {
         matches!(self.outcome, TerminationOutcome::Completed)
     }

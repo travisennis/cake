@@ -258,7 +258,6 @@ impl ConversationState {
     }
 
     /// Whether a checkpoint currently replaces part of the request context.
-    #[cfg(test)]
     pub(super) const fn has_checkpoint(&self) -> bool {
         self.checkpoint.is_some()
     }
@@ -268,13 +267,6 @@ impl ConversationState {
     /// The records follow [`Self::request_context`]'s order: prompt prefix,
     /// active summary, retained tail, then post-boundary raw history. Source
     /// refs and image states are aligned one-to-one with those records.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "checkpoint preparation consumes this source in Milestone 3"
-        )
-    )]
     pub(super) fn preparation_source(
         &self,
         current_user_raw: usize,
@@ -312,13 +304,6 @@ impl ConversationState {
     /// The raw boundary moves to the current end of history. Pre-boundary raw
     /// records stay untouched as audit data but stop being projected; their
     /// protected copies are the checkpoint's retained records.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the pre-request compaction caller activates checkpoints in Milestone 4"
-        )
-    )]
     pub(super) fn activate_checkpoint(&mut self, checkpoint: CompactionData) -> anyhow::Result<()> {
         checkpoint.validate()?;
         self.align_provenance_for_test_history();

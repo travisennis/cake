@@ -5,6 +5,7 @@ use tokio::time::sleep;
 use tracing::debug;
 
 use crate::clients::agent::{AttemptPurpose, TurnResult, TurnUsageSettlement};
+use crate::clients::agent_observer::HealthCallback;
 use crate::clients::backend::{
     Backend, FinalOutputConstraint, ResponseDecodeError, ResponseParseError,
 };
@@ -311,6 +312,7 @@ impl AgentRunner {
         tools: &'a [Tool],
         constraint: Option<FinalOutputConstraint<'a>>,
         attempt_purpose: Option<AttemptPurpose>,
+        before_attempt: Option<&HealthCallback>,
         next_attempt: &mut u32,
         mut report_telemetry: impl FnMut(AgentRunnerTelemetryEvent),
         mut settle_usage: impl FnMut(TurnUsageSettlement),
@@ -329,6 +331,9 @@ impl AgentRunner {
         let mut client = self.client.clone();
 
         loop {
+            if let Some(check) = before_attempt {
+                check()?;
+            }
             let mut in_flight = InFlightAttempt::new(
                 &mut report_telemetry,
                 task_id,

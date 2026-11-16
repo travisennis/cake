@@ -1,12 +1,13 @@
 mod agent_loop;
 mod agent_telemetry;
+mod compaction;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::OutputFormat;
-use crate::clients::agent_observer::AgentObserver;
+use crate::clients::agent_observer::{AgentObserver, HealthCallback};
 use crate::clients::agent_runner::AgentRunner;
 use crate::clients::agent_state::{ConversationState, SourceRef, accumulate_usage};
 use crate::clients::backend::Backend;
@@ -973,13 +974,6 @@ impl Agent {
     }
 
     /// The measured request behind the most recent complete main-agent usage.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the pre-request compaction caller consumes this measurement in Milestone 4"
-        )
-    )]
     pub(super) const fn last_measurement(&self) -> Option<&MeasuredInput> {
         self.last_measurement.as_ref()
     }
@@ -1154,13 +1148,6 @@ impl Agent {
     /// # Errors
     ///
     /// Returns an error when the checkpoint envelope is invalid.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the pre-request compaction caller activates checkpoints in Milestone 4"
-        )
-    )]
     pub(super) fn activate_checkpoint(
         &mut self,
         checkpoint: crate::types::compaction::CompactionData,
@@ -1349,6 +1336,26 @@ impl Agent {
     ) -> Self {
         self.observer.set_progress(callback);
         self
+    }
+
+    /// Enables a pre-attempt health check, typically backed by the session writer.
+    ///
+    /// The runner calls it before every provider attempt, including retries and
+    /// summary batches. An error is terminal and sends nothing.
+    pub fn with_health_callback(
+        mut self,
+        callback: impl Fn() -> anyhow::Result<()> + Send + Sync + 'static,
+    ) -> Self {
+        self.observer.set_health_callback(callback);
+        self
+    }
+
+    pub(super) fn health_callback(&self) -> Option<HealthCallback> {
+        self.observer.health_callback()
+    }
+
+    pub(super) fn ensure_healthy(&self) -> anyhow::Result<()> {
+        self.observer.ensure_healthy()
     }
 
     /// Enables best-effort session telemetry sidecar writing.

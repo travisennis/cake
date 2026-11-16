@@ -1,14 +1,23 @@
+use std::sync::Arc;
+
 use crate::types::{ConversationItem, ReplaySafety, SessionRecord, StreamRecord};
 
 type StreamingCallback = Box<dyn Fn(&str) -> anyhow::Result<()> + Send + Sync>;
 type PersistCallback = Box<dyn FnMut(&SessionRecord) -> anyhow::Result<()> + Send + Sync>;
 type ProgressCallback = Box<dyn Fn(&str) + Send + Sync>;
 
+/// Shared check that a durable writer can still persist a record.
+///
+/// The runner calls this before every provider attempt, including retries and
+/// every summary batch, so a terminal append failure stops spending immediately.
+pub(super) type HealthCallback = Arc<dyn Fn() -> anyhow::Result<()> + Send + Sync>;
+
 #[derive(Default)]
 pub(super) struct AgentObserver {
     streaming: Option<StreamingCallback>,
     persist: Option<PersistCallback>,
     progress: Option<ProgressCallback>,
+    health: Option<HealthCallback>,
 }
 
 impl AgentObserver {
@@ -36,6 +45,24 @@ impl AgentObserver {
 
     pub(super) fn set_progress(&mut self, callback: impl Fn(&str) + Send + Sync + 'static) {
         self.progress = Some(Box::new(callback));
+    }
+
+    pub(super) fn set_health_callback(
+        &mut self,
+        callback: impl Fn() -> anyhow::Result<()> + Send + Sync + 'static,
+    ) {
+        self.health = Some(Arc::new(callback));
+    }
+
+    pub(super) fn health_callback(&self) -> Option<HealthCallback> {
+        self.health.clone()
+    }
+
+    pub(super) fn ensure_healthy(&self) -> anyhow::Result<()> {
+        if let Some(callback) = &self.health {
+            callback()?;
+        }
+        Ok(())
     }
 
     pub(super) fn report_progress(&self, message: &str) {

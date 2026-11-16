@@ -1,6 +1,5 @@
 use std::collections::VecDeque;
 use std::io::Cursor;
-use std::time::Duration;
 
 use base64::Engine as _;
 use image::{DynamicImage, ImageFormat, Rgb, RgbImage};
@@ -1637,7 +1636,6 @@ impl FakeCaller {
             }),
             usage: response.attempts.first().copied(),
             attempts: response.attempts,
-            elapsed: Duration::from_millis(10),
         })
     }
 }

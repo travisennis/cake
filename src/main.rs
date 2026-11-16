@@ -1088,8 +1088,10 @@ impl CodingAssistant {
             Arc::new(data_dir.session_blob_store(session.id)),
         );
         let writer_for_callback = writer.clone();
-        client =
-            client.with_persist_callback(move |record| writer_for_callback.append_record(record));
+        let writer_for_health = writer.clone();
+        client = client
+            .with_persist_callback(move |record| writer_for_callback.append_record(record))
+            .with_health_callback(move || writer_for_health.ensure_healthy());
         Ok((client, Some(writer)))
     }
 
