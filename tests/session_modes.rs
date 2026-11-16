@@ -39,6 +39,23 @@ fn success_response() -> serde_json::Value {
 }
 
 fn write_responses_settings(env: &TestEnv, base_url: &str) {
+    write_responses_settings_with_image_support(env, base_url, false);
+}
+
+fn write_image_responses_settings(env: &TestEnv, base_url: &str) {
+    write_responses_settings_with_image_support(env, base_url, true);
+}
+
+fn write_responses_settings_with_image_support(
+    env: &TestEnv,
+    base_url: &str,
+    supports_images: bool,
+) {
+    let image_support = if supports_images {
+        "supports_images = true"
+    } else {
+        ""
+    };
     env.write_global_settings(&format!(
         r#"
 [[models]]
@@ -47,6 +64,7 @@ model = "glm-5.1"
 base_url = "{base_url}"
 api_key_env = "{TEST_KEY}"
 api_type = "responses"
+{image_support}
 "#
     ));
     env.write_project_settings(
@@ -625,6 +643,148 @@ fn checkpointed_records(env: &TestEnv) -> Vec<serde_json::Value> {
             "timestamp": "2026-07-27T12:00:05Z",
         }),
     ]
+}
+
+/// Two distinct valid 1x1 PNGs, retained in a checkpoint's tool output.
+const CHECKPOINT_IMAGE_ONE_BASE64: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mP4z8AAAAMBAQD3A0FDAAAAAElFTkSuQmCC";
+const CHECKPOINT_IMAGE_TWO_BASE64: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=";
+
+/// The same two-checkpoint session, with both images retained in the latest
+/// checkpoint's `Read` output.
+fn checkpointed_records_with_images(env: &TestEnv) -> Vec<serde_json::Value> {
+    let mut records = checkpointed_records(env);
+    let checkpoint = records
+        .iter_mut()
+        .rev()
+        .find(|record| record["type"] == "compaction")
+        .expect("fixture should contain a checkpoint");
+    let output = checkpoint["retained"]
+        .as_array_mut()
+        .expect("retained should be an array")
+        .iter_mut()
+        .find(|record| record["type"] == "function_call_output")
+        .expect("checkpoint should retain a tool output");
+    output["images"] = serde_json::json!([
+        { "media_type": "image/png", "data_base64": CHECKPOINT_IMAGE_ONE_BASE64 },
+        { "media_type": "image/png", "data_base64": CHECKPOINT_IMAGE_TWO_BASE64 },
+    ]);
+    records
+}
+
+fn expected_checkpoint_image_urls() -> Vec<String> {
+    vec![
+        format!("data:image/png;base64,{CHECKPOINT_IMAGE_ONE_BASE64}"),
+        format!("data:image/png;base64,{CHECKPOINT_IMAGE_TWO_BASE64}"),
+    ]
+}
+
+/// Every provider `input_image` URL in wire order.
+fn request_image_urls(value: &serde_json::Value) -> Vec<String> {
+    fn collect(value: &serde_json::Value, urls: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    collect(item, urls);
+                }
+            },
+            serde_json::Value::Object(map) => {
+                if map.get("type").and_then(serde_json::Value::as_str) == Some("input_image") {
+                    urls.push(
+                        map.get("image_url")
+                            .and_then(serde_json::Value::as_str)
+                            .expect("input_image should carry an image_url")
+                            .to_string(),
+                    );
+                }
+                for child in map.values() {
+                    collect(child, urls);
+                }
+            },
+            _ => {},
+        }
+    }
+
+    let mut urls = Vec::new();
+    collect(value, &mut urls);
+    urls
+}
+
+fn assert_checkpoint_image_blocks(body: &serde_json::Value) {
+    let expected = expected_checkpoint_image_urls();
+    assert_eq!(
+        request_image_urls(body),
+        expected,
+        "the restored request should carry both seeded images once each, in order"
+    );
+
+    let output = body["input"]
+        .as_array()
+        .expect("request input should be an array")
+        .iter()
+        .find(|item| item["type"] == "function_call_output" && item["call_id"] == "call-latest")
+        .and_then(|item| item["output"].as_array())
+        .expect("the retained tool output should be present");
+    assert_eq!(output.len(), 3, "one text block plus both image blocks");
+    assert_eq!(output[0]["type"], "input_text");
+    assert_eq!(output[0]["text"], "contents of call-latest");
+    let output_urls: Vec<String> = output[1..]
+        .iter()
+        .map(|block| {
+            assert_eq!(block["type"], "input_image");
+            block["image_url"]
+                .as_str()
+                .expect("input_image should carry an image_url")
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        output_urls, expected,
+        "the retained output should keep the seeded image order and bytes"
+    );
+}
+
+async fn assert_mode_restores_checkpoint_images(mode: &str) {
+    let env = TestEnv::new(&format!("cake-{mode}-checkpoint-images-test"));
+    let mock_server = MockServer::start().await;
+    write_image_responses_settings(&env, &mock_server.uri());
+    write_session_fixture(&env, &checkpointed_records_with_images(&env));
+
+    let mode_flag = format!("--{mode}");
+    let output = run_mode(&env, &mock_server, &[&mode_flag, SESSION_ID, "carry on"]).await;
+    assert!(
+        output.status.success(),
+        "{mode} should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let requests = mock_server
+        .received_requests()
+        .await
+        .expect("recorded requests");
+    assert_eq!(requests.len(), 1, "{mode}: one provider call expected");
+    let body: serde_json::Value =
+        serde_json::from_slice(&requests[0].body).expect("request body should be JSON");
+    assert_checkpoint_image_blocks(&body);
+
+    if mode == "fork" {
+        assert_eq!(
+            session_file_count(&env),
+            2,
+            "fork should persist a new session beside the seeded one"
+        );
+    }
+}
+
+#[tokio::test]
+async fn resume_restores_checkpoint_images_byte_identical_once_in_order() {
+    assert_mode_restores_checkpoint_images("resume").await;
+}
+
+#[tokio::test]
+async fn fork_restores_checkpoint_images_byte_identical_once_in_order() {
+    assert_mode_restores_checkpoint_images("fork").await;
 }
 
 #[tokio::test]
