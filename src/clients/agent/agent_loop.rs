@@ -7,6 +7,7 @@ use futures::StreamExt;
 use crate::clients::agent::{Agent, TurnResult, record_turn_usage};
 use crate::clients::agent_state::RecordProvenance;
 use crate::clients::backend::FinalOutputConstraint;
+use crate::clients::compaction::{FixedRequest, MeasuredInput, fixed_request_tokens};
 use crate::clients::image_budget::prune_request_with_plan;
 use crate::clients::retry::{RequestOverrides, RetryReason, RetryStatus};
 use crate::clients::termination::{
@@ -1007,6 +1008,13 @@ impl Agent {
             self.output_schema.as_deref(),
             native_constraint_attached,
         );
+        let fixed_output_schema = native_constraint_attached
+            .then(|| self.output_schema.as_deref().map(|schema| &schema.raw))
+            .flatten();
+        let request_fixed_tokens = fixed_request_tokens(&FixedRequest {
+            tool_schemas: tool_definitions,
+            output_schema: fixed_output_schema,
+        });
         let config = &self.config;
         let session_id = self.session_id;
         let task_id = self.task_id;
@@ -1032,6 +1040,7 @@ impl Agent {
             history
         };
         let turn_index = self.turn_count.saturating_add(1);
+        self.last_measurement = None;
         let runner = &self.runner;
         let runner_telemetry = self.runner_telemetry_sink();
         let observer = &mut self.observer;
@@ -1066,8 +1075,31 @@ impl Agent {
                 },
             )
             .await?;
+        self.record_request_measurement(turn.usage.as_ref(), history.len(), request_fixed_tokens);
         turn.consumed_sources = consumed_sources;
         Ok(turn)
+    }
+
+    fn record_request_measurement(
+        &mut self,
+        usage: Option<&crate::types::ReportedUsage>,
+        covered_item_count: usize,
+        fixed_tokens: u64,
+    ) {
+        let Some(usage) = usage else {
+            return;
+        };
+        if usage.presence != crate::types::UsagePresence::Complete || usage.usage.input_tokens == 0
+        {
+            return;
+        }
+        self.last_measurement = Some(MeasuredInput {
+            input_tokens: usage.usage.input_tokens,
+            covered_item_count,
+            model: self.config.model_config.model.clone(),
+            fixed_tokens,
+            presence: usage.presence,
+        });
     }
 
     #[cfg(test)]

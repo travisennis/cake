@@ -1,11 +1,13 @@
 //! Bounded context-compaction preparation, summary calls, and validation.
 //!
 //! This module owns the seam between a conversation that is too large to send
-//! and a checkpoint that replaces part of it. [`prepare`] is pure: it measures
-//! the source, selects whole exchanges, applies pins, and returns a typed
-//! no-op, no-fit, or prepared candidate without making a provider call.
-//! [`summarize`] drives a [`SummaryCaller`] through at most four bounded
-//! requests and validates every result before it can become a checkpoint.
+//! and a checkpoint that replaces part of it. [`measure`] is pure: it builds the
+//! same projected request and trigger decision preparation uses. [`prepare`] is
+//! pure: it gates on the trigger, selects whole exchanges, applies pins, and
+//! returns a typed no-op, no-fit, or prepared candidate without making a
+//! provider call. [`summarize`] drives a [`SummaryCaller`] through at most four
+//! bounded requests and validates every result before it can become a
+//! checkpoint.
 //!
 //! No production path calls this module yet: automatic compaction is task
 //! 034g and manual compaction is task 034i. Keeping preparation and
@@ -27,8 +29,8 @@ use crate::clients::agent::{AttemptPurpose, TurnUsageSettlement};
 use crate::clients::agent_runner::AgentRunner;
 use crate::clients::backend::Backend;
 use crate::clients::image_budget::{
-    ImageBudgetError, ImageBudgetPlan, ImageOwner, ImageSlot, apply_plan_to_history,
-    plan_image_budget,
+    ImageBudgetError, ImageBudgetPlan, ImageOwner, ImagePlanEntry, ImageSlot,
+    apply_plan_to_history, plan_admitted_images,
 };
 use crate::clients::termination::{self, IntendedLimits, TurnEvidence};
 use crate::clients::tools::Tool;
@@ -76,6 +78,8 @@ pub struct MeasuredInput {
     pub covered_item_count: usize,
     /// The model the measurement belongs to.
     pub model: String,
+    /// Fixed request tokens (tool schemas and output schema) for that request.
+    pub fixed_tokens: u64,
     /// Whether the provider reported every required counter.
     pub presence: UsagePresence,
 }
@@ -128,6 +132,10 @@ pub struct PreparationInput<'a> {
     pub prompt_prefix_len: usize,
     /// The current task's actual user input, pinned exactly.
     pub current_user_input: Option<usize>,
+    /// Exact invocation pins aligned with `source`.
+    pub invocation_pins: &'a [InvocationPin],
+    /// Image-consumption evidence aligned with `source`.
+    pub image_consumption: &'a [ImageConsumption],
     /// The task that owns this invocation.
     pub current_task_id: String,
     pub fixed: FixedRequest<'a>,
@@ -137,17 +145,47 @@ pub struct PreparationInput<'a> {
     /// basis is stale after a checkpoint, so preparation falls back to a full
     /// estimate.
     pub has_active_checkpoint: bool,
-    /// Source indices of image-bearing records whose pixels reached an
-    /// accepted main response. Every other image-bearing record must carry an
-    /// `unconsumed_image` pin.
-    pub consumed_image_indices: &'a [usize],
-    /// The request image policy used to measure the retained tail.
+    /// Whether the target model accepts images. When false, estimation uses
+    /// the text-only projection the provider will actually receive.
+    pub supports_images: bool,
+    /// The request image policy used to estimate the projected request.
     pub image_policy: &'a ResolvedImagePolicy,
+    /// The caller-assigned checkpoint identity. Preparation never generates
+    /// one, so a retry presents the same identity.
+    pub checkpoint_id: String,
     pub session_id: Uuid,
     pub task_id: Uuid,
     pub model: ModelIdentity,
     pub trigger: CompactionTrigger,
     pub policy: CompactionPolicy,
+}
+
+/// The trigger decision and estimate shared by measurement and preparation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreparationMeasure {
+    pub before_tokens: u64,
+    pub basis: EstimateBasis,
+    pub trigger_tokens: Option<u64>,
+    pub trigger_reached: bool,
+}
+
+/// One preparation result with the estimate that produced it.
+#[derive(Debug)]
+pub struct Preparation {
+    pub outcome: PrepareOutcome,
+    pub measure: PreparationMeasure,
+}
+
+impl Preparation {
+    /// The no-op reason, when the outcome is a no-op.
+    pub fn no_op_reason(&self) -> Option<&str> {
+        self.outcome.no_op_reason()
+    }
+
+    /// The no-fit reason, when the outcome is a no-fit.
+    pub fn no_fit_reason(&self) -> Option<&str> {
+        self.outcome.no_fit_reason()
+    }
 }
 
 /// The typed result of preparation.
@@ -184,7 +222,7 @@ impl PrepareOutcome {
 pub struct PreparedCompaction {
     pub checkpoint_id: String,
     pub retained: Vec<RetainedRecord>,
-    /// The read-only image plan for the retained tail.
+    /// The read-only admission plan for the post-checkpoint request.
     ///
     /// Retained records keep their original image references; this plan is
     /// used only to estimate the request projection.
@@ -252,7 +290,7 @@ pub trait SummaryCaller {
 }
 
 /// Measure the fixed request surface (tool schemas and native output schema).
-fn fixed_request_tokens(fixed: &FixedRequest<'_>) -> u64 {
+pub(super) fn fixed_request_tokens(fixed: &FixedRequest<'_>) -> u64 {
     let tools = fixed
         .tool_schemas
         .iter()
@@ -324,6 +362,138 @@ fn estimate_after(
         .saturating_add(summary_tokens)
         .saturating_add(retained_tokens)
         .saturating_add(fixed_tokens)
+}
+
+/// The synthetic record the projector puts immediately after the prompt.
+fn summary_placeholder() -> ConversationItem {
+    ConversationItem::Message {
+        role: Role::User,
+        content: HISTORICAL_SUMMARY_MARKER.to_string(),
+        id: None,
+        status: None,
+        timestamp: None,
+        images: Vec::new(),
+    }
+}
+
+fn item_images(item: &ConversationItem) -> &[crate::types::ImagePart] {
+    match item {
+        ConversationItem::Message { images, .. }
+        | ConversationItem::FunctionCallOutput { images, .. } => images,
+        ConversationItem::FunctionCall { .. } | ConversationItem::Reasoning { .. } => &[],
+    }
+}
+
+fn clear_item_images(item: &mut ConversationItem) {
+    match item {
+        ConversationItem::Message { images, .. }
+        | ConversationItem::FunctionCallOutput { images, .. } => images.clear(),
+        ConversationItem::FunctionCall { .. } | ConversationItem::Reasoning { .. } => {},
+    }
+}
+
+fn request_image_slots<'a>(
+    items: &'a [ConversationItem],
+    pinned_items: &[bool],
+) -> (Vec<ImageSlot<'a>>, Vec<ImageOwner>, usize) {
+    let mut slots = Vec::new();
+    let mut owners = Vec::new();
+    let mut pinned_count = 0;
+    for (item_index, item) in items.iter().enumerate() {
+        let pinned = pinned_items.get(item_index).copied().unwrap_or(false);
+        let images = item_images(item);
+        if pinned {
+            pinned_count += images.len();
+        }
+        for (image_index, image) in images.iter().enumerate() {
+            let owner = ImageOwner {
+                item: item_index,
+                image: image_index,
+            };
+            slots.push(ImageSlot {
+                ordinal: slots.len() + 1,
+                owner,
+                image,
+                pinned,
+            });
+            owners.push(owner);
+        }
+    }
+    (slots, owners, pinned_count)
+}
+
+/// One request projection after image admission.
+struct PlannedProjection {
+    items: Vec<ConversationItem>,
+    plan: ImageBudgetPlan,
+    pinned_omission: Option<String>,
+}
+
+/// Plan and apply request image admission to one projection.
+fn plan_request_projection(
+    items: &[ConversationItem],
+    pinned_items: &[bool],
+    policy: &ResolvedImagePolicy,
+    supports_images: bool,
+) -> Result<PlannedProjection, RetainedImageFailure> {
+    if !supports_images {
+        let mut items = items.to_vec();
+        for item in &mut items {
+            clear_item_images(item);
+        }
+        return Ok(PlannedProjection {
+            items,
+            plan: ImageBudgetPlan::default(),
+            pinned_omission: None,
+        });
+    }
+    let (slots, owners, pinned_count) = request_image_slots(items, pinned_items);
+    if slots.is_empty() {
+        return Ok(PlannedProjection {
+            items: items.to_vec(),
+            plan: ImageBudgetPlan::default(),
+            pinned_omission: None,
+        });
+    }
+    let plan = match plan_admitted_images(&slots, policy) {
+        Ok(plan) => plan,
+        Err(error) => {
+            return Err(
+                pinned_image_no_fit_reason(&error, pinned_count).map_or_else(
+                    || RetainedImageFailure::Hard(error.into()),
+                    RetainedImageFailure::NoFit,
+                ),
+            );
+        },
+    };
+    let pinned_omission = pinned_omission_reason(&slots, &plan, pinned_count);
+    drop(slots);
+    let mut planned = items.to_vec();
+    apply_plan_to_history(&mut planned, &owners, plan.clone())
+        .map_err(RetainedImageFailure::Hard)?;
+    Ok(PlannedProjection {
+        items: planned,
+        plan,
+        pinned_omission,
+    })
+}
+
+fn pinned_omission_reason(
+    slots: &[ImageSlot<'_>],
+    plan: &ImageBudgetPlan,
+    pinned_count: usize,
+) -> Option<String> {
+    slots
+        .iter()
+        .zip(&plan.entries)
+        .find_map(|(slot, entry)| match entry {
+            ImagePlanEntry::Omit { reason, .. } if slot.pinned => Some(format!(
+                "pinned compaction image {} would be omitted by the image {reason} budget; \
+                 retaining {pinned_count} pinned image(s)",
+                slot.ordinal
+            )),
+            ImagePlanEntry::Keep | ImagePlanEntry::Replace(_) | ImagePlanEntry::Omit { .. } => None,
+        })
 }
 
 /// One complete provider exchange inside the retirable body.
@@ -440,51 +610,32 @@ fn validate_exchanges(source: &[RetainedRecord], exchanges: &[Exchange]) -> anyh
     Ok(())
 }
 
-/// Return the first pin or image-evidence gap that preparation must report as
-/// a no-fit rather than an invented pin.
+/// Return the first provenance gap that preparation must report as a no-fit
+/// rather than inventing a pin.
 fn pin_evidence_failure(input: &PreparationInput<'_>) -> Option<String> {
-    let consumed: std::collections::HashSet<usize> =
-        input.consumed_image_indices.iter().copied().collect();
     for (index, record) in input.source.iter().enumerate() {
         if record.skill_read.is_some() && record.source_task.is_none() {
             return Some(format!(
                 "source index {index} has ambiguous legacy skill-read provenance"
             ));
         }
-        let image_count = match &record.record {
-            RetainedConversationRecord::Message(data) => data.images.len(),
-            RetainedConversationRecord::FunctionCallOutput(data) => data.images.len(),
-            RetainedConversationRecord::Reasoning(_)
-            | RetainedConversationRecord::FunctionCall(_) => 0,
-        };
-        if image_count > 0
-            && !consumed.contains(&index)
-            && record.pin != Some(PinReason::UnconsumedImage)
-        {
-            return Some(format!(
-                "source index {index} carries {image_count} image(s) with no consumption \
-                 evidence or unconsumed-image pin"
-            ));
-        }
     }
     None
 }
 
-/// Apply the invocation's exact pins and validate image-consumption evidence.
+/// Apply the invocation's exact pins and validate the explicit evidence.
 fn apply_pins(input: &PreparationInput<'_>) -> anyhow::Result<Vec<RetainedRecord>> {
     let mut source = input.source.to_vec();
     pin_current_user_input(&mut source, input)?;
-    let consumed: std::collections::HashSet<usize> =
-        input.consumed_image_indices.iter().copied().collect();
-    for (index, record) in source.iter_mut().enumerate() {
-        anyhow::ensure!(
-            record.skill_read.is_none() || record.source_task.is_some(),
-            "compaction source index {index} has skill-read provenance with no source task; \
-             ambiguous legacy provenance yields no fit"
-        );
-        pin_skill_read(record, &input.current_task_id);
-        validate_record_image_evidence(record, index, &consumed)?;
+    for (index, record) in source.iter().enumerate() {
+        validate_record_image_evidence(record, index)?;
     }
+    normalize_source_pins(
+        &mut source,
+        &input.current_task_id,
+        input.invocation_pins,
+        input.image_consumption,
+    )?;
     Ok(source)
 }
 
@@ -510,6 +661,7 @@ fn pin_current_user_input(
     );
     record.pin = Some(PinReason::UserInput);
     record.origin = Some(MessageOrigin::User);
+    record.source_task = Some(input.current_task_id.clone());
     Ok(())
 }
 
@@ -686,33 +838,14 @@ const fn record_images(record: &RetainedRecord) -> &[crate::types::ImagePart] {
     }
 }
 
-fn validate_record_image_evidence(
-    record: &RetainedRecord,
-    index: usize,
-    consumed: &std::collections::HashSet<usize>,
-) -> anyhow::Result<()> {
-    let images = record_images(record);
-    for image in images {
+fn validate_record_image_evidence(record: &RetainedRecord, index: usize) -> anyhow::Result<()> {
+    for image in record_images(record) {
         anyhow::ensure!(
             !image.data_base64.is_empty() || image.content_id.is_some(),
             "compaction source index {index} has an image with neither inline bytes nor a \
              content reference"
         );
     }
-    if !images.is_empty()
-        && !consumed.contains(&index)
-        && record.pin != Some(PinReason::UnconsumedImage)
-    {
-        bail!(
-            "compaction source index {index} carries {} image(s) with no consumption \
-             evidence or unconsumed-image pin",
-            images.len()
-        );
-    }
-    anyhow::ensure!(
-        record.pin != Some(PinReason::UnconsumedImage) || !images.is_empty(),
-        "compaction source index {index} has an unconsumed-image pin but carries no images"
-    );
     Ok(())
 }
 
@@ -772,13 +905,12 @@ fn checkpoint_bytes_with_reservation(checkpoint: &CompactionData) -> anyhow::Res
 /// Build the checkpoint envelope used for size measurement.
 fn candidate_checkpoint(
     input: &PreparationInput<'_>,
-    checkpoint_id: &str,
     retained: &[RetainedRecord],
     estimated_input: EstimatedInput,
 ) -> CompactionData {
     CompactionData {
         checkpoint_version: crate::types::compaction::CHECKPOINT_VERSION,
-        checkpoint_id: checkpoint_id.to_string(),
+        checkpoint_id: input.checkpoint_id.clone(),
         session_id: input.session_id.to_string(),
         task_id: input.task_id.to_string(),
         timestamp: Utc::now(),
@@ -793,19 +925,22 @@ fn candidate_checkpoint(
     }
 }
 
-/// Prepare a bounded compaction candidate without making a provider call.
+/// Measure the projected request without applying pins or selecting history.
+///
+/// The estimate uses the same image admission and content-class rules as
+/// [`prepare`], so the trigger decision cannot disagree with selection.
 ///
 /// # Errors
 ///
-/// Returns an error only for an invalid caller input (bad index, missing image
-/// evidence, incomplete exchange pairing). Bounds that cannot be met are
-/// reported as [`PrepareOutcome::NoFit`], and a source with nothing worth
-/// retiring is [`PrepareOutcome::NoOp`].
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "preparation is one decision tree over the immutable input; a borrowed input would not change behavior"
-)]
-pub fn prepare(input: PreparationInput<'_>) -> anyhow::Result<PrepareOutcome> {
+/// Returns an error for an invalid policy or a source projection whose images
+/// cannot be planned safely.
+pub fn measure(input: &PreparationInput<'_>) -> anyhow::Result<PreparationMeasure> {
+    Ok(measure_with_policy(input)?.0)
+}
+
+fn measure_with_policy(
+    input: &PreparationInput<'_>,
+) -> anyhow::Result<(PreparationMeasure, ResolvedCompactionPolicy)> {
     let resolved = input.policy.validate(input.context_window)?;
     anyhow::ensure!(
         input.prompt_prefix_len <= input.source.len(),
@@ -813,22 +948,108 @@ pub fn prepare(input: PreparationInput<'_>) -> anyhow::Result<PrepareOutcome> {
         input.prompt_prefix_len,
         input.source.len()
     );
+    let items = source_items(input.source);
+    let planned = plan_request_projection(
+        &items,
+        &vec![false; items.len()],
+        input.image_policy,
+        input.supports_images,
+    )
+    .map_err(projection_failure)?;
+    let fixed_tokens = fixed_request_tokens(&input.fixed);
+    let (before_tokens, basis) = estimate_before(input, &planned.items, fixed_tokens);
+    Ok((
+        PreparationMeasure {
+            before_tokens,
+            basis,
+            trigger_tokens: resolved.trigger_tokens,
+            trigger_reached: trigger_is_reached(
+                input.trigger,
+                resolved.trigger_tokens,
+                before_tokens,
+            ),
+        },
+        resolved,
+    ))
+}
+
+const fn trigger_is_reached(
+    trigger: CompactionTrigger,
+    trigger_tokens: Option<u64>,
+    before_tokens: u64,
+) -> bool {
+    match trigger {
+        CompactionTrigger::Manual | CompactionTrigger::Overflow => true,
+        CompactionTrigger::Threshold => match trigger_tokens {
+            Some(trigger) => before_tokens >= trigger,
+            None => false,
+        },
+    }
+}
+
+fn projection_failure(failure: RetainedImageFailure) -> anyhow::Error {
+    match failure {
+        RetainedImageFailure::NoFit(reason) => anyhow::anyhow!(reason),
+        RetainedImageFailure::Hard(error) => error,
+    }
+}
+
+fn below_trigger_reason(measure: PreparationMeasure) -> String {
+    measure.trigger_tokens.map_or_else(
+        || "no effective compaction trigger is configured".to_string(),
+        |trigger| {
+            format!(
+                "the projected request has {} tokens, below the {trigger}-token trigger",
+                measure.before_tokens
+            )
+        },
+    )
+}
+
+/// Prepare a bounded compaction candidate without making a provider call.
+///
+/// The trigger gate runs before pin application, exchange segmentation, or
+/// selection. Manual and overflow triggers skip the threshold gate.
+///
+/// # Errors
+///
+/// Returns an error only for an invalid caller input (bad index, misaligned
+/// evidence, incomplete exchange pairing). Bounds that cannot be met are
+/// reported as [`PrepareOutcome::NoFit`], and a source with nothing worth
+/// retiring is [`PrepareOutcome::NoOp`].
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "preparation is one decision tree over the immutable input; a borrowed input would not change behavior"
+)]
+pub fn prepare(input: PreparationInput<'_>) -> anyhow::Result<Preparation> {
+    let (measure, resolved) = measure_with_policy(&input)?;
+    if !measure.trigger_reached {
+        return Ok(Preparation {
+            outcome: PrepareOutcome::NoOp {
+                reason: below_trigger_reason(measure),
+            },
+            measure,
+        });
+    }
     if let Some(reason) = pin_evidence_failure(&input) {
-        return Ok(PrepareOutcome::NoFit { reason });
+        return Ok(Preparation {
+            outcome: PrepareOutcome::NoFit { reason },
+            measure,
+        });
+    }
+    if measure.before_tokens == 0 {
+        return Ok(Preparation {
+            outcome: PrepareOutcome::NoOp {
+                reason: "the projected request has no measurable content".to_string(),
+            },
+            measure,
+        });
     }
 
     let source = apply_pins(&input)?;
     let exchanges = segment_exchanges(&source, input.prompt_prefix_len)?;
     validate_exchanges(&source, &exchanges)?;
     let items = source_items(&source);
-    let fixed_tokens = fixed_request_tokens(&input.fixed);
-    let (before_tokens, basis) = estimate_before(&input, &source, &items, fixed_tokens);
-    if before_tokens == 0 {
-        return Ok(PrepareOutcome::NoOp {
-            reason: "the projected request has no measurable content".to_string(),
-        });
-    }
-
     let prefix: Vec<ConversationItem> = items[..input.prompt_prefix_len].to_vec();
     let body_exchanges: Vec<Exchange> = exchanges
         .iter()
@@ -836,36 +1057,42 @@ pub fn prepare(input: PreparationInput<'_>) -> anyhow::Result<PrepareOutcome> {
         .cloned()
         .collect();
     if body_exchanges.is_empty() {
-        return Ok(PrepareOutcome::NoOp {
-            reason: "the projected request has no retirable history".to_string(),
+        return Ok(Preparation {
+            outcome: PrepareOutcome::NoOp {
+                reason: "the projected request has no retirable history".to_string(),
+            },
+            measure,
         });
     }
 
-    let minimum_reduction =
-        before_tokens.saturating_add(MIN_REDUCTION_DIVISOR - 1) / MIN_REDUCTION_DIVISOR;
-    let checkpoint_id = Uuid::new_v4().to_string();
+    let fixed_tokens = fixed_request_tokens(&input.fixed);
+    let minimum_reduction = measure
+        .before_tokens
+        .saturating_add(MIN_REDUCTION_DIVISOR - 1)
+        / MIN_REDUCTION_DIVISOR;
     let selection = select_exchanges(
         &input,
         &source,
         &body_exchanges,
         &prefix,
-        before_tokens,
+        measure.before_tokens,
         minimum_reduction,
         resolved,
         fixed_tokens,
-        &checkpoint_id,
     )?;
-    Ok(outcome_from_selection(
-        selection,
-        &input,
-        &source,
-        &body_exchanges,
-        before_tokens,
-        minimum_reduction,
-        basis,
-        checkpoint_id,
-        resolved,
-    ))
+    Ok(Preparation {
+        outcome: outcome_from_selection(
+            selection,
+            &input,
+            &source,
+            &body_exchanges,
+            measure.before_tokens,
+            minimum_reduction,
+            measure.basis,
+            resolved,
+        ),
+        measure,
+    })
 }
 
 #[expect(
@@ -880,7 +1107,6 @@ fn outcome_from_selection(
     before_tokens: u64,
     minimum_reduction: u64,
     basis: EstimateBasis,
-    checkpoint_id: String,
     resolved: ResolvedCompactionPolicy,
 ) -> PrepareOutcome {
     match selection {
@@ -895,7 +1121,6 @@ fn outcome_from_selection(
             before_tokens,
             after_tokens,
             basis,
-            checkpoint_id,
             resolved,
             image_plan,
         ),
@@ -914,10 +1139,12 @@ fn measured_basis_is_valid(
     input: &PreparationInput<'_>,
     measured: &MeasuredInput,
     item_count: usize,
+    fixed_tokens: u64,
 ) -> bool {
     measured.input_tokens > 0
         && measured.presence == UsagePresence::Complete
         && measured.model == input.model.model
+        && measured.fixed_tokens == fixed_tokens
         && !input.has_active_checkpoint
         && measured.covered_item_count >= input.prompt_prefix_len
         && measured.covered_item_count <= item_count
@@ -925,21 +1152,21 @@ fn measured_basis_is_valid(
 
 fn estimate_before(
     input: &PreparationInput<'_>,
-    source: &[RetainedRecord],
-    items: &[ConversationItem],
+    planned_items: &[ConversationItem],
     fixed_tokens: u64,
 ) -> (u64, EstimateBasis) {
-    let full =
-        estimate_full_request(items, fixed_tokens).saturating_add(source_metadata_tokens(source));
+    let full = estimate_full_request(planned_items, fixed_tokens)
+        .saturating_add(source_metadata_tokens(input.source));
     let Some(measured) = &input.measured else {
         return (full, EstimateBasis::ContentClass);
     };
-    if !measured_basis_is_valid(input, measured, items.len()) {
+    if !measured_basis_is_valid(input, measured, planned_items.len(), fixed_tokens) {
         return (full, EstimateBasis::ContentClass);
     }
-    let appended = estimate_items_tokens(&items[measured.covered_item_count..]).saturating_add(
-        source_metadata_tokens(&source[measured.covered_item_count..]),
-    );
+    let appended = estimate_items_tokens(&planned_items[measured.covered_item_count..])
+        .saturating_add(source_metadata_tokens(
+            &input.source[measured.covered_item_count..],
+        ));
     (
         measured.input_tokens.saturating_add(appended),
         EstimateBasis::MeasuredUsage,
@@ -992,45 +1219,16 @@ fn pinned_source_records(source: &[RetainedRecord], exchanges: &[Exchange]) -> V
     pinned
 }
 
-struct PlannedRetainedImages {
-    items: Vec<ConversationItem>,
+struct PlannedPostCheckpoint {
+    prefix_items: Vec<ConversationItem>,
+    retained_items: Vec<ConversationItem>,
     plan: ImageBudgetPlan,
+    pinned_omission: Option<String>,
 }
 
 enum RetainedImageFailure {
     NoFit(String),
     Hard(anyhow::Error),
-}
-
-fn retained_image_slots<'a>(
-    retained: &'a [RetainedRecord],
-    source_indices: &[usize],
-    pinned_source: &[bool],
-) -> (Vec<ImageSlot<'a>>, Vec<ImageOwner>, usize) {
-    let mut slots = Vec::new();
-    let mut owners = Vec::new();
-    let mut pinned_count = 0;
-    for (item_index, (record, source_index)) in retained.iter().zip(source_indices).enumerate() {
-        let pinned = pinned_source.get(*source_index).copied().unwrap_or(false);
-        let images = record_images(record);
-        if pinned {
-            pinned_count += images.len();
-        }
-        for (image_index, image) in images.iter().enumerate() {
-            let owner = ImageOwner {
-                item: item_index,
-                image: image_index,
-            };
-            slots.push(ImageSlot {
-                ordinal: slots.len() + 1,
-                owner,
-                image,
-                pinned,
-            });
-            owners.push(owner);
-        }
-    }
-    (slots, owners, pinned_count)
 }
 
 fn pinned_image_no_fit_reason(error: &ImageBudgetError, pinned_count: usize) -> Option<String> {
@@ -1059,36 +1257,41 @@ fn pinned_image_no_fit_reason(error: &ImageBudgetError, pinned_count: usize) -> 
     }
 }
 
-/// Plan the retained tail without mutating its records.
+/// Plan the exact projection after a candidate checkpoint.
 ///
-/// The returned items are a request-only clone with replacements and markers
-/// applied for estimation. The records themselves keep their original image
-/// references.
-fn plan_retained_images(
+/// The projection is the prompt prefix, the synthetic summary record, and the
+/// candidate retained records with their original images. Admission decides in
+/// source order, so a pinned image omitted behind an older eligible image is a
+/// candidate failure the selection can resolve by retiring more history.
+fn plan_post_checkpoint(
+    prefix: &[ConversationItem],
     retained: &[RetainedRecord],
     source_indices: &[usize],
     pinned_source: &[bool],
-    policy: &ResolvedImagePolicy,
-) -> Result<PlannedRetainedImages, RetainedImageFailure> {
-    let (slots, owners, pinned_count) =
-        retained_image_slots(retained, source_indices, pinned_source);
-    let plan = match plan_image_budget(&slots, policy) {
-        Ok(plan) => plan,
-        Err(error) => {
-            return Err(
-                pinned_image_no_fit_reason(&error, pinned_count).map_or_else(
-                    || RetainedImageFailure::Hard(error.into()),
-                    RetainedImageFailure::NoFit,
-                ),
-            );
-        },
-    };
-    drop(slots);
-    let mut items = source_items(retained);
-    if let Err(error) = apply_plan_to_history(&mut items, &owners, plan.clone()) {
-        return Err(RetainedImageFailure::Hard(error));
-    }
-    Ok(PlannedRetainedImages { items, plan })
+    input: &PreparationInput<'_>,
+) -> Result<PlannedPostCheckpoint, RetainedImageFailure> {
+    let mut projection = prefix.to_vec();
+    projection.push(summary_placeholder());
+    let retained_offset = projection.len();
+    projection.extend(source_items(retained));
+    let mut pinned_items = vec![false; retained_offset];
+    pinned_items.extend(
+        source_indices
+            .iter()
+            .map(|index| pinned_source.get(*index).copied().unwrap_or(false)),
+    );
+    let planned = plan_request_projection(
+        &projection,
+        &pinned_items,
+        input.image_policy,
+        input.supports_images,
+    )?;
+    Ok(PlannedPostCheckpoint {
+        prefix_items: planned.items[..prefix.len()].to_vec(),
+        retained_items: planned.items[retained_offset..].to_vec(),
+        plan: planned.plan,
+        pinned_omission: planned.pinned_omission,
+    })
 }
 
 fn meets_bounds(
@@ -1112,9 +1315,100 @@ enum Selection {
     None,
 }
 
+struct EvaluatedCandidate {
+    after_tokens: u64,
+    retained_tokens: u64,
+    image_plan: ImageBudgetPlan,
+}
+
+enum CandidateEvaluation {
+    Evaluated(EvaluatedCandidate),
+    PinnedOmission(String),
+    PinnedNoFit(String),
+    Rejected,
+}
+
 #[expect(
     clippy::too_many_arguments,
-    reason = "selection threads the source, bounds, policy, and checkpoint identity"
+    reason = "one candidate evaluation threads the same source, bounds, and request surface as selection"
+)]
+fn evaluate_candidate(
+    input: &PreparationInput<'_>,
+    source: &[RetainedRecord],
+    prefix: &[ConversationItem],
+    retired_ranges: &[Range<usize>],
+    pinned_source: &[bool],
+    before_tokens: u64,
+    minimum_reduction: u64,
+    resolved: ResolvedCompactionPolicy,
+    fixed_tokens: u64,
+) -> anyhow::Result<CandidateEvaluation> {
+    let retained_indices =
+        retained_source_indices(source.len(), input.prompt_prefix_len, retired_ranges);
+    let retained: Vec<RetainedRecord> = retained_indices
+        .iter()
+        .map(|index| source[*index].clone())
+        .collect();
+    let planned =
+        match plan_post_checkpoint(prefix, &retained, &retained_indices, pinned_source, input) {
+            Ok(planned) => planned,
+            Err(RetainedImageFailure::NoFit(reason)) => {
+                return Ok(CandidateEvaluation::PinnedNoFit(reason));
+            },
+            Err(RetainedImageFailure::Hard(error)) => return Err(error),
+        };
+    if let Some(reason) = planned.pinned_omission {
+        return Ok(CandidateEvaluation::PinnedOmission(reason));
+    }
+    let after_tokens = estimate_after(
+        &planned.prefix_items,
+        &planned.retained_items,
+        resolved.summary_tokens,
+        fixed_tokens,
+    );
+    let retained_tokens = estimate_items_tokens(&planned.retained_items)
+        .saturating_add(source_metadata_tokens(&retained));
+    if !meets_bounds(
+        before_tokens,
+        after_tokens,
+        minimum_reduction,
+        resolved.target_tokens,
+    ) {
+        return Ok(CandidateEvaluation::Rejected);
+    }
+    let checkpoint = candidate_checkpoint(
+        input,
+        &retained,
+        EstimatedInput {
+            before_tokens,
+            after_tokens,
+            basis: EstimateBasis::ContentClass,
+        },
+    );
+    if !checkpoint_bytes_with_reservation(&checkpoint)
+        .is_ok_and(|bytes| bytes <= MAX_CHECKPOINT_RECORD_BYTES)
+    {
+        return Ok(CandidateEvaluation::Rejected);
+    }
+    Ok(CandidateEvaluation::Evaluated(EvaluatedCandidate {
+        after_tokens,
+        retained_tokens,
+        image_plan: planned.plan,
+    }))
+}
+
+const fn selection_ready(
+    retained_tokens: u64,
+    retained_target: u64,
+    eligible_seen: usize,
+    eligible_total: usize,
+) -> bool {
+    retained_tokens <= retained_target || eligible_seen == eligible_total
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "selection threads the source, bounds, policy, and fixed request surface"
 )]
 fn select_exchanges(
     input: &PreparationInput<'_>,
@@ -1125,66 +1419,54 @@ fn select_exchanges(
     minimum_reduction: u64,
     resolved: ResolvedCompactionPolicy,
     fixed_tokens: u64,
-    checkpoint_id: &str,
 ) -> anyhow::Result<Selection> {
     let pinned_source = pinned_source_records(source, body_exchanges);
+    let eligible_total = body_exchanges
+        .iter()
+        .filter(|exchange| !exchange.contains_pin(source))
+        .count();
+    let mut eligible_seen = 0;
     let mut retired_ranges: Vec<Range<usize>> = Vec::new();
+    let mut pinned_failure = None;
     for exchange in body_exchanges {
         if exchange.contains_pin(source) {
             continue;
         }
+        eligible_seen += 1;
         retired_ranges.push(exchange.range.clone());
-        let retained_indices =
-            retained_source_indices(source.len(), input.prompt_prefix_len, &retired_ranges);
-        let retained: Vec<RetainedRecord> = retained_indices
-            .iter()
-            .map(|index| source[*index].clone())
-            .collect();
-        let planned = match plan_retained_images(
-            &retained,
-            &retained_indices,
-            &pinned_source,
-            input.image_policy,
-        ) {
-            Ok(planned) => planned,
-            Err(RetainedImageFailure::NoFit(reason)) => {
-                return Ok(Selection::PinnedNoFit(reason));
-            },
-            Err(RetainedImageFailure::Hard(error)) => return Err(error),
-        };
-        let after_tokens = estimate_after(
-            prefix,
-            &planned.items,
-            resolved.summary_tokens,
-            fixed_tokens,
-        );
-        if !meets_bounds(
-            before_tokens,
-            after_tokens,
-            minimum_reduction,
-            resolved.target_tokens,
-        ) {
-            continue;
-        }
-        let checkpoint = candidate_checkpoint(
+        match evaluate_candidate(
             input,
-            checkpoint_id,
-            &retained,
-            EstimatedInput {
-                before_tokens,
-                after_tokens,
-                basis: EstimateBasis::ContentClass,
+            source,
+            prefix,
+            &retired_ranges,
+            &pinned_source,
+            before_tokens,
+            minimum_reduction,
+            resolved,
+            fixed_tokens,
+        )? {
+            CandidateEvaluation::Evaluated(candidate) => {
+                pinned_failure = None;
+                if selection_ready(
+                    candidate.retained_tokens,
+                    resolved.retained_tokens,
+                    eligible_seen,
+                    eligible_total,
+                ) {
+                    return Ok(Selection::Fits {
+                        retired_ranges,
+                        after_tokens: candidate.after_tokens,
+                        image_plan: candidate.image_plan,
+                    });
+                }
             },
-        );
-        if checkpoint_bytes_with_reservation(&checkpoint)
-            .is_ok_and(|bytes| bytes <= MAX_CHECKPOINT_RECORD_BYTES)
-        {
-            return Ok(Selection::Fits {
-                retired_ranges,
-                after_tokens,
-                image_plan: planned.plan,
-            });
+            CandidateEvaluation::PinnedOmission(reason) => pinned_failure = Some(reason),
+            CandidateEvaluation::PinnedNoFit(reason) => return Ok(Selection::PinnedNoFit(reason)),
+            CandidateEvaluation::Rejected => pinned_failure = None,
         }
+    }
+    if let Some(reason) = pinned_failure {
+        return Ok(Selection::PinnedNoFit(reason));
     }
     Ok(Selection::None)
 }
@@ -1223,7 +1505,6 @@ fn finalize_prepared(
     before_tokens: u64,
     after_tokens: u64,
     basis: EstimateBasis,
-    checkpoint_id: String,
     resolved: ResolvedCompactionPolicy,
     image_plan: ImageBudgetPlan,
 ) -> PrepareOutcome {
@@ -1238,7 +1519,7 @@ fn finalize_prepared(
     }
     let retained = retained_excluding(source, input.prompt_prefix_len, retired_ranges);
     PrepareOutcome::Prepared(Box::new(PreparedCompaction {
-        checkpoint_id,
+        checkpoint_id: input.checkpoint_id.clone(),
         retained,
         image_plan,
         retired_exchanges,

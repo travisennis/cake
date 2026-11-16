@@ -6,7 +6,9 @@ use base64::Engine as _;
 use image::{DynamicImage, ImageFormat, Rgb, RgbImage};
 
 use super::*;
-use crate::clients::image_budget::{ImageBudgetChange, ImageOwner, ImageSlot, plan_image_budget};
+use crate::clients::image_budget::{
+    ImageBudgetChange, ImageOwner, ImageSlot, plan_admitted_images,
+};
 use crate::config::blob_store::ContentId;
 use crate::config::model::{ApiType, ModelConfig, ReasoningEffort};
 use crate::session_telemetry::TerminationClassification;
@@ -41,6 +43,15 @@ fn message(role: Role, content: &str) -> RetainedRecord {
 
 fn user(content: &str) -> RetainedRecord {
     message(Role::User, content)
+}
+
+fn user_with_image(content: &str, bytes: usize) -> RetainedRecord {
+    let mut record = user(content);
+    let RetainedConversationRecord::Message(data) = &mut record.record else {
+        unreachable!()
+    };
+    data.images.push(png_image_part(bytes));
+    record
 }
 
 fn assistant(content: &str) -> RetainedRecord {
@@ -151,6 +162,21 @@ fn model() -> ModelIdentity {
 
 const DEFAULT_IMAGE_POLICY: ResolvedImagePolicy = ResolvedImagePolicy::defaults();
 
+fn image_states(source: &[RetainedRecord], consumed: &[usize]) -> &'static [ImageConsumption] {
+    let states: Vec<ImageConsumption> = source
+        .iter()
+        .enumerate()
+        .map(|(index, record)| {
+            if record_images(record).is_empty() || consumed.contains(&index) {
+                ImageConsumption::Consumed
+            } else {
+                ImageConsumption::Unconsumed
+            }
+        })
+        .collect();
+    Box::leak(states.into_boxed_slice())
+}
+
 fn input<'a>(
     source: &'a [RetainedRecord],
     prefix: usize,
@@ -162,6 +188,8 @@ fn input<'a>(
         source,
         prompt_prefix_len: prefix,
         current_user_input,
+        invocation_pins: &[],
+        image_consumption: image_states(source, consumed),
         current_task_id: "task-1".to_string(),
         fixed: FixedRequest {
             tool_schemas: &[],
@@ -170,8 +198,9 @@ fn input<'a>(
         context_window: window,
         measured: None,
         has_active_checkpoint: false,
-        consumed_image_indices: consumed,
+        supports_images: true,
         image_policy: &DEFAULT_IMAGE_POLICY,
+        checkpoint_id: "checkpoint-1".to_string(),
         session_id: Uuid::nil(),
         task_id: Uuid::nil(),
         model: model(),
@@ -180,11 +209,16 @@ fn input<'a>(
     }
 }
 
-fn prepared(outcome: PrepareOutcome) -> Box<PreparedCompaction> {
-    match outcome {
+fn prepared(preparation: Preparation) -> Box<PreparedCompaction> {
+    match preparation.outcome {
         PrepareOutcome::Prepared(prepared) => prepared,
         other => panic!("expected prepared, got {other:?}"),
     }
+}
+
+fn retained_tail_tokens(prepared: &PreparedCompaction) -> u64 {
+    estimate_items_tokens(&source_items(&prepared.retained))
+        .saturating_add(source_metadata_tokens(&prepared.retained))
 }
 
 #[test]
@@ -268,6 +302,91 @@ fn absolute_trigger_replaces_the_percentage_and_requires_a_window_above_it() {
 }
 
 #[test]
+fn threshold_measurement_gates_before_pins_and_selection() {
+    let source = vec![
+        message(Role::System, "system"),
+        user("current request"),
+        assistant("done"),
+    ];
+    let bad_pins = [InvocationPin {
+        source_index: 99,
+        kind: InvocationPinKind::UserInput,
+    }];
+    let mut compaction_input = input(&source, 1, Some(1), Some(100_000), &[]);
+    compaction_input.invocation_pins = &bad_pins;
+
+    let measured = measure(&compaction_input).unwrap();
+    assert_eq!(measured.trigger_tokens, Some(80_000));
+    assert!(!measured.trigger_reached);
+
+    let preparation = prepare(compaction_input).unwrap();
+    assert_eq!(preparation.measure, measured);
+    assert!(preparation.no_op_reason().is_some());
+    assert!(!preparation.measure.trigger_reached);
+
+    let mut manual = input(&source, 1, Some(1), Some(100_000), &[]);
+    manual.trigger = CompactionTrigger::Manual;
+    manual.invocation_pins = &bad_pins;
+    let error = prepare(manual).unwrap_err();
+    assert!(error.to_string().contains("exceeds"), "{error}");
+}
+
+#[test]
+fn threshold_trigger_uses_percent_absolute_and_missing_lines() {
+    let mut source = vec![message(Role::System, "system"), user("current request")];
+    source.push(call("old"));
+    source.push(output("old", &"t".repeat(40_000)));
+    source.push(assistant("done"));
+
+    let default = input(&source, 1, Some(1), Some(100_000), &[]);
+    let default_measure = measure(&default).unwrap();
+    assert_eq!(default_measure.trigger_tokens, Some(80_000));
+    assert!(!default_measure.trigger_reached);
+
+    let mut percent = input(&source, 1, Some(1), Some(100_000), &[]);
+    percent.policy.threshold_percent = 10;
+    let percent_measure = measure(&percent).unwrap();
+    assert_eq!(percent_measure.trigger_tokens, Some(10_000));
+    assert!(percent_measure.trigger_reached);
+
+    let line = default_measure.before_tokens;
+    let mut absolute = input(&source, 1, Some(1), Some(100_000), &[]);
+    absolute.policy.trigger_tokens = Some(line);
+    assert!(measure(&absolute).unwrap().trigger_reached);
+    absolute.policy.trigger_tokens = Some(line + 1);
+    assert!(!measure(&absolute).unwrap().trigger_reached);
+
+    let missing = input(&source, 1, Some(1), None, &[]);
+    let missing_measure = measure(&missing).unwrap();
+    assert_eq!(missing_measure.trigger_tokens, None);
+    assert!(!missing_measure.trigger_reached);
+    let preparation = prepare(missing).unwrap();
+    assert!(
+        preparation
+            .no_op_reason()
+            .is_some_and(|reason| reason.contains("no effective compaction trigger")),
+        "{:?}",
+        preparation.no_op_reason()
+    );
+}
+
+#[test]
+fn manual_and_overflow_prepare_without_crossing_the_threshold() {
+    let mut source = vec![message(Role::System, "system"), user("current request")];
+    source.push(call("old"));
+    source.push(output("old", &"u".repeat(40_000)));
+    source.push(assistant("done"));
+
+    for trigger in [CompactionTrigger::Manual, CompactionTrigger::Overflow] {
+        let mut compaction_input = input(&source, 1, Some(1), Some(100_000), &[]);
+        compaction_input.trigger = trigger;
+        assert!(measure(&compaction_input).unwrap().trigger_reached);
+        let prepared = prepared(prepare(compaction_input).unwrap());
+        assert!(!prepared.retired_exchanges.is_empty());
+    }
+}
+
+#[test]
 fn estimator_is_deterministic_and_content_classed() {
     assert_eq!(classify_text("plain prose"), ContentClass::Prose);
     assert_eq!(classify_text(r#"{"a":1}"#), ContentClass::Code);
@@ -301,7 +420,7 @@ fn estimator_is_deterministic_and_content_classed() {
 fn prepare_no_op_for_empty_projection() {
     let source = vec![message(Role::System, "system")];
     let outcome = prepare(input(&source, 1, None, None, &[])).unwrap();
-    assert!(matches!(outcome, PrepareOutcome::NoOp { .. }));
+    assert!(matches!(outcome.outcome, PrepareOutcome::NoOp { .. }));
 }
 
 #[test]
@@ -342,6 +461,44 @@ fn prepare_retires_whole_exchanges_to_the_window_target() {
             .iter()
             .any(|record| record.pin == Some(PinReason::UserInput))
     );
+    assert_eq!(prepared.checkpoint_id, "checkpoint-1");
+}
+
+#[test]
+fn selection_retires_until_the_retained_tail_and_outer_target_fit() {
+    let mut source = vec![message(Role::System, "system"), user("current request")];
+    for index in 0..10 {
+        source.push(call(&format!("call-{index}")));
+        source.push(output(&format!("call-{index}"), &"r".repeat(20_000)));
+        source.push(assistant(&format!("answer {index}")));
+    }
+    let mut ten_percent = input(&source, 1, Some(1), Some(100_000), &[]);
+    ten_percent.policy.threshold_percent = 10;
+    let ten_prepared = prepared(prepare(ten_percent).unwrap());
+    assert!(ten_prepared.estimated_input.after_tokens <= 7_500);
+    assert!(retained_tail_tokens(&ten_prepared) <= 20_000);
+
+    let mut retained_pressure = input(&source, 1, Some(1), Some(200_000), &[]);
+    retained_pressure.policy.threshold_percent = 50;
+    let retained_prepared = prepared(prepare(retained_pressure).unwrap());
+    assert!(retained_prepared.estimated_input.after_tokens <= 75_000);
+    assert!(retained_tail_tokens(&retained_prepared) <= 20_000);
+    assert!(retained_prepared.retired_exchanges.len() > 1);
+}
+
+#[test]
+fn a_pinned_tail_above_the_retained_target_is_accepted_when_hard_bounds_fit() {
+    let mut source = vec![message(Role::System, "system"), user(&"p".repeat(50_000))];
+    for index in 0..6 {
+        source.push(call(&format!("call-{index}")));
+        source.push(output(&format!("call-{index}"), &"q".repeat(40_000)));
+        source.push(assistant(&format!("answer {index}")));
+    }
+    let prepared = prepared(prepare(input(&source, 1, Some(1), Some(200_000), &[])).unwrap());
+    assert!(prepared.estimated_input.after_tokens <= 120_000);
+    assert!(retained_tail_tokens(&prepared) > 20_000);
+    assert_eq!(prepared.retained.len(), 1);
+    assert_eq!(prepared.retained[0].pin, Some(PinReason::UserInput));
 }
 
 #[test]
@@ -461,9 +618,13 @@ fn pins_keep_current_input_skills_and_unconsumed_images() {
     assert_eq!(pinned_source[6].pin, Some(PinReason::UnconsumedImage));
     assert_eq!(pinned_source[7].pin, None);
 
-    let missing = apply_pins(&input(&source, 1, Some(1), Some(10_000), &[]))
-        .expect_err("unconsumed images need evidence");
-    assert!(missing.to_string().contains("consumption evidence"));
+    let mut missing = input(&source, 1, Some(1), Some(10_000), &[]);
+    missing.image_consumption = &[];
+    let missing = apply_pins(&missing).expect_err("misaligned image evidence must fail");
+    assert!(
+        missing.to_string().contains("image-consumption states"),
+        "{missing}"
+    );
 }
 
 #[test]
@@ -488,7 +649,6 @@ fn prepare_keeps_large_payloads_out_of_the_checkpoint_ceiling() {
     let prepared = prepared(prepare(input(&source, 1, Some(1), Some(100_000), &[])).unwrap());
     let checkpoint = candidate_checkpoint(
         &input(&source, 1, Some(1), Some(100_000), &[]),
-        "checkpoint-1",
         &prepared.retained,
         prepared.estimated_input,
     );
@@ -538,13 +698,119 @@ fn compaction_and_request_plan_images_identically() {
             .all(|record| record_images(record).is_empty())
     );
 
-    let items: Vec<ConversationItem> = source
+    let mut projection: Vec<ConversationItem> = source[..1]
         .iter()
         .map(RetainedRecord::to_conversation_item)
         .collect();
-    let slots = history_image_slots(&items, &[5]);
-    let ordinary_plan = plan_image_budget(&slots, &policy).unwrap();
+    projection.push(summary_placeholder());
+    projection.extend(
+        prepared
+            .retained
+            .iter()
+            .map(RetainedRecord::to_conversation_item),
+    );
+    let slots = history_image_slots(&projection, &[]);
+    let ordinary_plan = plan_admitted_images(&slots, &policy).unwrap();
     assert_eq!(ordinary_plan, prepared.image_plan);
+}
+
+#[test]
+fn a_newer_pinned_image_survives_after_the_older_eligible_exchange_is_retired() {
+    let mut old = image_output("old", 64);
+    let RetainedConversationRecord::FunctionCallOutput(data) = &mut old.record else {
+        unreachable!()
+    };
+    data.output = "o".repeat(40_000);
+    let source = vec![
+        message(Role::System, "system"),
+        call("old"),
+        old,
+        user_with_image("current request", 64),
+        assistant("done"),
+    ];
+    let policy = ResolvedImagePolicy {
+        max_images: 1,
+        ..ResolvedImagePolicy::defaults()
+    };
+    let consumed = [2_usize, 3];
+    let mut compaction_input = input(&source, 1, Some(3), Some(10_000), &consumed);
+    compaction_input.image_policy = &policy;
+    let prepared = prepared(prepare(compaction_input).unwrap());
+
+    assert_eq!(prepared.image_plan.report.original_count, 1);
+    assert_eq!(prepared.image_plan.report.emitted_count, 1);
+    assert!(prepared.retired_exchanges.iter().flatten().any(|record| {
+        matches!(
+            record.record,
+            RetainedConversationRecord::FunctionCallOutput(_)
+        ) && !record_images(record).is_empty()
+    }));
+    assert_eq!(record_images(&prepared.retained[0]).len(), 1);
+}
+
+#[test]
+fn a_pinned_image_behind_an_older_pinned_image_is_no_fit() {
+    let mut old = image_output("old", 64);
+    let RetainedConversationRecord::FunctionCallOutput(data) = &mut old.record else {
+        unreachable!()
+    };
+    data.output = "i".repeat(40_000);
+    let source = vec![
+        message(Role::System, "system"),
+        call("filler"),
+        output("filler", &"f".repeat(40_000)),
+        assistant("filler done"),
+        call("old"),
+        pinned(old, PinReason::UnconsumedImage),
+        user_with_image("current request", 64),
+        assistant("done"),
+    ];
+    let policy = ResolvedImagePolicy {
+        max_images: 1,
+        ..ResolvedImagePolicy::defaults()
+    };
+    let consumed = [6_usize];
+    let mut compaction_input = input(&source, 1, Some(6), Some(10_000), &consumed);
+    compaction_input.image_policy = &policy;
+    let reason = prepare(compaction_input)
+        .unwrap()
+        .no_fit_reason()
+        .expect("an older pinned image cannot be omitted")
+        .to_string();
+    assert!(reason.contains("image count budget"), "{reason}");
+}
+
+#[test]
+fn a_text_only_model_uses_the_unmodified_projection_without_an_image_plan() {
+    let source = vec![
+        message(Role::System, "system"),
+        user_with_image("current request", 64),
+        call("old"),
+        output("old", &"v".repeat(40_000)),
+        assistant("done"),
+    ];
+    let consumed = [1_usize];
+    let mut with_images = input(&source, 1, Some(1), Some(100_000), &consumed);
+    with_images.trigger = CompactionTrigger::Manual;
+    let image_measure = measure(&with_images).unwrap();
+    let mut text_only = input(&source, 1, Some(1), Some(100_000), &consumed);
+    text_only.trigger = CompactionTrigger::Manual;
+    text_only.supports_images = false;
+    let text_measure = measure(&text_only).unwrap();
+    assert!(text_measure.before_tokens < image_measure.before_tokens);
+
+    let prepared = prepared(prepare(text_only).unwrap());
+    assert!(prepared.image_plan.entries.is_empty());
+    assert!(
+        prepared
+            .retained
+            .iter()
+            .any(|record| !record_images(record).is_empty())
+    );
+    assert_eq!(
+        prepared.estimated_input.before_tokens,
+        text_measure.before_tokens
+    );
 }
 
 #[test]
@@ -655,7 +921,7 @@ fn unpinned_over_budget_image_is_omitted_from_the_estimate_but_retained() {
     assert_eq!(prepared.image_plan.report.original_count, 2);
     assert_eq!(prepared.image_plan.report.emitted_count, 1);
     assert!(matches!(
-        prepared.image_plan.report.images[0].change,
+        prepared.image_plan.report.images[1].change,
         ImageBudgetChange::Omitted(_)
     ));
     let retained_images: Vec<ImagePart> = prepared
@@ -670,19 +936,24 @@ fn unpinned_over_budget_image_is_omitted_from_the_estimate_but_retained() {
             .all(|image| image.content_id.is_some())
     );
 
-    let retained_items = source_items(&prepared.retained);
-    let slots = history_image_slots(&retained_items, &[]);
-    let owners: Vec<ImageOwner> = slots.iter().map(|slot| slot.owner).collect();
-    drop(slots);
-    let mut pruned = retained_items.clone();
-    apply_plan_to_history(&mut pruned, &owners, prepared.image_plan.clone()).unwrap();
     let prefix: Vec<ConversationItem> = source[..1]
         .iter()
         .map(RetainedRecord::to_conversation_item)
         .collect();
-    let expected = estimate_after(&prefix, &pruned, prepared.summary_tokens, 0);
+    let retained_items = source_items(&prepared.retained);
+    let mut projection = prefix.clone();
+    projection.push(summary_placeholder());
+    projection.extend(retained_items.clone());
+    let slots = history_image_slots(&projection, &[]);
+    let owners: Vec<ImageOwner> = slots.iter().map(|slot| slot.owner).collect();
+    let ordinary_plan = plan_admitted_images(&slots, &policy).unwrap();
+    assert_eq!(ordinary_plan, prepared.image_plan);
+    drop(slots);
+    apply_plan_to_history(&mut projection, &owners, prepared.image_plan.clone()).unwrap();
+    let planned_retained = &projection[2..];
+    let expected = estimate_after(&prefix, planned_retained, prepared.summary_tokens, 0);
     assert_eq!(prepared.estimated_input.after_tokens, expected);
-    assert!(estimate_items_tokens(&pruned) < estimate_items_tokens(&retained_items));
+    assert!(estimate_items_tokens(planned_retained) < estimate_items_tokens(&retained_items));
 }
 
 #[tokio::test]
@@ -736,7 +1007,11 @@ async fn summarize_rejects_tool_calls_refusals_empty_text_and_over_budget() {
         source.push(assistant(&format!("answer {index}")));
     }
 
-    let prepared = || prepared(prepare(input(&source, 1, Some(1), Some(10_000), &[])).unwrap());
+    let prepared = || {
+        let mut compaction_input = input(&source, 1, Some(1), Some(10_000), &[]);
+        compaction_input.policy.threshold_percent = 10;
+        prepared(prepare(compaction_input).unwrap())
+    };
 
     let mut tool_caller = FakeCaller::new(vec![FakeResponse::tool_call()]);
     assert!(summarize(*prepared(), &mut tool_caller).await.is_err());
@@ -759,7 +1034,11 @@ async fn summarize_checks_backend_support_before_any_call() {
     source.push(call("call-1"));
     source.push(output("call-1", &"s".repeat(4_000)));
     source.push(assistant("answer"));
-    let prepared = || prepared(prepare(input(&source, 1, Some(1), Some(10_000), &[])).unwrap());
+    let prepared = || {
+        let mut compaction_input = input(&source, 1, Some(1), Some(10_000), &[]);
+        compaction_input.policy.threshold_percent = 10;
+        prepared(prepare(compaction_input).unwrap())
+    };
 
     let mut unsupported = FakeCaller::new(vec![FakeResponse::ok("summary")]);
     unsupported.supports = false;
@@ -865,19 +1144,26 @@ fn measured_basis_requires_complete_matching_fresh_usage() {
         context_window: Some(100_000),
         measured,
         has_active_checkpoint: active,
-        consumed_image_indices: &[],
+        invocation_pins: &[],
+        image_consumption: image_states(&source, &[]),
+        supports_images: true,
+        checkpoint_id: "checkpoint-1".to_string(),
         image_policy: &DEFAULT_IMAGE_POLICY,
         session_id: Uuid::nil(),
         task_id: Uuid::nil(),
         model: model(),
         trigger: CompactionTrigger::Threshold,
-        policy: CompactionPolicy::default(),
+        policy: CompactionPolicy {
+            threshold_percent: 10,
+            ..CompactionPolicy::default()
+        },
     };
 
     let measured = |presence, model: &str, covered: usize, input_tokens: u64| MeasuredInput {
         input_tokens,
         covered_item_count: covered,
         model: model.to_string(),
+        fixed_tokens: 0,
         presence,
     };
 
@@ -919,6 +1205,31 @@ fn measured_basis_requires_complete_matching_fresh_usage() {
         let candidate = prepared(prepare(build(measured, active)).unwrap());
         assert_eq!(candidate.estimated_input.basis, EstimateBasis::ContentClass);
     }
+
+    let tool = Tool {
+        type_: "function".to_string(),
+        name: "Bash".to_string(),
+        description: "w".repeat(4_000),
+        parameters: serde_json::json!({"type": "object", "properties": {}}),
+    };
+    let fixed = FixedRequest {
+        tool_schemas: &[tool],
+        output_schema: None,
+    };
+    let exact_fixed_tokens = fixed_request_tokens(&fixed);
+    let mut stale_input = build(
+        Some(measured(UsagePresence::Complete, "glm-5.1", 2, 50_000)),
+        false,
+    );
+    stale_input.fixed = fixed;
+    stale_input.measured = Some(MeasuredInput {
+        fixed_tokens: exact_fixed_tokens.saturating_sub(1),
+        ..stale_input.measured.clone().expect("measurement")
+    });
+    assert_eq!(
+        prepare(stale_input).unwrap().measure.basis,
+        EstimateBasis::ContentClass
+    );
 }
 
 #[test]
@@ -963,7 +1274,9 @@ fn ambiguous_provenance_and_missing_payload_references_are_rejected() {
         error.to_string().contains("ambiguous legacy provenance"),
         "{error}"
     );
-    let outcome = prepare(input(&source, 1, Some(1), Some(10_000), &[])).unwrap();
+    let mut compaction_input = input(&source, 1, Some(1), Some(10_000), &[]);
+    compaction_input.trigger = CompactionTrigger::Manual;
+    let outcome = prepare(compaction_input).unwrap();
     assert!(outcome.no_fit_reason().is_some());
 
     let mut broken = output("image", "ReadImage");
@@ -1060,11 +1373,12 @@ fn byte_pressure_retires_inline_outputs_below_the_externalization_threshold() {
         source.push(assistant(&format!("answer {index}")));
     }
 
-    let prepared = prepared(prepare(input(&source, 1, Some(1), Some(10_000_000), &[])).unwrap());
+    let mut compaction_input = input(&source, 1, Some(1), Some(10_000_000), &[]);
+    compaction_input.trigger = CompactionTrigger::Manual;
+    let prepared = prepared(prepare(compaction_input).unwrap());
     assert!(!prepared.retired_exchanges.is_empty());
     let checkpoint = candidate_checkpoint(
         &input(&source, 1, Some(1), Some(10_000_000), &[]),
-        "checkpoint-1",
         &prepared.retained,
         prepared.estimated_input,
     );
@@ -1086,7 +1400,9 @@ fn pinned_inline_outputs_over_the_byte_ceiling_are_no_fit() {
         source.push(assistant(&format!("answer {index}")));
     }
 
-    let outcome = prepare(input(&source, 1, Some(1), Some(10_000_000), &[])).unwrap();
+    let mut compaction_input = input(&source, 1, Some(1), Some(10_000_000), &[]);
+    compaction_input.trigger = CompactionTrigger::Manual;
+    let outcome = prepare(compaction_input).unwrap();
     assert!(outcome.no_fit_reason().is_some());
 }
 

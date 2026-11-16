@@ -436,6 +436,13 @@ pub enum ImageBudgetError {
         limit: u64,
     },
     /// A checkpoint's pinned images alone exceed an image budget.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "plan_image_budget remains for explicit checkpoint callers and its tests"
+        )
+    )]
     #[error(
         "pinned request images exceed the image {budget} budget: {used} used, {limit} allowed across {pinned_images} pinned image(s)"
     )]
@@ -468,6 +475,13 @@ enum PlanScope {
     /// cannot be freed before the invocation ends.
     Request,
     /// Checkpoint preparation, where an unpinned image may be retired.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "plan_image_budget remains for explicit checkpoint callers and its tests"
+        )
+    )]
     Checkpoint,
 }
 
@@ -487,6 +501,13 @@ enum PlanScope {
 /// Returns an [`ImageBudgetError`] for invalid base64, a digest mismatch, an
 /// unreadable header, a decompression bomb, or a pinned image that can never
 /// fit. A corrupt or unsafe image is never silently omitted.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "plan_image_budget remains for explicit checkpoint callers and its tests"
+    )
+)]
 pub fn plan_image_budget(
     slots: &[ImageSlot<'_>],
     policy: &ResolvedImagePolicy,
@@ -1188,6 +1209,13 @@ const fn request_omission_advice(reason: ImageOmissionReason) -> &'static str {
     }
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "plan_image_budget remains for explicit checkpoint callers and its tests"
+    )
+)]
 fn enforce_aggregate_budgets(
     slots: &[ImageSlot<'_>],
     policy: &ResolvedImagePolicy,
@@ -1221,6 +1249,13 @@ fn enforce_aggregate_budgets(
     }
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "plan_image_budget remains for explicit checkpoint callers and its tests"
+    )
+)]
 fn exceeded_budget(
     totals: &BudgetTotals,
     policy: &ResolvedImagePolicy,
@@ -1249,6 +1284,13 @@ fn exceeded_budget(
     None
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "plan_image_budget remains for explicit checkpoint callers and its tests"
+    )
+)]
 fn oldest_unpinned_index(slots: &[ImageSlot<'_>], entries: &[ImagePlanEntry]) -> Option<usize> {
     slots
         .iter()
@@ -1263,6 +1305,13 @@ fn oldest_unpinned_index(slots: &[ImageSlot<'_>], entries: &[ImagePlanEntry]) ->
         .map(|(index, _)| index)
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "plan_image_budget remains for explicit checkpoint callers and its tests"
+    )
+)]
 fn omit_planned(
     slots: &[ImageSlot<'_>],
     entries: &mut [ImagePlanEntry],
@@ -1414,6 +1463,13 @@ fn append_markers(text: &mut String, markers: &[String]) {
     }
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "plan_image_budget remains for explicit checkpoint callers and its tests"
+    )
+)]
 fn as_u64(value: usize) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
 }

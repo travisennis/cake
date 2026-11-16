@@ -10,6 +10,7 @@ use crate::clients::agent_observer::AgentObserver;
 use crate::clients::agent_runner::AgentRunner;
 use crate::clients::agent_state::{ConversationState, SourceRef, accumulate_usage};
 use crate::clients::backend::Backend;
+use crate::clients::compaction::MeasuredInput;
 use crate::clients::mcp::{McpClient, McpServer, McpTool};
 use crate::clients::tools::{
     SKILL_SEARCH_NAME, SandboxPolicy, SkillSearchEntry, TOOL_SEARCH_NAME, ToolContext,
@@ -220,6 +221,12 @@ pub struct Agent {
     /// estimating remaining context-window budget. `None` before the first
     /// turn or when no turn has reported usage.
     last_usage: Option<Usage>,
+    /// The projected request a complete main-agent usage belongs to.
+    ///
+    /// Cleared before every request and when a checkpoint activates, so a
+    /// measurement never anchors on a different tool surface or a retired
+    /// context projection.
+    last_measurement: Option<MeasuredInput>,
     /// Number of API calls made
     turn_count: u32,
     /// Number of tool calls executed
@@ -292,6 +299,7 @@ impl Agent {
             model_config_name: None,
             total_usage: Usage::default(),
             last_usage: None,
+            last_measurement: None,
             turn_count: 0,
             tool_call_count: 0,
             max_turns: None,
@@ -964,6 +972,18 @@ impl Agent {
         self.last_usage
     }
 
+    /// The measured request behind the most recent complete main-agent usage.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the pre-request compaction caller consumes this measurement in Milestone 4"
+        )
+    )]
+    pub(super) const fn last_measurement(&self) -> Option<&MeasuredInput> {
+        self.last_measurement.as_ref()
+    }
+
     /// Returns the configured model context window in tokens, if set.
     pub const fn context_window(&self) -> Option<u32> {
         self.config.model_config.context_window
@@ -1124,7 +1144,30 @@ impl Agent {
     /// checkpointed session projects the same request context a live run would.
     pub fn with_context_seed(mut self, seed: crate::types::ContextSeed) -> anyhow::Result<Self> {
         self.conversation.with_restored_context(seed)?;
+        self.last_measurement = None;
         Ok(self)
+    }
+
+    /// Replace retired history with a validated checkpoint and invalidate the
+    /// measurement that described the pre-checkpoint request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the checkpoint envelope is invalid.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the pre-request compaction caller activates checkpoints in Milestone 4"
+        )
+    )]
+    pub(super) fn activate_checkpoint(
+        &mut self,
+        checkpoint: crate::types::compaction::CompactionData,
+    ) -> anyhow::Result<()> {
+        self.conversation.activate_checkpoint(checkpoint)?;
+        self.last_measurement = None;
+        Ok(())
     }
 
     /// Number of inline images in the request-visible conversation history.

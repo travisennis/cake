@@ -56,6 +56,24 @@ fn disabled_compaction_policy_is_stored_without_a_window() {
 }
 
 #[test]
+fn checkpoint_activation_invalidates_the_last_measurement() {
+    let mut agent = test_agent();
+    agent.last_measurement = Some(MeasuredInput {
+        input_tokens: 900,
+        covered_item_count: 2,
+        model: "test-model".to_string(),
+        fixed_tokens: 0,
+        presence: UsagePresence::Complete,
+    });
+    let checkpoint =
+        crate::types::compaction::test_support::checkpoint("checkpoint-1", "summary", Vec::new());
+
+    agent.activate_checkpoint(checkpoint).unwrap();
+
+    assert!(agent.last_measurement().is_none());
+}
+
+#[test]
 fn enabled_compaction_requires_a_window_and_a_bounded_backend() {
     let enabled = CompactionPolicy {
         enabled: true,
@@ -1480,6 +1498,14 @@ mod error_tests {
         // which already count the full grown request (1000 + 200 + tool output).
         assert_eq!(agent.last_usage().unwrap().input_tokens, 1200);
         assert_eq!(agent.context_remaining_tokens(), Some(800));
+        let measurement = agent
+            .last_measurement()
+            .expect("complete usage measurement");
+        assert_eq!(measurement.input_tokens, 1200);
+        assert_eq!(measurement.covered_item_count, 4);
+        assert!(measurement.fixed_tokens > 0);
+        assert_eq!(measurement.model, "test-model");
+        assert_eq!(measurement.presence, UsagePresence::Complete);
 
         // The old cumulative metric diverges from the last request's size: it
         // re-counts every prior input and so over-states context usage.
