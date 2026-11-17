@@ -58,11 +58,13 @@ The marker keeps the ADR 062 shape and reason vocabulary:
 [image omitted: <reason>; <media_type>, <width>x<height>, <bytes> bytes]
 ```
 
-Request-side markers add that the request image budget is exhausted and that the model should crop or downscale the source, or continue from text, because a later request will not free the space. Checkpoint-side markers keep the existing wording.
+Request-side markers add that the request image budget is exhausted and that the model should crop or downscale the source, or continue from text, because a later request will not free the space. There is no separate checkpoint marker shape after the planner removal.
 
 ### Checkpoint preparation
 
-Compaction commits a new boundary, so it keeps ADR 062's selection: every image in a retained record with a pin reason is pinned, every image in a complete exchange that contains such a record is pinned, every `unconsumed_image` record is pinned, and unpinned images may be retired oldest first. `PinnedExceedsBudget` and `PinnedCannotFit` are reachable only from this path. Checkpoint preparation still plans read-only and stores original content references; it never persists a downscaled image.
+Compaction commits a new boundary, so it keeps ADR 062's pin rule: every image in a retained record with a pin reason is pinned, every image in a complete exchange that contains such a record is pinned, and every `unconsumed_image` record is pinned. Checkpoint preparation still plans read-only and stores original content references; it never persists a downscaled image.
+
+Implementation note (2026-11-17): automatic compaction now validates every candidate through the same `plan_admitted_images` projection the next request uses. It retires older complete exchanges rather than running ADR 062's checkpoint-only eviction loop, so `PinnedExceedsBudget` was removed. An aggregate pinned conflict is a candidate no fit; `PinnedCannotFit` remains for a pinned image that cannot be reduced below a per-image limit.
 
 ### Pressure recovery
 
