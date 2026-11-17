@@ -1557,6 +1557,145 @@ mod tests {
         assert_retained_image_evidence(&source);
     }
 
+    #[test]
+    fn successive_checkpoints_keep_synthetic_developer_and_skill_pins() {
+        let task = "task-1";
+        let mut state = ConversationState::new(&[(Role::System, "sys".to_string())]);
+        state.push_user_message("prior request".to_string(), Some("task-0"));
+        state.extend_turn_items(vec![assistant_message("prior answer")]);
+        state.append_developer_context(vec!["hook context".to_string()], Some(task));
+        state.append_developer_context(vec!["schema context".to_string()], Some(task));
+        let invocation_start = state.history().len();
+        let current_user_raw = invocation_start;
+        state.push_user_message("current request".to_string(), Some(task));
+        state.push_synthetic_user_message("schema correction".to_string(), Some(task));
+        let skill_read = SkillRead {
+            name: "demo".to_string(),
+            path: std::path::PathBuf::from("/skills/demo/SKILL.md"),
+        };
+        let call = function_call("skill-call", "Read");
+        state.extend_turn_items_with_provenance(
+            vec![call.clone()],
+            vec![RecordProvenance::live(
+                &call,
+                Some(task.to_string()),
+                Some(ReplaySafety::Safe),
+            )],
+        );
+        state.push_tool_output(
+            "skill-call".to_string(),
+            "skill instructions".to_string(),
+            Vec::new(),
+            RecordProvenance::live_tool_output(
+                Some(task.to_string()),
+                Some(ReplaySafety::Safe),
+                Some(skill_read.clone()),
+                false,
+            ),
+        );
+
+        let first = checkpoint_from_source(
+            &state,
+            current_user_raw,
+            invocation_start,
+            task,
+            "checkpoint-1",
+        );
+        state.activate_checkpoint(first.clone()).unwrap();
+        let first_source = state
+            .preparation_source(current_user_raw, invocation_start, task)
+            .unwrap();
+        assert_successive_invocation_pins(&first_source, &skill_read);
+
+        let second = test_support::checkpoint("checkpoint-2", "second summary", first.retained);
+        state.activate_checkpoint(second).unwrap();
+        let second_source = state
+            .preparation_source(current_user_raw, invocation_start, task)
+            .unwrap();
+        assert_successive_invocation_pins(&second_source, &skill_read);
+    }
+
+    fn checkpoint_from_source(
+        state: &ConversationState,
+        current_user_raw: usize,
+        invocation_start: usize,
+        task: &str,
+        checkpoint_id: &str,
+    ) -> CompactionData {
+        let source = state
+            .preparation_source(current_user_raw, invocation_start, task)
+            .unwrap();
+        let retained = source
+            .records
+            .iter()
+            .zip(&source.source_refs)
+            .filter(|(_, source_ref)| matches!(source_ref, SourceRef::Raw(_)))
+            .map(|(record, _)| record.clone())
+            .collect();
+        test_support::checkpoint(checkpoint_id, "first summary", retained)
+    }
+
+    fn assert_successive_invocation_pins(source: &PreparationSource, skill_read: &SkillRead) {
+        for marker in ["hook context", "schema context"] {
+            let index = source_text_index(source, marker);
+            let record = &source.records[index];
+            assert_eq!(record.pin, Some(PinReason::DeveloperContext));
+            assert_eq!(record.origin, None);
+            assert_eq!(record.source_task.as_deref(), Some("task-1"));
+            assert!(source.invocation_pins.contains(&InvocationPin {
+                source_index: index,
+                kind: InvocationPinKind::DeveloperContext,
+            }));
+            assert_eq!(
+                source
+                    .records
+                    .iter()
+                    .filter(|record| record_text(record) == Some(marker))
+                    .count(),
+                1
+            );
+        }
+        let user = source_text_index(source, "current request");
+        assert_eq!(source.records[user].pin, Some(PinReason::UserInput));
+        assert_eq!(source.records[user].origin, Some(MessageOrigin::User));
+        let synthetic = source_text_index(source, "schema correction");
+        assert_eq!(
+            source.records[synthetic].pin,
+            Some(PinReason::SyntheticInput)
+        );
+        assert_eq!(
+            source.records[synthetic].origin,
+            Some(MessageOrigin::Synthetic)
+        );
+        let skill = source
+            .records
+            .iter()
+            .position(|record| record.skill_read.as_ref() == Some(skill_read))
+            .expect("the skill result stays projected");
+        assert!(matches!(
+            &source.records[skill].pin,
+            Some(PinReason::SkillInstructions { name, .. }) if name == "demo"
+        ));
+        assert_eq!(source.records[skill].source_task.as_deref(), Some("task-1"));
+    }
+
+    fn source_text_index(source: &PreparationSource, text: &str) -> usize {
+        source
+            .records
+            .iter()
+            .position(|record| record_text(record) == Some(text))
+            .unwrap_or_else(|| panic!("missing retained record {text:?}"))
+    }
+
+    fn record_text(record: &RetainedRecord) -> Option<&str> {
+        match &record.record {
+            RetainedConversationRecord::Message(data) => Some(&data.content),
+            RetainedConversationRecord::FunctionCallOutput(data) => Some(&data.output),
+            RetainedConversationRecord::FunctionCall(_)
+            | RetainedConversationRecord::Reasoning(_) => None,
+        }
+    }
+
     fn checkpoint_preparation_state() -> ConversationState {
         let mut old_developer = test_support::message(Role::Developer, "old developer");
         old_developer.pin = Some(PinReason::DeveloperContext);

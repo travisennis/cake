@@ -13,6 +13,7 @@
 //! exactly. Summary requests are lifecycle work, not part of either projection,
 //! so the invariant compares only main-agent requests.
 
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -25,7 +26,11 @@ use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 use super::*;
 use crate::config::model::{ApiType, ResolvedModelConfig};
 use crate::config::output_schema::OutputSchema;
+use crate::config::skills::{Skill, SkillScope};
 use crate::types::ImagePart;
+use crate::types::compaction::{
+    MessageOrigin, PinReason, RetainedConversationRecord, RetainedRecord,
+};
 
 /// One recorded provider request.
 ///
@@ -716,6 +721,268 @@ fn assert_continuation_records(records: &[SessionRecord]) {
     assert_eq!(outputs("call-read"), 1);
     assert_eq!(outputs("call-write"), 1);
     assert_eq!(outputs("call-after"), 1);
+}
+
+const TWO_CHECKPOINT_HOOK: &str = "TWO_CHECKPOINT_HOOK_CONTEXT";
+const TWO_CHECKPOINT_SCHEMA: &str = "The final response for this task";
+const TWO_CHECKPOINT_SKILL: &str = "TWO_CHECKPOINT_SKILL_INSTRUCTIONS";
+const TWO_CHECKPOINT_USER: &str = "TWO_CHECKPOINT_CURRENT_USER";
+const TWO_CHECKPOINT_FIRST: &str = "TWO_CHECKPOINT_FIRST_READ";
+const TWO_CHECKPOINT_SECOND: &str = "TWO_CHECKPOINT_SECOND_READ";
+const TEST_TASK_ID: &str = "550e8400-e29b-41d4-a716-446655440001";
+
+/// Two automatic checkpoints in one invocation must keep output-schema and
+/// hook Developer context plus a current-task skill result pinned and present
+/// exactly once in every post-checkpoint main request.
+#[tokio::test]
+async fn two_checkpoints_keep_schema_hook_and_skill_context() {
+    let server = MockServer::start().await;
+    let fixture_dir = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+    let first_path = write_prose_fixture(
+        fixture_dir.path(),
+        "two-checkpoint-first.txt",
+        TWO_CHECKPOINT_FIRST,
+        100,
+        480,
+    );
+    let second_path = write_prose_fixture(
+        fixture_dir.path(),
+        "two-checkpoint-second.txt",
+        TWO_CHECKPOINT_SECOND,
+        100,
+        480,
+    );
+    let skill_path = fixture_dir.path().join("skills/demo/SKILL.md");
+    let skills = write_two_checkpoint_skill(&skill_path);
+    let provider = ScriptedProvider::new();
+
+    mount_two_checkpoint_provider(&server, &provider, &first_path, &second_path, &skill_path).await;
+
+    let checkpoints = provider.checkpoint_counter();
+    let persisted = Arc::new(Mutex::new(Vec::<SessionRecord>::new()));
+    let sink = Arc::clone(&persisted);
+    let mut agent = test_agent_with_window(ApiType::Responses, &server.uri(), 10_000)
+        .with_compaction_policy(compaction_policy())
+        .unwrap()
+        .with_persist_callback(move |record| {
+            if matches!(record, SessionRecord::Compaction(_)) {
+                checkpoints.fetch_add(1, Ordering::SeqCst);
+            }
+            sink.lock().unwrap().push(record.clone());
+            Ok(())
+        })
+        .with_tools(crate::clients::tools::read_tool_registry())
+        .with_skill_locations(skills)
+        .with_output_schema(test_schema())
+        .with_history(vec![
+            test_message(Role::User, "prior request"),
+            test_message(Role::Assistant, "prior answer"),
+        ])
+        .unwrap();
+    agent.append_developer_context(vec![format!(
+        "{TWO_CHECKPOINT_HOOK}: hook-provided context"
+    )]);
+    agent.append_output_schema_context();
+
+    let result = agent.send(TWO_CHECKPOINT_USER.to_string()).await.unwrap();
+
+    assert_eq!(result, "{\"summary\":\"done\"}");
+    let recorded = provider.recorded();
+    assert_eq!(
+        recorded.len(),
+        8,
+        "main, main, summary, summary, main, summary, summary, main"
+    );
+    assert_eq!(recorded.iter().filter(|request| request.summary).count(), 4);
+    let main: Vec<_> = recorded.iter().filter(|request| !request.summary).collect();
+    assert_eq!(main.len(), 4);
+    assert_eq!(
+        main.iter()
+            .map(|request| request.checkpoint_epoch)
+            .collect::<Vec<_>>(),
+        vec![0, 0, 1, 2],
+        "each checkpoint starts one new projection"
+    );
+    assert_tail_only_growth(&recorded, "input");
+    assert_two_checkpoint_requests(&main);
+    assert_two_checkpoint_retained(&persisted.lock().unwrap());
+}
+
+fn write_two_checkpoint_skill(skill_path: &std::path::Path) -> HashMap<std::path::PathBuf, Skill> {
+    std::fs::create_dir_all(skill_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        skill_path,
+        format!("---\nname: demo\ndescription: demo skill\n---\n{TWO_CHECKPOINT_SKILL}\n"),
+    )
+    .unwrap();
+    let skill_path = skill_path.canonicalize().unwrap();
+    HashMap::from([(
+        skill_path.clone(),
+        Skill {
+            name: "demo".to_string(),
+            description: "demo skill".to_string(),
+            location: skill_path.clone(),
+            base_directory: skill_path.parent().unwrap().to_path_buf(),
+            scope: SkillScope::User,
+        },
+    )])
+}
+
+async fn mount_two_checkpoint_provider(
+    server: &MockServer,
+    provider: &ScriptedProvider,
+    first_path: &str,
+    second_path: &str,
+    skill_path: &std::path::Path,
+) {
+    provider
+        .mount_split(
+            server,
+            "/responses",
+            vec![
+                ResponseTemplate::new(200).set_body_json(responses_function_calls(&[(
+                    "call-skill",
+                    "Read",
+                    serde_json::json!({ "path": skill_path.display().to_string() }),
+                )])),
+                ResponseTemplate::new(200)
+                    .set_body_json(responses_tool_call("call-first", first_path)),
+                ResponseTemplate::new(200)
+                    .set_body_json(responses_tool_call("call-second", second_path)),
+                ResponseTemplate::new(200).set_body_json(responses_text("{\"summary\":\"done\"}")),
+            ],
+            vec![
+                ResponseTemplate::new(200)
+                    .set_body_json(responses_text("First checkpoint prelude.")),
+                ResponseTemplate::new(200)
+                    .set_body_json(responses_text("First checkpoint summary.")),
+                ResponseTemplate::new(200)
+                    .set_body_json(responses_text("Second checkpoint prelude.")),
+                ResponseTemplate::new(200)
+                    .set_body_json(responses_text("Second checkpoint summary.")),
+            ],
+        )
+        .await;
+}
+
+fn assert_two_checkpoint_requests(main: &[&RecordedRequest]) {
+    for (index, request) in main.iter().enumerate() {
+        let body = request.body.to_string();
+        assert_eq!(
+            body.matches(TWO_CHECKPOINT_HOOK).count(),
+            1,
+            "request {index} must carry one hook context: {body}"
+        );
+        assert_eq!(
+            body.matches(TWO_CHECKPOINT_SCHEMA).count(),
+            1,
+            "request {index} must carry one output-schema context: {body}"
+        );
+        assert_eq!(
+            body.matches(TWO_CHECKPOINT_USER).count(),
+            1,
+            "request {index} must carry the current input once: {body}"
+        );
+    }
+    for (index, request) in main.iter().enumerate().skip(1) {
+        let body = request.body.to_string();
+        assert_eq!(
+            body.matches(TWO_CHECKPOINT_SKILL).count(),
+            1,
+            "post-skill request {index} must keep one skill result: {body}"
+        );
+    }
+    assert!(!main[2].body.to_string().contains(TWO_CHECKPOINT_FIRST));
+    assert!(!main[3].body.to_string().contains(TWO_CHECKPOINT_SECOND));
+}
+
+fn assert_two_checkpoint_retained(records: &[SessionRecord]) {
+    let checkpoints: Vec<_> = records
+        .iter()
+        .filter_map(|record| match record {
+            SessionRecord::Compaction(checkpoint) => Some(checkpoint),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(checkpoints.len(), 2);
+    for checkpoint in checkpoints {
+        assert_retained_context(&checkpoint.retained, TWO_CHECKPOINT_HOOK, Role::Developer);
+        assert_retained_context(&checkpoint.retained, TWO_CHECKPOINT_SCHEMA, Role::Developer);
+        let user = retained_by_text(&checkpoint.retained, TWO_CHECKPOINT_USER)
+            .expect("checkpoint retains the current user input");
+        assert_eq!(user.pin, Some(PinReason::UserInput));
+        assert_eq!(user.origin, Some(MessageOrigin::User));
+        let skill = retained_by_text(&checkpoint.retained, TWO_CHECKPOINT_SKILL)
+            .expect("checkpoint retains the skill result");
+        assert_eq!(
+            skill.skill_read.as_ref().map(|read| read.name.as_str()),
+            Some("demo")
+        );
+        assert!(matches!(
+            &skill.pin,
+            Some(PinReason::SkillInstructions { name, .. }) if name == "demo"
+        ));
+        assert_eq!(
+            checkpoint
+                .retained
+                .iter()
+                .filter(|record| {
+                    retained_text(record).is_some_and(|text| text.contains(TWO_CHECKPOINT_SKILL))
+                })
+                .count(),
+            1
+        );
+    }
+}
+
+fn assert_retained_context(retained: &[RetainedRecord], marker: &str, role: Role) {
+    let matches: Vec<_> = retained
+        .iter()
+        .filter(|record| retained_text(record).is_some_and(|text| text.contains(marker)))
+        .collect();
+    assert_eq!(
+        matches.len(),
+        1,
+        "{marker} must appear once in the checkpoint"
+    );
+    let record = matches[0];
+    assert_eq!(record.pin, Some(PinReason::DeveloperContext));
+    assert_eq!(record.origin, None);
+    assert_eq!(record.source_task.as_deref(), Some(TEST_TASK_ID));
+    assert!(matches!(
+        &record.record,
+        RetainedConversationRecord::Message(data) if data.role == role
+    ));
+}
+
+fn retained_by_text<'a>(
+    retained: &'a [RetainedRecord],
+    marker: &str,
+) -> Option<&'a RetainedRecord> {
+    retained
+        .iter()
+        .find(|record| retained_text(record).is_some_and(|text| text.contains(marker)))
+}
+
+fn retained_text(record: &RetainedRecord) -> Option<&str> {
+    match &record.record {
+        RetainedConversationRecord::Message(data) => Some(&data.content),
+        RetainedConversationRecord::FunctionCallOutput(data) => Some(&data.output),
+        RetainedConversationRecord::FunctionCall(_) | RetainedConversationRecord::Reasoning(_) => {
+            None
+        },
+    }
+}
+
+fn test_message(role: Role, content: &str) -> ConversationItem {
+    ConversationItem::Message {
+        role,
+        content: content.to_string(),
+        id: None,
+        status: None,
+        timestamp: None,
+        images: Vec::new(),
+    }
 }
 
 const SEEDED_IMAGE_CALL_ID: &str = "call-seeded-image";
