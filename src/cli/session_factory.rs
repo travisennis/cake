@@ -2347,6 +2347,96 @@ mod tests {
     }
 
     #[test]
+    fn disabled_policy_restores_and_forks_a_checkpoint_on_codex_without_network() {
+        let source = source_with_two_checkpoints();
+        let mut codex = test_resolved_model_config();
+        codex.model_config.model = "gpt-5.1-codex".to_string();
+        codex.model_config.api_type = crate::config::model::ApiType::Responses;
+        codex.model_config.base_url = "https://chatgpt.com/backend-api/codex".to_string();
+        codex.model_config.context_window = Some(200_000);
+        let policy = crate::config::settings::CompactionPolicy::default();
+
+        let mut restored = crate::CodingAssistant::restored_client_and_session(
+            source.clone(),
+            codex.clone(),
+            "test".to_string(),
+            test_provider_identity(),
+            false,
+            &[(crate::types::Role::System, "fresh system".to_string())],
+            &HashMap::new(),
+            test_tool_context(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            uuid::Uuid::new_v4(),
+        )
+        .expect("Codex checkpoint restore should succeed");
+        restored.agent = restored
+            .agent
+            .with_compaction_policy(policy)
+            .expect("a disabled policy must be valid on the Codex backend");
+        assert_eq!(
+            restored
+                .agent
+                .active_checkpoint()
+                .expect("the latest checkpoint should stay active")
+                .summary,
+            "newer summary"
+        );
+        assert_eq!(
+            projected_contents(&restored.agent.request_context()),
+            vec![
+                "fresh system".to_string(),
+                format!(
+                    "{}\n\nnewer summary",
+                    crate::types::compaction::HISTORICAL_SUMMARY_MARKER
+                ),
+                "call:call-1".to_string(),
+                "output:call-1".to_string(),
+                "new request".to_string(),
+                "call:call-later".to_string(),
+                "output:call-later".to_string(),
+            ],
+            "the resumed Codex projection must use the checkpoint"
+        );
+
+        let mut forked = crate::CodingAssistant::forked_client_and_session(
+            &source,
+            codex,
+            "test".to_string(),
+            test_provider_identity(),
+            false,
+            PathBuf::from("/work"),
+            &[(crate::types::Role::System, "fresh system".to_string())],
+            HashMap::new(),
+            test_tool_context(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            uuid::Uuid::new_v4(),
+        )
+        .expect("Codex checkpoint fork should succeed");
+        forked.agent = forked
+            .agent
+            .with_compaction_policy(policy)
+            .expect("a disabled policy must be valid on the Codex backend");
+        assert_eq!(
+            forked
+                .agent
+                .active_checkpoint()
+                .expect("the latest checkpoint should stay active")
+                .summary,
+            "newer summary"
+        );
+        assert!(
+            projected_contents(&forked.agent.request_context())
+                .iter()
+                .any(|content| content == "new request"),
+            "the forked Codex projection must use the checkpoint"
+        );
+    }
+
+    #[test]
     fn checkpoint_free_fork_seeds_exactly_the_conversation_records() {
         let mut source = Session::new(uuid::Uuid::new_v4(), PathBuf::from("/work"));
         source.records = vec![

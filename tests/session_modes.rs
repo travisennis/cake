@@ -18,7 +18,7 @@ use std::{
 use sha2::{Digest, Sha256};
 use support::TestEnv;
 use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 const SESSION_ID: &str = "550e8400-e29b-41d4-a716-446655440000";
 const TEST_KEY: &str = "SESSION_MODES_TEST_KEY";
@@ -38,8 +38,96 @@ fn success_response() -> serde_json::Value {
     })
 }
 
+fn success_response_without_usage() -> serde_json::Value {
+    let mut response = success_response();
+    response
+        .as_object_mut()
+        .expect("success response should be an object")
+        .remove("usage");
+    response
+}
+
+fn summary_response(summary: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": "resp-summary",
+        "output": [
+            {
+                "type": "message",
+                "id": "msg-summary",
+                "status": "completed",
+                "content": [{ "type": "output_text", "text": summary }]
+            }
+        ],
+        "usage": { "input_tokens": 100, "output_tokens": 20, "total_tokens": 120 }
+    })
+}
+
 fn write_responses_settings(env: &TestEnv, base_url: &str) {
     write_responses_settings_with_image_support(env, base_url, false);
+}
+
+const COMPACTION_TEST_CONTEXT_WINDOW: u32 = 200_000;
+const COMPACTION_TEST_TRIGGER_TOKENS: u64 = 20_000;
+const CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+
+fn write_compaction_settings(env: &TestEnv, base_url: &str, enabled: bool, trigger_tokens: u64) {
+    env.write_global_settings(&format!(
+        r#"
+[[models]]
+name = "test"
+model = "glm-5.1"
+base_url = "{base_url}"
+api_key_env = "{TEST_KEY}"
+api_type = "responses"
+context_window = {COMPACTION_TEST_CONTEXT_WINDOW}
+
+[compaction]
+enabled = {enabled}
+trigger_tokens = {trigger_tokens}
+keep_recent_tokens = 12000
+summary_tokens = 2048
+"#
+    ));
+    env.write_project_settings(
+        r#"
+default_model = "test"
+"#,
+    );
+}
+
+fn write_codex_compaction_settings(env: &TestEnv, enabled: bool) {
+    env.write_global_settings(&format!(
+        r#"
+[[models]]
+name = "test"
+model = "gpt-5.1-codex"
+base_url = "{CODEX_BASE_URL}"
+api_key_env = "UNUSED_CODEX_KEY"
+api_type = "responses"
+context_window = {COMPACTION_TEST_CONTEXT_WINDOW}
+
+[compaction]
+enabled = {enabled}
+trigger_tokens = {COMPACTION_TEST_TRIGGER_TOKENS}
+"#
+    ));
+    env.write_project_settings(
+        r#"
+default_model = "test"
+"#,
+    );
+}
+
+/// Seed the file-backed Codex credential and return its `CODEX_HOME`.
+fn write_codex_auth(env: &TestEnv) -> PathBuf {
+    let codex_home = env.home_dir.join(".codex");
+    fs::create_dir_all(&codex_home).expect("failed to create Codex home");
+    fs::write(
+        codex_home.join("auth.json"),
+        r#"{"tokens":{"access_token":"test-token","account_id":"test-account"}}"#,
+    )
+    .expect("failed to write Codex auth fixture");
+    codex_home
 }
 
 fn write_image_responses_settings(env: &TestEnv, base_url: &str) {
@@ -181,6 +269,27 @@ fn session_file(env: &TestEnv) -> PathBuf {
         .join(format!("{SESSION_ID}.jsonl"))
 }
 
+fn forked_session_file(env: &TestEnv) -> PathBuf {
+    fs::read_dir(env.data_dir.join("sessions"))
+        .expect("sessions directory should exist")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.extension().is_some_and(|ext| ext == "jsonl")
+                && path.file_stem().and_then(|stem| stem.to_str()) != Some(SESSION_ID)
+        })
+        .expect("fork should create a new session file")
+}
+
+fn session_records(path: &Path) -> Vec<serde_json::Value> {
+    fs::read_to_string(path)
+        .expect("session file should be readable")
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("session line should be JSON"))
+        .collect()
+}
+
 #[cfg(unix)]
 fn mode(path: &Path) -> u32 {
     use std::os::unix::fs::PermissionsExt as _;
@@ -202,9 +311,18 @@ fn set_mode(path: &Path, mode: u32) {
 /// Mount a mock Responses backend that answers one call, then run `cake` with
 /// the given mode args against the seeded session.
 async fn run_mode(env: &TestEnv, mock_server: &MockServer, args: &[&str]) -> std::process::Output {
+    run_mode_with_response(env, mock_server, args, success_response()).await
+}
+
+async fn run_mode_with_response(
+    env: &TestEnv,
+    mock_server: &MockServer,
+    args: &[&str],
+    response: serde_json::Value,
+) -> std::process::Output {
     Mock::given(method("POST"))
         .and(path("/responses"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response))
         .expect(1)
         .mount(mock_server)
         .await;
@@ -645,6 +763,83 @@ fn checkpointed_records(env: &TestEnv) -> Vec<serde_json::Value> {
     ]
 }
 
+const LARGE_POST_CHECKPOINT_SENTINEL: &str = "post-checkpoint-large-sentinel";
+
+fn large_post_checkpoint_text() -> String {
+    format!(
+        "{LARGE_POST_CHECKPOINT_SENTINEL} {}",
+        "post checkpoint detail ".repeat(4_000)
+    )
+}
+
+/// The checkpointed session with a large unpinned assistant exchange after the
+/// newest checkpoint, so an enabled policy has retired content to summarize.
+fn checkpointed_records_with_large_tail(env: &TestEnv) -> Vec<serde_json::Value> {
+    let mut records = checkpointed_records(env);
+    records.push(serde_json::json!({
+        "type": "message",
+        "role": "assistant",
+        "content": large_post_checkpoint_text(),
+        "timestamp": "2026-07-27T12:00:06Z",
+    }));
+    records.push(serde_json::json!({
+        "type": "function_call",
+        "id": "fc-post-large",
+        "call_id": "call-post-large",
+        "name": "Read",
+        "arguments": "{\"file_path\":\"AGENTS.md\"}",
+        "timestamp": "2026-07-27T12:00:07Z",
+    }));
+    records.push(serde_json::json!({
+        "type": "function_call_output",
+        "call_id": "call-post-large",
+        "output": "post-large output",
+        "timestamp": "2026-07-27T12:00:08Z",
+    }));
+    records
+}
+
+/// The checkpointed session with a complete usage record before the newest
+/// checkpoint. Restore must not seed the agent's context basis from it.
+fn checkpointed_records_with_pre_checkpoint_usage(
+    env: &TestEnv,
+    input_tokens: u64,
+) -> Vec<serde_json::Value> {
+    let mut records = checkpointed_records(env);
+    let checkpoint = records
+        .iter()
+        .rposition(|record| record["type"] == "compaction")
+        .expect("fixture should contain a checkpoint");
+    let output_tokens = 1_000;
+    records.insert(
+        checkpoint,
+        serde_json::json!({
+            "type": "turn_usage",
+            "session_id": SESSION_ID,
+            "task_id": "550e8400-e29b-41d4-a716-446655440001",
+            "turn": 1,
+            "usage": {
+                "input_tokens": input_tokens,
+                "input_tokens_details": { "cached_tokens": 0 },
+                "output_tokens": output_tokens,
+                "output_tokens_details": { "reasoning_tokens": 0 },
+                "total_tokens": input_tokens + output_tokens,
+            },
+            "timestamp": "2026-07-27T12:00:02Z",
+            "usage_presence": "complete",
+            "context_window": COMPACTION_TEST_CONTEXT_WINDOW,
+            "remaining_context_tokens": u64::from(COMPACTION_TEST_CONTEXT_WINDOW) - input_tokens,
+        }),
+    );
+    records
+}
+
+fn codex_checkpointed_records(env: &TestEnv) -> Vec<serde_json::Value> {
+    let mut records = checkpointed_records(env);
+    records[0]["model"] = serde_json::json!("gpt-5.1-codex");
+    records
+}
+
 /// Two distinct valid 1x1 PNGs, retained in a checkpoint's tool output.
 const CHECKPOINT_IMAGE_ONE_BASE64: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mP4z8AAAAMBAQD3A0FDAAAAAElFTkSuQmCC";
@@ -709,6 +904,48 @@ fn request_image_urls(value: &serde_json::Value) -> Vec<String> {
     let mut urls = Vec::new();
     collect(value, &mut urls);
     urls
+}
+
+/// Whether a request is the production summary adapter's bounded call.
+fn is_summary_request(body: &serde_json::Value) -> bool {
+    let instruction_present = body
+        .get("instructions")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|text| text.contains("producing a checkpoint summary"))
+        || body
+            .get("messages")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|messages| {
+                messages.iter().any(|message| {
+                    message
+                        .get("content")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|text| text.contains("producing a checkpoint summary"))
+                })
+            });
+    let tools_empty = body
+        .get("tools")
+        .and_then(serde_json::Value::as_array)
+        .is_none_or(Vec::is_empty);
+    instruction_present && tools_empty
+}
+
+async fn mount_compaction_provider(server: &MockServer, summary: &str) {
+    let summary = summary.to_string();
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(move |request: &Request| {
+            let body = serde_json::from_slice::<serde_json::Value>(&request.body)
+                .expect("provider request body must be JSON");
+            let response = if is_summary_request(&body) {
+                summary_response(&summary)
+            } else {
+                success_response()
+            };
+            ResponseTemplate::new(200).set_body_json(response)
+        })
+        .mount(server)
+        .await;
 }
 
 fn assert_checkpoint_image_blocks(body: &serde_json::Value) {
@@ -785,6 +1022,271 @@ async fn resume_restores_checkpoint_images_byte_identical_once_in_order() {
 #[tokio::test]
 async fn fork_restores_checkpoint_images_byte_identical_once_in_order() {
     assert_mode_restores_checkpoint_images("fork").await;
+}
+
+fn assert_compaction_requests(mode: &str, requests: &[Request], stderr: &str) {
+    assert_eq!(
+        requests.len(),
+        2,
+        "{mode}: one summary and one main provider call expected; stderr: {stderr}"
+    );
+    let bodies: Vec<serde_json::Value> = requests
+        .iter()
+        .map(|request| {
+            serde_json::from_slice(&request.body).expect("provider request body should be JSON")
+        })
+        .collect();
+    assert!(
+        is_summary_request(&bodies[0]),
+        "{mode}: the summary must run before the compacted request"
+    );
+    assert!(
+        !is_summary_request(&bodies[1]),
+        "{mode}: the compacted request must be the only main call"
+    );
+    let main_body = String::from_utf8_lossy(&requests[1].body);
+    assert!(
+        main_body.contains("fresh check summary"),
+        "{mode}: the committed summary must reach the next request: {main_body}"
+    );
+    assert!(
+        !main_body.contains(LARGE_POST_CHECKPOINT_SENTINEL),
+        "{mode}: the retired large exchange must not reach the compacted request: {main_body}"
+    );
+    assert!(
+        !main_body.contains("older summary"),
+        "{mode}: a superseded checkpoint must stay retired: {main_body}"
+    );
+    assert!(
+        main_body.contains("carry on"),
+        "{mode}: the current input must survive the checkpoint: {main_body}"
+    );
+}
+
+fn assert_compacted_session(mode: &str, env: &TestEnv) {
+    let path = if mode == "fork" {
+        forked_session_file(env)
+    } else {
+        session_file(env)
+    };
+    let records = session_records(&path);
+    let checkpoints: Vec<_> = records
+        .iter()
+        .enumerate()
+        .filter(|(_, record)| record["type"] == "compaction")
+        .collect();
+    let expected_checkpoints = if mode == "fork" { 2 } else { 3 };
+    assert_eq!(
+        checkpoints.len(),
+        expected_checkpoints,
+        "{mode}: one checkpoint should be added to the restored history"
+    );
+    let (checkpoint_index, checkpoint) = *checkpoints
+        .last()
+        .expect("compaction should append a checkpoint");
+    assert_eq!(checkpoint["summary"], "fresh check summary");
+    assert_ne!(checkpoint["checkpoint_id"], "checkpoint-newer summary");
+
+    let start = records
+        .iter()
+        .rposition(|record| record["type"] == "compaction_start")
+        .expect("compaction should persist a start record");
+    let end = records
+        .iter()
+        .rposition(|record| record["type"] == "compaction_end")
+        .expect("compaction should persist an end record");
+    assert!(
+        start < checkpoint_index && checkpoint_index < end,
+        "{mode}: lifecycle order must be start, checkpoint, end"
+    );
+}
+
+async fn assert_enabled_policy_compacts_restored_history(mode: &str) {
+    let env = TestEnv::new(&format!("cake-{mode}-enabled-compaction-test"));
+    let mock_server = MockServer::start().await;
+    write_compaction_settings(
+        &env,
+        &mock_server.uri(),
+        true,
+        COMPACTION_TEST_TRIGGER_TOKENS,
+    );
+    write_session_fixture(&env, &checkpointed_records_with_large_tail(&env));
+    mount_compaction_provider(&mock_server, "fresh check summary").await;
+
+    let mode_flag = format!("--{mode}");
+    let output = env
+        .command()
+        .args([&mode_flag, SESSION_ID, "carry on"])
+        .env(TEST_KEY, "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+    assert!(
+        output.status.success(),
+        "{mode} with enabled compaction should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let requests = mock_server
+        .received_requests()
+        .await
+        .expect("recorded requests");
+    assert_compaction_requests(mode, &requests, &String::from_utf8_lossy(&output.stderr));
+    assert_compacted_session(mode, &env);
+}
+
+#[tokio::test]
+async fn resume_with_enabled_policy_compacts_a_restored_exchange() {
+    assert_enabled_policy_compacts_restored_history("resume").await;
+}
+
+#[tokio::test]
+async fn fork_with_enabled_policy_compacts_a_restored_exchange() {
+    assert_enabled_policy_compacts_restored_history("fork").await;
+}
+
+async fn assert_disabled_policy_ignores_pre_checkpoint_usage(mode: &str) {
+    let env = TestEnv::new(&format!("cake-{mode}-disabled-compaction-test"));
+    let mock_server = MockServer::start().await;
+    write_compaction_settings(
+        &env,
+        &mock_server.uri(),
+        false,
+        COMPACTION_TEST_TRIGGER_TOKENS,
+    );
+    write_session_fixture(
+        &env,
+        &checkpointed_records_with_pre_checkpoint_usage(&env, 190_000),
+    );
+
+    let mode_flag = format!("--{mode}");
+    let output = run_mode_with_response(
+        &env,
+        &mock_server,
+        &[&mode_flag, SESSION_ID, "carry on"],
+        success_response_without_usage(),
+    )
+    .await;
+    assert!(
+        output.status.success(),
+        "{mode} with disabled compaction should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let requests = mock_server
+        .received_requests()
+        .await
+        .expect("recorded requests");
+    assert_eq!(requests.len(), 1, "{mode}: one main provider call expected");
+    let body = String::from_utf8_lossy(&requests[0].body);
+    assert!(
+        body.contains("newer summary") && body.contains("retained latest"),
+        "{mode}: the existing checkpoint must still restore: {body}"
+    );
+    assert!(
+        !body.contains("older summary") && !body.contains("retired request"),
+        "{mode}: disabled policy must not resurrect retired history: {body}"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("Context window budget remaining"),
+        "{mode}: pre-checkpoint usage must not seed the context budget: {stderr}"
+    );
+    assert!(
+        !stderr.contains("context_tokens=190000"),
+        "{mode}: the retired usage record must not leak into the budget log: {stderr}"
+    );
+
+    let path = if mode == "fork" {
+        forked_session_file(&env)
+    } else {
+        session_file(&env)
+    };
+    let records = session_records(&path);
+    let expected_checkpoints = if mode == "fork" { 1 } else { 2 };
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record["type"] == "compaction")
+            .count(),
+        expected_checkpoints,
+        "{mode}: disabled policy must not create a checkpoint"
+    );
+    assert!(
+        !records.iter().any(|record| {
+            record["type"] == "compaction_start" || record["type"] == "compaction_end"
+        }),
+        "{mode}: disabled policy must emit no compaction lifecycle"
+    );
+}
+
+#[tokio::test]
+async fn resume_with_disabled_policy_ignores_pre_checkpoint_usage() {
+    assert_disabled_policy_ignores_pre_checkpoint_usage("resume").await;
+}
+
+#[tokio::test]
+async fn fork_with_disabled_policy_ignores_pre_checkpoint_usage() {
+    assert_disabled_policy_ignores_pre_checkpoint_usage("fork").await;
+}
+
+fn set_proxy_env(command: &mut std::process::Command, proxy: &str) {
+    for name in [
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ] {
+        command.env(name, proxy);
+    }
+    command.env("NO_PROXY", "").env("no_proxy", "");
+}
+
+async fn assert_codex_enabled_policy_makes_no_network_call(mode: &str) {
+    let env = TestEnv::new(&format!("cake-{mode}-codex-enabled-test"));
+    let proxy = MockServer::start().await;
+    let codex_home = write_codex_auth(&env);
+    write_codex_compaction_settings(&env, true);
+    write_session_fixture(&env, &codex_checkpointed_records(&env));
+
+    let mode_flag = format!("--{mode}");
+    let mut command = env.command();
+    command
+        .args([&mode_flag, SESSION_ID, "carry on"])
+        .env("CODEX_HOME", &codex_home)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    set_proxy_env(&mut command, &proxy.uri());
+    let output = command.output().expect("failed to execute cake");
+
+    assert!(!output.status.success(), "{mode}: Codex policy must fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("does not support a bounded summary generation cap"),
+        "{mode}: the error must name the Codex summary restriction: {stderr}"
+    );
+    assert!(
+        proxy
+            .received_requests()
+            .await
+            .expect("recorded proxy requests")
+            .is_empty(),
+        "{mode}: the Codex policy check must make zero network calls"
+    );
+}
+
+#[tokio::test]
+async fn resume_with_enabled_policy_fails_on_codex_before_network() {
+    assert_codex_enabled_policy_makes_no_network_call("resume").await;
+}
+
+#[tokio::test]
+async fn fork_with_enabled_policy_fails_on_codex_before_network() {
+    assert_codex_enabled_policy_makes_no_network_call("fork").await;
 }
 
 #[tokio::test]
