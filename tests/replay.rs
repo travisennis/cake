@@ -677,6 +677,20 @@ fn replay_mismatched_header_session_id_fails_as_corrupt() {
     assert_eq!(records[0]["kind"], "corrupt");
 }
 
+fn compaction_start_record() -> serde_json::Value {
+    serde_json::json!({
+        "type": "compaction_start",
+        "session_id": SESSION_ID,
+        "task_id": TASK_ID,
+        "checkpoint_id": "checkpoint-1",
+        "timestamp": "2026-08-14T12:00:07Z",
+        "trigger": "threshold",
+        "estimated_before_tokens": 100,
+        "context_window": 1000,
+        "summary_instruction_version": 1
+    })
+}
+
 fn compaction_record() -> serde_json::Value {
     serde_json::json!({
         "type": "compaction",
@@ -715,6 +729,23 @@ fn compaction_record() -> serde_json::Value {
             "after_tokens": 40,
             "basis": "content_class"
         }
+    })
+}
+
+fn compaction_end_record() -> serde_json::Value {
+    serde_json::json!({
+        "type": "compaction_end",
+        "session_id": SESSION_ID,
+        "task_id": TASK_ID,
+        "checkpoint_id": "checkpoint-1",
+        "timestamp": "2026-08-14T12:00:09Z",
+        "trigger": "threshold",
+        "status": "committed",
+        "estimated_before_tokens": 100,
+        "estimated_after_tokens": 40,
+        "basis": "content_class",
+        "retired_count": 3,
+        "retained_count": 3
     })
 }
 
@@ -779,13 +810,20 @@ fn replay_hydrates_and_strips_a_checkpoint_retained_image() {
 }
 
 #[test]
-fn replay_emits_a_checkpoint_once_in_physical_order() {
+fn replay_emits_compaction_lifecycle_once_in_physical_order() {
     let env = cake_env();
     let mut fixture = session_fixture();
-    fixture.insert(fixture.len() - 1, compaction_record());
+    fixture.splice(
+        fixture.len() - 1..fixture.len() - 1,
+        [
+            compaction_start_record(),
+            compaction_record(),
+            compaction_end_record(),
+        ],
+    );
     let lines: Vec<String> = fixture.iter().map(ToString::to_string).collect();
     fs::write(session_path(&env, SESSION_ID), lines.join("\n") + "\n")
-        .expect("failed to write checkpoint fixture");
+        .expect("failed to write lifecycle fixture");
 
     let output = env
         .command()
@@ -801,41 +839,60 @@ fn replay_emits_a_checkpoint_once_in_physical_order() {
         String::from_utf8_lossy(&output.stderr)
     );
     let records = parse_stream(&output.stdout);
-    let checkpoints: Vec<_> = records
+    let lifecycle: Vec<(usize, &str)> = records
         .iter()
-        .filter(|record| record["type"] == "compaction")
+        .enumerate()
+        .filter_map(|(index, record)| match record["type"].as_str() {
+            Some("compaction_start") => Some((index, "start")),
+            Some("compaction") => Some((index, "checkpoint")),
+            Some("compaction_end") => Some((index, "end")),
+            _ => None,
+        })
         .collect();
     assert_eq!(
-        checkpoints.len(),
-        1,
-        "replay emits the checkpoint exactly once"
+        lifecycle.iter().map(|(_, kind)| *kind).collect::<Vec<_>>(),
+        vec!["start", "checkpoint", "end"],
+        "replay emits each lifecycle record exactly once"
+    );
+    let positions: Vec<usize> = lifecycle.iter().map(|(index, _)| *index).collect();
+    assert_eq!(
+        positions,
+        vec![positions[0], positions[0] + 1, positions[0] + 2],
+        "lifecycle records keep their physical order"
     );
     assert_eq!(
-        checkpoints[0]["summary"],
+        positions[2] + 1,
+        records.len() - 1,
+        "the lifecycle stays together before task_complete"
+    );
+
+    for kind in ["message", "function_call", "function_call_output"] {
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| record["type"] == kind)
+                .count(),
+            1,
+            "replay must not expand retained {kind} records"
+        );
+    }
+    let start = &records[positions[0]];
+    assert_eq!(start["checkpoint_id"], "checkpoint-1");
+    assert_eq!(start["context_window"], 1000);
+    let checkpoint = &records[positions[1]];
+    assert_eq!(
+        checkpoint["summary"],
         "Earlier work retired into this summary."
     );
-    assert_eq!(checkpoints[0]["retained"][0]["content"], "retained input");
+    assert_eq!(checkpoint["retained"][0]["content"], "retained input");
     assert_eq!(
-        records
-            .iter()
-            .filter(|record| record["type"] == "message")
-            .count(),
-        1,
-        "replay must not expand the retained tail into duplicate messages"
+        checkpoint["retained"].as_array().map(Vec::len),
+        Some(3),
+        "the checkpoint keeps its retained tail intact"
     );
-    let types: Vec<&str> = records
-        .iter()
-        .map(|record| record["type"].as_str().unwrap_or_default())
-        .collect();
-    let checkpoint_index = types
-        .iter()
-        .position(|kind| *kind == "compaction")
-        .expect("checkpoint record");
-    assert_eq!(
-        checkpoint_index,
-        types.len() - 2,
-        "the checkpoint keeps its physical position before task_complete"
-    );
+    let end = &records[positions[2]];
+    assert_eq!(end["checkpoint_id"], "checkpoint-1");
+    assert_eq!(end["status"], "committed");
 }
 
 #[test]

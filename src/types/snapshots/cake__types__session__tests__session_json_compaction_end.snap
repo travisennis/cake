@@ -1,0 +1,18 @@
+---
+source: src/types/session_tests.rs
+expression: json
+---
+{
+  "basis": "content_class",
+  "checkpoint_id": "checkpoint-1",
+  "estimated_after_tokens": 400,
+  "estimated_before_tokens": 1200,
+  "retained_count": 4,
+  "retired_count": 8,
+  "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "committed",
+  "task_id": "550e8400-e29b-41d4-a716-446655440001",
+  "timestamp": "2026-05-10T12:34:56Z",
+  "trigger": "threshold",
+  "type": "compaction_end"
+}

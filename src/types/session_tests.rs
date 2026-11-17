@@ -1,9 +1,9 @@
 use super::*;
 use crate::config::session::CURRENT_FORMAT_VERSION;
 use crate::types::compaction::{
-    CHECKPOINT_VERSION, CompactionData, CompactionTrigger, EstimateBasis, EstimatedInput,
-    MessageOrigin, ModelIdentity, PinReason, RetainedConversationRecord, RetainedRecord,
-    test_support,
+    CHECKPOINT_VERSION, CompactionData, CompactionEndData, CompactionStartData, CompactionStatus,
+    CompactionTrigger, EstimateBasis, EstimatedInput, MessageOrigin, ModelIdentity, PinReason,
+    RetainedConversationRecord, RetainedRecord, test_support,
 };
 use crate::types::conversation::{ReasoningContentKind, ReasoningSummary};
 use crate::types::usage::{InputTokensDetails, OutputTokensDetails, UsagePresence};
@@ -1243,6 +1243,46 @@ fn snapshot_session_json_function_call_output_with_output_reference() {
         "session_json_function_call_output_with_output_reference",
         json
     );
+}
+
+#[test]
+fn snapshot_session_json_compaction_start() {
+    let json = session_record_json(SessionRecord::CompactionStart(CompactionStartData {
+        session_id: fixed_session_id(),
+        task_id: fixed_task_id(),
+        checkpoint_id: "checkpoint-1".to_string(),
+        timestamp: fixed_timestamp(),
+        trigger: CompactionTrigger::Threshold,
+        estimated_before_tokens: 1200,
+        context_window: Some(10_000),
+        summary_instruction_version: 1,
+    }));
+    serde_json::from_value::<SessionRecord>(json.clone())
+        .expect("the start snapshot is a valid, loadable lifecycle record");
+
+    insta::assert_json_snapshot!("session_json_compaction_start", json);
+}
+
+#[test]
+fn snapshot_session_json_compaction_end() {
+    let json = session_record_json(SessionRecord::CompactionEnd(CompactionEndData {
+        session_id: fixed_session_id(),
+        task_id: fixed_task_id(),
+        checkpoint_id: "checkpoint-1".to_string(),
+        timestamp: fixed_timestamp(),
+        trigger: CompactionTrigger::Threshold,
+        status: CompactionStatus::Committed,
+        estimated_before_tokens: Some(1200),
+        estimated_after_tokens: Some(400),
+        basis: Some(EstimateBasis::ContentClass),
+        retired_count: Some(8),
+        retained_count: Some(4),
+        reason: None,
+    }));
+    serde_json::from_value::<SessionRecord>(json.clone())
+        .expect("the end snapshot is a valid, loadable lifecycle record");
+
+    insta::assert_json_snapshot!("session_json_compaction_end", json);
 }
 
 #[test]
