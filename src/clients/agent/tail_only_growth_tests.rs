@@ -1063,6 +1063,100 @@ async fn main_turn_usage_follows_lifecycle_and_reports_reduced_context() {
     assert_usage_lifecycle_order(&persisted.lock().unwrap());
 }
 
+/// A complete usage report on the first post-checkpoint request must drive the
+/// next trigger. Content alone stays below the line, so ignoring fresh usage
+/// leaves the invocation with one checkpoint instead of two.
+#[tokio::test]
+async fn fresh_usage_after_a_checkpoint_controls_the_next_trigger() {
+    let server = MockServer::start().await;
+    let fixture_dir = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+    let first_path = write_prose_fixture(
+        fixture_dir.path(),
+        "fresh-usage-first.txt",
+        "FRESH_USAGE_FIRST_READ",
+        60,
+        480,
+    );
+    let second_path = fixture_dir.path().join("fresh-usage-second.txt");
+    std::fs::write(&second_path, "small follow-up\n").unwrap();
+    let second_path = second_path.display().to_string();
+
+    let provider = ScriptedProvider::new();
+    provider
+        .mount_split(
+            &server,
+            "/responses",
+            vec![
+                ResponseTemplate::new(200)
+                    .set_body_json(responses_tool_call("call-first", &first_path)),
+                ResponseTemplate::new(200).set_body_json(responses_with_usage(
+                    responses_tool_call("call-second", &second_path),
+                    9_000,
+                    100,
+                )),
+                ResponseTemplate::new(200).set_body_json(responses_text("done")),
+            ],
+            vec![
+                ResponseTemplate::new(200)
+                    .set_body_json(responses_text("First checkpoint summary.")),
+                ResponseTemplate::new(200)
+                    .set_body_json(responses_text("Second checkpoint summary.")),
+            ],
+        )
+        .await;
+
+    let checkpoints = provider.checkpoint_counter();
+    let persisted = Arc::new(Mutex::new(Vec::<SessionRecord>::new()));
+    let sink = Arc::clone(&persisted);
+    let mut agent = test_agent_with_window(ApiType::Responses, &server.uri(), 10_000)
+        .with_compaction_policy(compaction_policy())
+        .unwrap()
+        .with_persist_callback(move |record| {
+            if matches!(record, SessionRecord::Compaction(_)) {
+                checkpoints.fetch_add(1, Ordering::SeqCst);
+            }
+            sink.lock().unwrap().push(record.clone());
+            Ok(())
+        })
+        .with_tools(crate::clients::tools::read_tool_registry());
+
+    let result = agent
+        .send("read the first usage fixture".to_string())
+        .await
+        .unwrap();
+
+    assert_eq!(result, "done");
+    assert_eq!(agent.turn_count(), 3);
+    let recorded = provider.recorded();
+    assert_eq!(recorded.len(), 5, "main, summary, main, summary, main");
+    assert_eq!(recorded.iter().filter(|request| request.summary).count(), 2);
+    let main: Vec<_> = recorded.iter().filter(|request| !request.summary).collect();
+    assert_eq!(main.len(), 3);
+    assert_eq!(
+        main.iter()
+            .map(|request| request.checkpoint_epoch)
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2],
+        "the reported usage must open a second checkpoint epoch"
+    );
+    let summaries: Vec<_> = recorded.iter().filter(|request| request.summary).collect();
+    assert!(
+        summaries[1]
+            .body
+            .to_string()
+            .contains("First checkpoint summary."),
+        "the second checkpoint builds on the first summary: {}",
+        summaries[1].body
+    );
+    let checkpoints = persisted
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|record| matches!(record, SessionRecord::Compaction(_)))
+        .count();
+    assert_eq!(checkpoints, 2);
+}
+
 fn assert_usage_lifecycle_order(records: &[SessionRecord]) {
     let position = |wanted: fn(&SessionRecord) -> bool| {
         records

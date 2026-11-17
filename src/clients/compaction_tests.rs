@@ -196,7 +196,6 @@ fn input<'a>(
         },
         context_window: window,
         measured: None,
-        has_active_checkpoint: false,
         supports_images: true,
         image_policy: &DEFAULT_IMAGE_POLICY,
         checkpoint_id: "checkpoint-1".to_string(),
@@ -1131,7 +1130,7 @@ fn measured_basis_requires_complete_matching_fresh_usage() {
         source.push(assistant(&format!("answer {index}")));
     }
 
-    let build = |measured: Option<MeasuredInput>, active: bool| PreparationInput {
+    let build = |measured: Option<MeasuredInput>| PreparationInput {
         source: &source,
         prompt_prefix_len: 1,
         current_user_input: Some(1),
@@ -1142,7 +1141,6 @@ fn measured_basis_requires_complete_matching_fresh_usage() {
         },
         context_window: Some(100_000),
         measured,
-        has_active_checkpoint: active,
         invocation_pins: &[],
         image_consumption: image_states(&source, &[]),
         supports_images: true,
@@ -1167,10 +1165,12 @@ fn measured_basis_requires_complete_matching_fresh_usage() {
     };
 
     let candidate = prepared(
-        prepare(build(
-            Some(measured(UsagePresence::Complete, "glm-5.1", 2, 50_000)),
-            false,
-        ))
+        prepare(build(Some(measured(
+            UsagePresence::Complete,
+            "glm-5.1",
+            2,
+            50_000,
+        ))))
         .unwrap(),
     );
     assert_eq!(
@@ -1179,29 +1179,13 @@ fn measured_basis_requires_complete_matching_fresh_usage() {
     );
     assert!(candidate.estimated_input.before_tokens >= 50_000);
 
-    for (measured, active) in [
-        (
-            Some(measured(UsagePresence::Partial, "glm-5.1", 2, 50_000)),
-            false,
-        ),
-        (
-            Some(measured(UsagePresence::Complete, "other-model", 2, 50_000)),
-            false,
-        ),
-        (
-            Some(measured(UsagePresence::Complete, "glm-5.1", 9999, 50_000)),
-            false,
-        ),
-        (
-            Some(measured(UsagePresence::Complete, "glm-5.1", 2, 0)),
-            false,
-        ),
-        (
-            Some(measured(UsagePresence::Complete, "glm-5.1", 2, 50_000)),
-            true,
-        ),
+    for measured in [
+        Some(measured(UsagePresence::Partial, "glm-5.1", 2, 50_000)),
+        Some(measured(UsagePresence::Complete, "other-model", 2, 50_000)),
+        Some(measured(UsagePresence::Complete, "glm-5.1", 9999, 50_000)),
+        Some(measured(UsagePresence::Complete, "glm-5.1", 2, 0)),
     ] {
-        let candidate = prepared(prepare(build(measured, active)).unwrap());
+        let candidate = prepared(prepare(build(measured)).unwrap());
         assert_eq!(candidate.estimated_input.basis, EstimateBasis::ContentClass);
     }
 
@@ -1216,10 +1200,12 @@ fn measured_basis_requires_complete_matching_fresh_usage() {
         output_schema: None,
     };
     let exact_fixed_tokens = fixed_request_tokens(&fixed);
-    let mut stale_input = build(
-        Some(measured(UsagePresence::Complete, "glm-5.1", 2, 50_000)),
-        false,
-    );
+    let mut stale_input = build(Some(measured(
+        UsagePresence::Complete,
+        "glm-5.1",
+        2,
+        50_000,
+    )));
     stale_input.fixed = fixed;
     stale_input.measured = Some(MeasuredInput {
         fixed_tokens: exact_fixed_tokens.saturating_sub(1),
@@ -1293,6 +1279,31 @@ fn ambiguous_provenance_and_missing_payload_references_are_rejected() {
         error.to_string().contains("neither inline bytes"),
         "{error}"
     );
+}
+
+#[test]
+fn legacy_provenance_reaches_the_trigger_gate() {
+    let mut skill = output("skill", "instructions");
+    skill.skill_read = Some(SkillRead {
+        name: "debugging-cake".to_string(),
+        path: "/skills/debugging-cake/SKILL.md".into(),
+    });
+    let source = vec![
+        message(Role::System, "system"),
+        user("request"),
+        call("skill"),
+        skill,
+    ];
+
+    let below = prepare(input(&source, 1, Some(1), Some(100_000), &[])).unwrap();
+    assert!(below.no_op_reason().is_some(), "{below:?}");
+    assert!(!below.measure.trigger_reached);
+
+    let mut above_input = input(&source, 1, Some(1), Some(100_000), &[]);
+    above_input.policy.trigger_tokens = Some(20);
+    let above = prepare(above_input).unwrap();
+    let reason = above.no_fit_reason().expect("legacy provenance is no-fit");
+    assert!(reason.contains("ambiguous legacy"), "{reason}");
 }
 
 #[test]

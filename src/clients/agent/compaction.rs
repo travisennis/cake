@@ -180,7 +180,6 @@ impl Agent {
             fixed: self.fixed_request_surface(turn_mode),
             context_window: self.context_window(),
             measured: self.last_measurement().cloned(),
-            has_active_checkpoint: self.conversation.has_checkpoint(),
             supports_images: self.config.model_config.supports_images,
             image_policy: &self.image_policy,
             checkpoint_id,

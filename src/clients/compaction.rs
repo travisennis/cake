@@ -39,8 +39,8 @@ use crate::session_telemetry::{AgentRunnerTelemetryEvent, ProviderTermination};
 use crate::types::compaction::{
     CompactionData, CompactionTrigger, EstimateBasis, EstimatedInput, HISTORICAL_SUMMARY_MARKER,
     MAX_CHECKPOINT_RECORD_BYTES, MessageOrigin, ModelIdentity, PinReason,
-    RetainedConversationRecord, RetainedRecord, SkillRead, SummaryUsage, estimate_items_tokens,
-    estimate_text_tokens,
+    RetainedConversationRecord, RetainedRecord, SkillRead, SummaryUsage, estimate_item_tokens,
+    estimate_items_tokens, estimate_text_tokens,
 };
 use crate::types::session::{FunctionCallOutputData, MessageData, ReasoningData};
 use crate::types::{ConversationItem, ImagePart, ReportedUsage, Role, Usage, UsagePresence};
@@ -137,11 +137,10 @@ pub struct PreparationInput<'a> {
     pub current_task_id: String,
     pub fixed: FixedRequest<'a>,
     pub context_window: Option<u32>,
+    /// The newest complete main-request usage. Activation of a checkpoint
+    /// clears stale usage, so a later measurement already describes the new
+    /// projection.
     pub measured: Option<MeasuredInput>,
-    /// Whether the source already contains an active checkpoint. A measured
-    /// basis is stale after a checkpoint, so preparation falls back to a full
-    /// estimate.
-    pub has_active_checkpoint: bool,
     /// Whether the target model accepts images. When false, estimation uses
     /// the text-only projection the provider will actually receive.
     pub supports_images: bool,
@@ -355,27 +354,39 @@ fn estimate_full_request(items: &[ConversationItem], fixed_tokens: u64) -> u64 {
 /// of the source payload and must be counted conservatively so preparation
 /// does not overfill the retired slice.
 fn source_metadata_tokens(records: &[RetainedRecord]) -> u64 {
-    records.iter().fold(0_u64, |total, record| {
-        let extra = match &record.record {
-            RetainedConversationRecord::FunctionCall(data) => {
-                let replay = data.replay.as_ref().map_or(0, |replay| {
-                    estimate_text_tokens(&serde_json::to_string(replay).unwrap_or_default())
-                });
-                let parse_error = data
-                    .arguments_parse_error
-                    .as_deref()
-                    .map_or(0, estimate_text_tokens);
-                replay.saturating_add(parse_error)
-            },
-            RetainedConversationRecord::FunctionCallOutput(data) => {
-                data.replay.as_ref().map_or(0, |replay| {
-                    estimate_text_tokens(&serde_json::to_string(replay).unwrap_or_default())
-                })
-            },
-            RetainedConversationRecord::Message(_) | RetainedConversationRecord::Reasoning(_) => 0,
-        };
-        total.saturating_add(extra)
-    })
+    records
+        .iter()
+        .map(record_metadata_tokens)
+        .fold(0_u64, u64::saturating_add)
+}
+
+fn record_metadata_tokens(record: &RetainedRecord) -> u64 {
+    match &record.record {
+        RetainedConversationRecord::FunctionCall(data) => {
+            let replay = data.replay.as_ref().map_or(0, |replay| {
+                estimate_text_tokens(&serde_json::to_string(replay).unwrap_or_default())
+            });
+            let parse_error = data
+                .arguments_parse_error
+                .as_deref()
+                .map_or(0, estimate_text_tokens);
+            replay.saturating_add(parse_error)
+        },
+        RetainedConversationRecord::FunctionCallOutput(data) => {
+            data.replay.as_ref().map_or(0, |replay| {
+                estimate_text_tokens(&serde_json::to_string(replay).unwrap_or_default())
+            })
+        },
+        RetainedConversationRecord::Message(_) | RetainedConversationRecord::Reasoning(_) => 0,
+    }
+}
+
+const fn record_image_count(record: &RetainedRecord) -> usize {
+    match &record.record {
+        RetainedConversationRecord::Message(data) => data.images.len(),
+        RetainedConversationRecord::FunctionCallOutput(data) => data.images.len(),
+        RetainedConversationRecord::Reasoning(_) | RetainedConversationRecord::FunctionCall(_) => 0,
+    }
 }
 
 /// Estimate the post-checkpoint request: fresh prompts, summary allowance,
@@ -1176,7 +1187,6 @@ fn measured_basis_is_valid(
         && measured.presence == UsagePresence::Complete
         && measured.model == input.model.model
         && measured.fixed_tokens == fixed_tokens
-        && !input.has_active_checkpoint
         && measured.covered_item_count >= input.prompt_prefix_len
         && measured.covered_item_count <= item_count
 }
@@ -1264,15 +1274,6 @@ enum RetainedImageFailure {
 
 fn pinned_image_no_fit_reason(error: &ImageBudgetError, pinned_count: usize) -> Option<String> {
     match error {
-        ImageBudgetError::PinnedExceedsBudget {
-            budget,
-            used,
-            limit,
-            pinned_images,
-        } => Some(format!(
-            "pinned compaction images exceed the image {budget} budget: {used} used, \
-             {limit} allowed across {pinned_images} pinned image(s)"
-        )),
         ImageBudgetError::PinnedCannotFit {
             slot,
             media_type,
@@ -1437,6 +1438,101 @@ const fn selection_ready(
     retained_tokens <= retained_target || eligible_seen == eligible_total
 }
 
+/// Per-record costs that let selection reject most candidates without cloning
+/// history or re-planning images.
+///
+/// The fast path is exact only when the projection carries no images. With an
+/// image, admission can omit or re-encode it, so selection must build and plan
+/// the real projection before deciding.
+struct SourceTokenCosts {
+    prefix_tokens: u64,
+    prefix_has_images: bool,
+    item_tokens: Vec<u64>,
+    image_counts: Vec<usize>,
+    retained_item_tokens: u64,
+    retained_images: usize,
+}
+
+impl SourceTokenCosts {
+    fn new(source: &[RetainedRecord], prefix_len: usize) -> Self {
+        let item_tokens: Vec<u64> = source
+            .iter()
+            .map(|record| estimate_item_tokens(&record.to_conversation_item()))
+            .collect();
+        let image_counts: Vec<usize> = source.iter().map(record_image_count).collect();
+        let prefix_tokens = item_tokens
+            .iter()
+            .take(prefix_len)
+            .fold(0_u64, |total, tokens| total.saturating_add(*tokens));
+        let prefix_has_images = image_counts.iter().take(prefix_len).any(|count| *count > 0);
+        let retained_item_tokens = item_tokens
+            .iter()
+            .skip(prefix_len)
+            .fold(0_u64, |total, tokens| total.saturating_add(*tokens));
+        let retained_images = image_counts
+            .iter()
+            .skip(prefix_len)
+            .fold(0_usize, |total, count| total.saturating_add(*count));
+        Self {
+            prefix_tokens,
+            prefix_has_images,
+            item_tokens,
+            image_counts,
+            retained_item_tokens,
+            retained_images,
+        }
+    }
+
+    fn retire(&mut self, range: &Range<usize>) {
+        for index in range.clone() {
+            self.retained_item_tokens = self
+                .retained_item_tokens
+                .saturating_sub(self.item_tokens.get(index).copied().unwrap_or_default());
+            self.retained_images = self
+                .retained_images
+                .saturating_sub(self.image_counts.get(index).copied().unwrap_or_default());
+        }
+    }
+
+    const fn can_estimate_without_image_plan(&self) -> bool {
+        !self.prefix_has_images && self.retained_images == 0
+    }
+
+    fn after_tokens_without_images(&self, summary_tokens: u64, fixed_tokens: u64) -> u64 {
+        self.prefix_tokens
+            .saturating_add(estimate_text_tokens(HISTORICAL_SUMMARY_MARKER))
+            .saturating_add(summary_tokens)
+            .saturating_add(self.retained_item_tokens)
+            .saturating_add(fixed_tokens)
+    }
+
+    fn cannot_fit_without_images(
+        &self,
+        before_tokens: u64,
+        minimum_reduction: u64,
+        resolved: ResolvedCompactionPolicy,
+        fixed_tokens: u64,
+        eligible_seen: usize,
+        eligible_total: usize,
+    ) -> bool {
+        if !self.can_estimate_without_image_plan() {
+            return false;
+        }
+        let after_tokens = self.after_tokens_without_images(resolved.summary_tokens, fixed_tokens);
+        !meets_bounds(
+            before_tokens,
+            after_tokens,
+            minimum_reduction,
+            resolved.target_tokens,
+        ) || !selection_ready(
+            self.retained_item_tokens,
+            resolved.retained_tokens,
+            eligible_seen,
+            eligible_total,
+        )
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "selection threads the source, bounds, policy, and fixed request surface"
@@ -1458,13 +1554,26 @@ fn select_exchanges(
         .count();
     let mut eligible_seen = 0;
     let mut retired_ranges: Vec<Range<usize>> = Vec::new();
+    let mut source_costs = SourceTokenCosts::new(source, input.prompt_prefix_len);
     let mut pinned_failure = None;
-    for exchange in body_exchanges {
-        if exchange.contains_pin(source) {
-            continue;
-        }
+    for exchange in body_exchanges
+        .iter()
+        .filter(|exchange| !exchange.contains_pin(source))
+    {
         eligible_seen += 1;
         retired_ranges.push(exchange.range.clone());
+        source_costs.retire(&exchange.range);
+        if source_costs.cannot_fit_without_images(
+            before_tokens,
+            minimum_reduction,
+            resolved,
+            fixed_tokens,
+            eligible_seen,
+            eligible_total,
+        ) {
+            pinned_failure = None;
+            continue;
+        }
         match evaluate_candidate(
             input,
             source,

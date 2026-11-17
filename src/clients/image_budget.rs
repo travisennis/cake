@@ -5,11 +5,12 @@
 //! decompression bomb, and downscale an oversized image in memory. The request
 //! planner reuses the same codecs so there is one encoding path. It verifies
 //! image digests, downscales an image that individually exceeds the request
-//! limits, and omits an image that would push a request over its budget. An
-//! ordinary request admits images in source order and never revises an earlier
-//! decision, so each request is a prefix-extension of the one before it;
-//! checkpoint preparation may still retire unpinned images. Every omission
-//! leaves a model-visible marker in the owning item's text.
+//! limits, and omits an image that would push a request over its budget. Images
+//! are admitted in source order and an earlier decision is never revised, so
+//! each request is a prefix-extension of the one before it. Checkpoint
+//! preparation runs the same planner over its candidate projection and retires
+//! whole exchanges when a pinned image would be omitted. Every omission leaves
+//! a model-visible marker in the owning item's text.
 
 use std::borrow::Cow;
 use std::fmt;
@@ -247,10 +248,12 @@ pub struct ImageSlot<'a> {
     pub owner: ImageOwner,
     /// The image as it currently appears in the request projection.
     pub image: &'a ImagePart,
-    /// Whether the planner is forbidden from omitting this image.
+    /// Whether this image belongs to a pinned checkpoint exchange.
     ///
-    /// Checkpoint preparation supplies pins; the ordinary request path ignores
-    /// this field and never fails because of a budget.
+    /// An ordinary request never sets this field. Checkpoint preparation does,
+    /// so an image that cannot be reduced below a per-image limit is a hard
+    /// failure instead of an omission. Aggregate budgets still admit in source
+    /// order; a pinned image that would be omitted is a candidate no-fit.
     pub pinned: bool,
 }
 
@@ -304,7 +307,7 @@ impl fmt::Display for ImageOmissionReason {
     }
 }
 
-/// The aggregate request budget a pinned image set exceeded.
+/// The aggregate request budget an image would exceed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageBudgetLimit {
     /// Maximum emitted image count.
@@ -435,27 +438,6 @@ pub enum ImageBudgetError {
         /// The compiled source pixel limit.
         limit: u64,
     },
-    /// A checkpoint's pinned images alone exceed an image budget.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "plan_image_budget remains for explicit checkpoint callers and its tests"
-        )
-    )]
-    #[error(
-        "pinned request images exceed the image {budget} budget: {used} used, {limit} allowed across {pinned_images} pinned image(s)"
-    )]
-    PinnedExceedsBudget {
-        /// The budget that overflowed.
-        budget: ImageBudgetLimit,
-        /// The pinned total that overflowed.
-        used: u64,
-        /// The configured limit.
-        limit: u64,
-        /// Number of pinned images in the request.
-        pinned_images: usize,
-    },
     /// A checkpoint image that is pinned cannot be reduced below a per-image limit.
     #[error("request image {slot} ({media_type}) cannot fit the request image budget: {detail}")]
     PinnedCannotFit {
@@ -466,98 +448,6 @@ pub enum ImageBudgetError {
         /// Why the image could not be reduced.
         detail: String,
     },
-}
-
-/// Which caller is planning, and therefore what an omission may say.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PlanScope {
-    /// An ordinary provider request. The emitted prefix is fixed, so a budget
-    /// cannot be freed before the invocation ends.
-    Request,
-    /// Checkpoint preparation, where an unpinned image may be retired.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "plan_image_budget remains for explicit checkpoint callers and its tests"
-        )
-    )]
-    Checkpoint,
-}
-
-/// Plan one checkpoint's retained image set.
-///
-/// Slots are processed in source order. Each image is decoded, digest-checked
-/// when it carries a content id, and probed before the planner decides to keep
-/// it, re-encode it, or omit it. Aggregate budgets are then enforced by
-/// omitting the oldest unpinned image one at a time. A pinned image is never
-/// omitted; if pinned images alone exceed a budget the plan fails instead.
-///
-/// Only checkpoint preparation uses this policy, because it commits a new
-/// boundary. Ordinary requests use [`plan_admitted_images`].
-///
-/// # Errors
-///
-/// Returns an [`ImageBudgetError`] for invalid base64, a digest mismatch, an
-/// unreadable header, a decompression bomb, or a pinned image that can never
-/// fit. A corrupt or unsafe image is never silently omitted.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "plan_image_budget remains for explicit checkpoint callers and its tests"
-    )
-)]
-pub fn plan_image_budget(
-    slots: &[ImageSlot<'_>],
-    policy: &ResolvedImagePolicy,
-) -> Result<ImageBudgetPlan, ImageBudgetError> {
-    let mut entries = Vec::with_capacity(slots.len());
-    let mut records = Vec::with_capacity(slots.len());
-    let mut emitted_by_slot = Vec::with_capacity(slots.len());
-    let mut totals = BudgetTotals::default();
-
-    for slot in slots {
-        let outcome = prepare_slot(slot, policy, PlanScope::Checkpoint)?;
-        totals.original_count = totals.original_count.saturating_add(1);
-        totals.original_pixels = totals
-            .original_pixels
-            .saturating_add(outcome.original_pixels);
-        totals.original_bytes = totals
-            .original_bytes
-            .saturating_add(outcome.record.original_bytes);
-        if let Some(emitted) = outcome.emitted {
-            totals.emitted_count = totals.emitted_count.saturating_add(1);
-            totals.emitted_pixels = totals.emitted_pixels.saturating_add(emitted.pixels);
-            totals.emitted_bytes = totals.emitted_bytes.saturating_add(emitted.bytes);
-        }
-        emitted_by_slot.push(outcome.emitted);
-        entries.push(outcome.entry);
-        records.push(outcome.record);
-    }
-
-    enforce_aggregate_budgets(
-        slots,
-        policy,
-        &mut entries,
-        &mut records,
-        &mut emitted_by_slot,
-        &mut totals,
-    )?;
-
-    let report = ImageBudgetReport {
-        original_count: totals.original_count,
-        emitted_count: totals.emitted_count,
-        original_pixels: totals.original_pixels,
-        emitted_pixels: totals.emitted_pixels,
-        original_bytes: totals.original_bytes,
-        emitted_bytes: totals.emitted_bytes,
-        images: records,
-    };
-    if !slots.is_empty() {
-        tracing::debug!(target: "cake", ?report, "Planned checkpoint image budget");
-    }
-    Ok(ImageBudgetPlan { entries, report })
 }
 
 /// Plan one provider request's image set by admission only.
@@ -586,7 +476,7 @@ pub fn plan_admitted_images(
     let mut totals = BudgetTotals::default();
 
     for slot in slots {
-        let mut outcome = prepare_slot(slot, policy, PlanScope::Request)?;
+        let mut outcome = prepare_slot(slot, policy)?;
         totals.original_count = totals.original_count.saturating_add(1);
         totals.original_pixels = totals
             .original_pixels
@@ -856,7 +746,6 @@ fn apply_omissions(
 fn prepare_slot(
     slot: &ImageSlot<'_>,
     policy: &ResolvedImagePolicy,
-    scope: PlanScope,
 ) -> Result<SlotOutcome, ImageBudgetError> {
     let bytes = decode_slot_bytes(slot)?;
     let dimensions = slot_dimensions(slot, &bytes)?;
@@ -868,7 +757,6 @@ fn prepare_slot(
                 None,
                 original_bytes,
                 "opaque image is over the byte budget",
-                scope,
             );
         }
         return Ok(keep_outcome(slot, None, original_bytes));
@@ -886,7 +774,7 @@ fn prepare_slot(
     if image_fits(size, original_pixels, original_bytes, policy) {
         return Ok(keep_outcome(slot, Some(size), original_bytes));
     }
-    downscale_slot(slot, &bytes, size, policy, scope)
+    downscale_slot(slot, &bytes, size, policy)
 }
 
 fn decode_slot_bytes(slot: &ImageSlot<'_>) -> Result<Vec<u8>, ImageBudgetError> {
@@ -978,7 +866,6 @@ fn downscale_slot(
     bytes: &[u8],
     source_size: (u32, u32),
     policy: &ResolvedImagePolicy,
-    scope: PlanScope,
 ) -> Result<SlotOutcome, ImageBudgetError> {
     match downscale_to_budget(bytes, &slot.image.media_type, source_size, policy) {
         Ok(downscaled) => {
@@ -1008,7 +895,7 @@ fn downscale_slot(
                 original_pixels: pixel_count(source_size),
             })
         },
-        Err(detail) => cannot_fit_outcome(slot, Some(source_size), bytes.len(), &detail, scope),
+        Err(detail) => cannot_fit_outcome(slot, Some(source_size), bytes.len(), &detail),
     }
 }
 
@@ -1017,7 +904,6 @@ fn cannot_fit_outcome(
     dimensions: Option<(u32, u32)>,
     original_bytes: usize,
     detail: &str,
-    scope: PlanScope,
 ) -> Result<SlotOutcome, ImageBudgetError> {
     if slot.pinned {
         return Err(ImageBudgetError::PinnedCannotFit {
@@ -1031,7 +917,6 @@ fn cannot_fit_outcome(
         dimensions,
         original_bytes,
         ImageOmissionReason::CannotFit,
-        scope,
     ))
 }
 
@@ -1040,15 +925,8 @@ fn omitted_outcome(
     dimensions: Option<(u32, u32)>,
     original_bytes: usize,
     reason: ImageOmissionReason,
-    scope: PlanScope,
 ) -> SlotOutcome {
-    let marker = omission_marker(
-        reason,
-        &slot.image.media_type,
-        dimensions,
-        original_bytes,
-        scope,
-    );
+    let marker = omission_marker(reason, &slot.image.media_type, dimensions, original_bytes);
     SlotOutcome {
         entry: ImagePlanEntry::Omit { reason, marker },
         record: ImageBudgetRecord {
@@ -1181,7 +1059,6 @@ fn omission_marker(
     media_type: &str,
     dimensions: Option<(u32, u32)>,
     bytes: usize,
-    scope: PlanScope,
 ) -> String {
     let mut marker = match dimensions {
         Some((width, height)) => {
@@ -1189,9 +1066,7 @@ fn omission_marker(
         },
         None => format!("[image omitted: {reason}; {media_type}, {bytes} bytes"),
     };
-    if scope == PlanScope::Request {
-        marker.push_str(request_omission_advice(reason));
-    }
+    marker.push_str(request_omission_advice(reason));
     marker.push(']');
     marker
 }
@@ -1206,145 +1081,6 @@ const fn request_omission_advice(reason: ImageOmissionReason) -> &'static str {
         ImageOmissionReason::Count | ImageOmissionReason::Pixels | ImageOmissionReason::Bytes => {
             "; the request image budget is exhausted for this run, so crop or downscale the source, or continue from text"
         },
-    }
-}
-
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "plan_image_budget remains for explicit checkpoint callers and its tests"
-    )
-)]
-fn enforce_aggregate_budgets(
-    slots: &[ImageSlot<'_>],
-    policy: &ResolvedImagePolicy,
-    entries: &mut [ImagePlanEntry],
-    records: &mut [ImageBudgetRecord],
-    emitted_by_slot: &mut [Option<EmittedStats>],
-    totals: &mut BudgetTotals,
-) -> Result<(), ImageBudgetError> {
-    loop {
-        let Some((budget, used, limit)) = exceeded_budget(totals, policy) else {
-            return Ok(());
-        };
-        let Some(index) = oldest_unpinned_index(slots, entries) else {
-            let pinned_images = slots.iter().filter(|slot| slot.pinned).count();
-            return Err(ImageBudgetError::PinnedExceedsBudget {
-                budget,
-                used,
-                limit,
-                pinned_images,
-            });
-        };
-        omit_planned(
-            slots,
-            entries,
-            records,
-            emitted_by_slot,
-            totals,
-            index,
-            budget,
-        );
-    }
-}
-
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "plan_image_budget remains for explicit checkpoint callers and its tests"
-    )
-)]
-fn exceeded_budget(
-    totals: &BudgetTotals,
-    policy: &ResolvedImagePolicy,
-) -> Option<(ImageBudgetLimit, u64, u64)> {
-    if totals.emitted_count > policy.max_images {
-        return Some((
-            ImageBudgetLimit::Count,
-            as_u64(totals.emitted_count),
-            as_u64(policy.max_images),
-        ));
-    }
-    if totals.emitted_pixels > policy.max_pixels {
-        return Some((
-            ImageBudgetLimit::Pixels,
-            totals.emitted_pixels,
-            policy.max_pixels,
-        ));
-    }
-    if totals.emitted_bytes > policy.max_bytes {
-        return Some((
-            ImageBudgetLimit::Bytes,
-            as_u64(totals.emitted_bytes),
-            as_u64(policy.max_bytes),
-        ));
-    }
-    None
-}
-
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "plan_image_budget remains for explicit checkpoint callers and its tests"
-    )
-)]
-fn oldest_unpinned_index(slots: &[ImageSlot<'_>], entries: &[ImagePlanEntry]) -> Option<usize> {
-    slots
-        .iter()
-        .enumerate()
-        .find(|(index, slot)| {
-            !slot.pinned
-                && !matches!(
-                    entries.get(*index),
-                    None | Some(ImagePlanEntry::Omit { .. })
-                )
-        })
-        .map(|(index, _)| index)
-}
-
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "plan_image_budget remains for explicit checkpoint callers and its tests"
-    )
-)]
-fn omit_planned(
-    slots: &[ImageSlot<'_>],
-    entries: &mut [ImagePlanEntry],
-    records: &mut [ImageBudgetRecord],
-    emitted_by_slot: &mut [Option<EmittedStats>],
-    totals: &mut BudgetTotals,
-    index: usize,
-    budget: ImageBudgetLimit,
-) {
-    let Some(slot) = slots.get(index) else {
-        return;
-    };
-    let Some(record) = records.get_mut(index) else {
-        return;
-    };
-    let reason = omission_reason(budget);
-    let marker = omission_marker(
-        reason,
-        &slot.image.media_type,
-        record.original_size,
-        record.original_bytes,
-        PlanScope::Checkpoint,
-    );
-    if let Some(entry) = entries.get_mut(index) {
-        *entry = ImagePlanEntry::Omit { reason, marker };
-    }
-    record.change = ImageBudgetChange::Omitted(reason);
-    record.emitted_size = None;
-    record.emitted_bytes = 0;
-    if let Some(emitted) = emitted_by_slot.get_mut(index).and_then(Option::take) {
-        totals.emitted_count = totals.emitted_count.saturating_sub(1);
-        totals.emitted_pixels = totals.emitted_pixels.saturating_sub(emitted.pixels);
-        totals.emitted_bytes = totals.emitted_bytes.saturating_sub(emitted.bytes);
     }
 }
 
@@ -1386,7 +1122,6 @@ fn reject_admitted(
         &slot.image.media_type,
         outcome.record.original_size,
         outcome.record.original_bytes,
-        PlanScope::Request,
     );
     outcome.entry = ImagePlanEntry::Omit { reason, marker };
     outcome.record.change = ImageBudgetChange::Omitted(reason);
@@ -1461,17 +1196,6 @@ fn append_markers(text: &mut String, markers: &[String]) {
         }
         text.push_str(marker);
     }
-}
-
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "plan_image_budget remains for explicit checkpoint callers and its tests"
-    )
-)]
-fn as_u64(value: usize) -> u64 {
-    u64::try_from(value).unwrap_or(u64::MAX)
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -73,25 +73,12 @@ fn slots<'a>(parts: &'a [ImagePart], pinned: &[usize]) -> Vec<ImageSlot<'a>> {
         .collect()
 }
 
-/// Plan as checkpoint preparation does, with pins and oldest-first retirement.
-fn checkpoint_parts(
-    parts: &[ImagePart],
-    pinned: &[usize],
-    policy: &ResolvedImagePolicy,
-) -> Result<ImageBudgetPlan, ImageBudgetError> {
-    plan_image_budget(&slots(parts, pinned), policy)
-}
-
-/// Plan as an ordinary provider request does: admission only, no pins.
+/// Plan as an ordinary provider request does: admission only.
 fn admit_parts(
     parts: &[ImagePart],
     policy: &ResolvedImagePolicy,
 ) -> Result<ImageBudgetPlan, ImageBudgetError> {
     plan_admitted_images(&slots(parts, &[]), policy)
-}
-
-fn count_only_parts() -> Vec<ImagePart> {
-    (0..3).map(|_| png_part(10, 10)).collect()
 }
 
 fn user_message(content: &str, images: Vec<ImagePart>) -> ConversationItem {
@@ -133,7 +120,7 @@ fn count_budget_admits_in_order_and_marks_the_overflowing_image() {
 }
 
 #[test]
-fn admission_ignores_pins_and_never_fails_on_a_budget() {
+fn admission_ignores_pins_for_aggregate_budgets() {
     let parts = vec![png_part(10, 10), png_part(11, 11)];
     let plan =
         plan_admitted_images(&slots(&parts, &[0, 1]), &policy(1, 4096, 100_000_000)).unwrap();
@@ -146,35 +133,6 @@ fn admission_ignores_pins_and_never_fails_on_a_budget() {
             ..
         }
     ));
-}
-
-#[test]
-fn checkpoint_retires_the_oldest_unpinned_image_and_keeps_the_pinned_newest() {
-    let parts = count_only_parts();
-    let plan = checkpoint_parts(
-        &parts,
-        &[2],
-        &policy(2, loose_policy().max_bytes, 100_000_000),
-    )
-    .unwrap();
-
-    assert_eq!(plan.report.emitted_count, 2);
-    assert_eq!(
-        plan.report.images[0].change,
-        ImageBudgetChange::Omitted(ImageOmissionReason::Count)
-    );
-    assert!(matches!(plan.entries[1], ImagePlanEntry::Keep));
-    assert!(matches!(plan.entries[2], ImagePlanEntry::Keep));
-    match &plan.entries[0] {
-        ImagePlanEntry::Omit { marker, .. } => assert_eq!(
-            marker,
-            &format!(
-                "[image omitted: count; image/png, 10x10, {} bytes]",
-                decoded(&parts[0]).len()
-            )
-        ),
-        other => panic!("expected a count omission, got {other:?}"),
-    }
 }
 
 #[test]
@@ -344,32 +302,12 @@ fn opaque_image_over_budget_is_omitted_at_admission_or_rejected_when_pinned() {
         other => panic!("expected a cannot-fit omission, got {other:?}"),
     }
 
-    let error = checkpoint_parts(&[part], &[0], &tight).unwrap_err();
+    let parts = [part];
+    let error = plan_admitted_images(&slots(&parts, &[0]), &tight).unwrap_err();
     assert!(matches!(
         error,
         ImageBudgetError::PinnedCannotFit { slot: 1, .. }
     ));
-}
-
-#[test]
-fn checkpoint_pins_that_exceed_the_count_budget_error() {
-    let parts = vec![png_part(10, 10), png_part(10, 10)];
-    let error = checkpoint_parts(
-        &parts,
-        &[0, 1],
-        &policy(1, loose_policy().max_bytes, 100_000_000),
-    )
-    .unwrap_err();
-
-    match error {
-        ImageBudgetError::PinnedExceedsBudget {
-            budget: ImageBudgetLimit::Count,
-            used: 2,
-            limit: 1,
-            pinned_images: 2,
-        } => {},
-        other => panic!("expected a pinned count overflow, got {other:?}"),
-    }
 }
 
 #[test]

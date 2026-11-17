@@ -6,7 +6,7 @@
 //! error.
 
 use super::*;
-use crate::clients::compaction::{InvocationPin, InvocationPinKind};
+use crate::clients::compaction::{InvocationPin, InvocationPinKind, normalize_source_pins};
 use crate::config::model::ApiType;
 use crate::types::ImagePart;
 use crate::types::compaction::{
@@ -140,17 +140,24 @@ fn checkpoint_recovery_note(agent: &mut Agent, invocation_start: usize, task_id:
         .conversation
         .preparation_source(invocation_start, invocation_start, task_id)
         .expect("the recovery invocation must prepare");
-    let note = assert_recovery_note_pin(&source.records, task_id);
+    let mut records = source.records.clone();
+    normalize_source_pins(
+        &mut records,
+        task_id,
+        &source.invocation_pins,
+        &source.image_consumption,
+    )
+    .expect("the recovery invocation must normalize");
+    let note = assert_recovery_note_pin(&records, task_id);
     assert!(source.invocation_pins.contains(&InvocationPin {
         source_index: note,
         kind: InvocationPinKind::SyntheticInput,
     }));
-    let retained: Vec<RetainedRecord> = source
-        .records
-        .iter()
+    let retained: Vec<RetainedRecord> = records
+        .into_iter()
         .zip(&source.source_refs)
         .filter(|(_, source_ref)| matches!(source_ref, SourceRef::Raw(_)))
-        .map(|(record, _)| record.clone())
+        .map(|(record, _)| record)
         .collect();
     let checkpoint = test_support::checkpoint(
         "checkpoint-image-recovery",

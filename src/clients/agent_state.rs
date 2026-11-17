@@ -1,8 +1,6 @@
 use std::borrow::Cow;
 
-use crate::clients::compaction::{
-    ImageConsumption, InvocationPin, InvocationPinKind, normalize_source_pins,
-};
+use crate::clients::compaction::{ImageConsumption, InvocationPin, InvocationPinKind};
 use crate::types::compaction::prompt_context_prefix_len;
 use crate::types::compaction::{
     MessageOrigin, PinReason, RetainedConversationRecord, RetainedRecord, SkillRead,
@@ -258,6 +256,7 @@ impl ConversationState {
     }
 
     /// Whether a checkpoint currently replaces part of the request context.
+    #[cfg(test)]
     pub(super) const fn has_checkpoint(&self) -> bool {
         self.checkpoint.is_some()
     }
@@ -266,7 +265,10 @@ impl ConversationState {
     ///
     /// The records follow [`Self::request_context`]'s order: prompt prefix,
     /// active summary, retained tail, then post-boundary raw history. Source
-    /// refs and image states are aligned one-to-one with those records.
+    /// refs and image states are aligned one-to-one with those records. Pins
+    /// stay as recorded; preparation applies the invocation pins after its
+    /// trigger and provenance gates so legacy metadata can surface as a no-op
+    /// or no-fit instead of an early error.
     pub(super) fn preparation_source(
         &self,
         current_user_raw: usize,
@@ -274,7 +276,7 @@ impl ConversationState {
         current_task_id: &str,
     ) -> anyhow::Result<PreparationSource> {
         self.ensure_current_user(current_user_raw, invocation_start)?;
-        let (mut records, source_refs, image_consumption) = self.project_preparation_records()?;
+        let (records, source_refs, image_consumption) = self.project_preparation_records()?;
         let current_user_input = self.source_index_for_user(current_user_raw, &source_refs)?;
         let invocation_pins = self.invocation_pins(
             current_user_input,
@@ -283,12 +285,6 @@ impl ConversationState {
             current_task_id,
             &source_refs,
         );
-        normalize_source_pins(
-            &mut records,
-            current_task_id,
-            &invocation_pins,
-            &image_consumption,
-        )?;
         Ok(PreparationSource {
             records,
             prompt_prefix_len: prompt_context_prefix_len(&self.history),
@@ -299,13 +295,14 @@ impl ConversationState {
         })
     }
 
-    /// Replace retired history with a validated checkpoint.
+    /// Replace retired history with a structurally validated checkpoint.
     ///
     /// The raw boundary moves to the current end of history. Pre-boundary raw
     /// records stay untouched as audit data but stop being projected; their
-    /// protected copies are the checkpoint's retained records.
+    /// protected copies are the checkpoint's retained records. The serialized
+    /// ceiling belongs to the externalized write, not this hydrated copy.
     pub(super) fn activate_checkpoint(&mut self, checkpoint: CompactionData) -> anyhow::Result<()> {
-        checkpoint.validate()?;
+        checkpoint.validate_structure()?;
         self.align_provenance_for_test_history();
         self.retained_image_consumption = checkpoint_image_consumption(&checkpoint);
         self.checkpoint_boundary = self.history.len();
@@ -1125,6 +1122,7 @@ fn resolve_assistant_message(items: &[ConversationItem]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clients::compaction::normalize_source_pins;
     use crate::types::ReasoningSummary;
     use crate::types::compaction::ContextSeed;
     use crate::types::compaction::test_support;
@@ -1399,7 +1397,7 @@ mod tests {
     }
 
     #[test]
-    fn preparation_source_preserves_live_evidence_and_invocation_pins() {
+    fn preparation_source_preserves_live_evidence_and_computes_invocation_pins() {
         let (state, invocation_start, current_user_raw, skill_read) = live_preparation_state();
         let source = state
             .preparation_source(current_user_raw, invocation_start, "task-1")
@@ -1477,6 +1475,7 @@ mod tests {
     }
 
     fn assert_live_source_invocation_pins(source: &PreparationSource) {
+        let records = normalized_source_records(source, "task-1");
         let user_source = source_index_of(source, SourceRef::Raw(5));
         assert_eq!(source.current_user_input, Some(user_source));
         let expected = [
@@ -1498,44 +1497,39 @@ mod tests {
                 "missing {kind:?} pin at source index {source_index}"
             );
         }
-        assert_eq!(source.records[user_source].pin, Some(PinReason::UserInput));
-        assert_eq!(
-            source.records[user_source].origin,
-            Some(MessageOrigin::User)
-        );
+        assert_eq!(records[user_source].pin, Some(PinReason::UserInput));
+        assert_eq!(records[user_source].origin, Some(MessageOrigin::User));
         let synthetic_source = source_index_of(source, SourceRef::Raw(6));
         assert_eq!(
-            source.records[synthetic_source].pin,
+            records[synthetic_source].pin,
             Some(PinReason::SyntheticInput)
         );
         assert_eq!(
-            source.records[synthetic_source].origin,
+            records[synthetic_source].origin,
             Some(MessageOrigin::Synthetic)
         );
         assert_eq!(
-            source.records[source_index_of(source, SourceRef::Raw(4))].pin,
+            records[source_index_of(source, SourceRef::Raw(4))].pin,
             Some(PinReason::DeveloperContext)
         );
     }
 
     fn assert_live_source_records(source: &PreparationSource, skill_read: &SkillRead) {
-        let call_record = &source.records[source_index_of(source, SourceRef::Raw(7))];
+        let records = normalized_source_records(source, "task-1");
+        let call_record = &records[source_index_of(source, SourceRef::Raw(7))];
         assert!(matches!(
             &call_record.record,
             RetainedConversationRecord::FunctionCall(data)
                 if data.replay == Some(ReplaySafety::Safe) && data.arguments_parse_error.is_none()
         ));
-        let skill_record = &source.records[source_index_of(source, SourceRef::Raw(8))];
+        let skill_record = &records[source_index_of(source, SourceRef::Raw(8))];
         assert_eq!(skill_record.skill_read.as_ref(), Some(skill_read));
         assert!(matches!(
             skill_record.pin,
             Some(PinReason::SkillInstructions { .. })
         ));
         let image_source = source_index_of(source, SourceRef::Raw(9));
-        assert_eq!(
-            source.records[image_source].pin,
-            Some(PinReason::UnconsumedImage)
-        );
+        assert_eq!(records[image_source].pin, Some(PinReason::UnconsumedImage));
         assert_eq!(
             source.image_consumption[image_source],
             ImageConsumption::Unconsumed
@@ -1625,20 +1619,33 @@ mod tests {
         let source = state
             .preparation_source(current_user_raw, invocation_start, task)
             .unwrap();
-        let retained = source
-            .records
-            .iter()
+        let records = normalized_source_records(&source, task);
+        let retained = records
+            .into_iter()
             .zip(&source.source_refs)
             .filter(|(_, source_ref)| matches!(source_ref, SourceRef::Raw(_)))
-            .map(|(record, _)| record.clone())
+            .map(|(record, _)| record)
             .collect();
         test_support::checkpoint(checkpoint_id, "first summary", retained)
     }
 
+    fn normalized_source_records(source: &PreparationSource, task: &str) -> Vec<RetainedRecord> {
+        let mut records = source.records.clone();
+        normalize_source_pins(
+            &mut records,
+            task,
+            &source.invocation_pins,
+            &source.image_consumption,
+        )
+        .unwrap();
+        records
+    }
+
     fn assert_successive_invocation_pins(source: &PreparationSource, skill_read: &SkillRead) {
+        let records = normalized_source_records(source, "task-1");
         for marker in ["hook context", "schema context"] {
             let index = source_text_index(source, marker);
-            let record = &source.records[index];
+            let record = &records[index];
             assert_eq!(record.pin, Some(PinReason::DeveloperContext));
             assert_eq!(record.origin, None);
             assert_eq!(record.source_task.as_deref(), Some("task-1"));
@@ -1656,27 +1663,20 @@ mod tests {
             );
         }
         let user = source_text_index(source, "current request");
-        assert_eq!(source.records[user].pin, Some(PinReason::UserInput));
-        assert_eq!(source.records[user].origin, Some(MessageOrigin::User));
+        assert_eq!(records[user].pin, Some(PinReason::UserInput));
+        assert_eq!(records[user].origin, Some(MessageOrigin::User));
         let synthetic = source_text_index(source, "schema correction");
-        assert_eq!(
-            source.records[synthetic].pin,
-            Some(PinReason::SyntheticInput)
-        );
-        assert_eq!(
-            source.records[synthetic].origin,
-            Some(MessageOrigin::Synthetic)
-        );
-        let skill = source
-            .records
+        assert_eq!(records[synthetic].pin, Some(PinReason::SyntheticInput));
+        assert_eq!(records[synthetic].origin, Some(MessageOrigin::Synthetic));
+        let skill = records
             .iter()
             .position(|record| record.skill_read.as_ref() == Some(skill_read))
             .expect("the skill result stays projected");
         assert!(matches!(
-            &source.records[skill].pin,
+            &records[skill].pin,
             Some(PinReason::SkillInstructions { name, .. }) if name == "demo"
         ));
-        assert_eq!(source.records[skill].source_task.as_deref(), Some("task-1"));
+        assert_eq!(records[skill].source_task.as_deref(), Some("task-1"));
     }
 
     fn source_text_index(source: &PreparationSource, text: &str) -> usize {
@@ -1755,15 +1755,16 @@ mod tests {
     }
 
     fn assert_retained_pin_normalization(source: &PreparationSource) {
+        let records = normalized_source_records(source, "task-new");
         let old_developer_source = source_index_of(source, SourceRef::Retained(0));
         let current_developer_source = source_index_of(source, SourceRef::Retained(1));
         let unpinned_developer_source = source_index_of(source, SourceRef::Retained(2));
         let user_source = source_index_of(source, SourceRef::Retained(3));
         let skill_source = source_index_of(source, SourceRef::Retained(5));
         assert_eq!(source.current_user_input, Some(user_source));
-        assert_eq!(source.records[old_developer_source].pin, None);
+        assert_eq!(records[old_developer_source].pin, None);
         assert_eq!(
-            source.records[current_developer_source].pin,
+            records[current_developer_source].pin,
             Some(PinReason::DeveloperContext)
         );
         assert_eq!(
@@ -1778,34 +1779,79 @@ mod tests {
             1
         );
         assert_eq!(
-            source.records[unpinned_developer_source].pin,
+            records[unpinned_developer_source].pin,
             Some(PinReason::DeveloperContext)
         );
-        assert_eq!(source.records[user_source].pin, Some(PinReason::UserInput));
+        assert_eq!(records[user_source].pin, Some(PinReason::UserInput));
         assert!(source.invocation_pins.contains(&InvocationPin {
             source_index: user_source,
             kind: InvocationPinKind::UserInput,
         }));
-        assert_eq!(source.records[skill_source].pin, None);
-        assert!(source.records[skill_source].skill_read.is_some());
+        assert_eq!(records[skill_source].pin, None);
+        assert!(records[skill_source].skill_read.is_some());
     }
 
     fn assert_retained_image_evidence(source: &PreparationSource) {
+        let records = normalized_source_records(source, "task-new");
         let unconsumed_source = source_index_of(source, SourceRef::Retained(7));
         let consumed_source = source_index_of(source, SourceRef::Retained(9));
         assert_eq!(
-            source.records[unconsumed_source].pin,
+            records[unconsumed_source].pin,
             Some(PinReason::UnconsumedImage)
         );
         assert_eq!(
             source.image_consumption[unconsumed_source],
             ImageConsumption::Unconsumed
         );
-        assert_eq!(source.records[consumed_source].pin, None);
+        assert_eq!(records[consumed_source].pin, None);
         assert_eq!(
             source.image_consumption[consumed_source],
             ImageConsumption::Consumed
         );
+    }
+
+    #[test]
+    fn activation_accepts_a_hydrated_checkpoint_above_the_write_ceiling() {
+        let mut first = test_support::message(Role::User, "first image");
+        let RetainedConversationRecord::Message(first_data) = &mut first.record else {
+            unreachable!()
+        };
+        first_data.images.push(ImagePart {
+            media_type: "image/png".to_string(),
+            data_base64: "A".repeat(5 * 1024 * 1024),
+            content_id: None,
+        });
+        let mut second = test_support::message(Role::User, "second image");
+        let RetainedConversationRecord::Message(second_data) = &mut second.record else {
+            unreachable!()
+        };
+        second_data.images.push(ImagePart {
+            media_type: "image/png".to_string(),
+            data_base64: "A".repeat(5 * 1024 * 1024),
+            content_id: None,
+        });
+        let checkpoint = test_support::checkpoint("checkpoint-1", "summary", vec![first, second]);
+
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::config::BlobStore::new(directory.path().join("blobs"));
+        let externalized = store.externalize_checkpoint(&checkpoint).unwrap();
+        assert!(externalized.to_record_bytes().is_ok());
+        let mut records = vec![crate::types::session::SessionRecord::Compaction(
+            externalized,
+        )];
+        store.hydrate_session("session-1", &mut records).unwrap();
+        let crate::types::session::SessionRecord::Compaction(hydrated) = records.pop().unwrap()
+        else {
+            unreachable!()
+        };
+        assert!(
+            hydrated.to_record_bytes().is_err(),
+            "the hydrated payload exceeds the externalized write ceiling"
+        );
+
+        let mut state = ConversationState::new(&[(Role::System, "sys".to_string())]);
+        state.activate_checkpoint(hydrated).unwrap();
+        assert!(state.has_checkpoint());
     }
 
     #[test]
@@ -1895,6 +1941,48 @@ mod tests {
             state.retained_image_consumption,
             vec![ImageConsumption::Consumed, ImageConsumption::Unconsumed]
         );
+    }
+
+    #[test]
+    fn preparation_source_leaves_legacy_skill_provenance_for_preparation() {
+        let mut state = ConversationState::new(&[(Role::System, "sys".to_string())]);
+        let invocation_start = state.history().len();
+        let current_user_raw = invocation_start;
+        state.push_user_message("request".to_string(), Some("task-1"));
+        let call = function_call("call-1", "Read");
+        state.extend_turn_items_with_provenance(
+            vec![call.clone()],
+            vec![RecordProvenance::live(
+                &call,
+                Some("task-1".to_string()),
+                Some(ReplaySafety::Safe),
+            )],
+        );
+        let skill_read = SkillRead {
+            name: "demo".to_string(),
+            path: std::path::PathBuf::from("/skills/demo/SKILL.md"),
+        };
+        state.push_tool_output(
+            "call-1".to_string(),
+            "skill instructions".to_string(),
+            Vec::new(),
+            RecordProvenance::live_tool_output(
+                None,
+                Some(ReplaySafety::Safe),
+                Some(skill_read.clone()),
+                false,
+            ),
+        );
+
+        let source = state
+            .preparation_source(current_user_raw, invocation_start, "task-1")
+            .expect("legacy provenance must reach preparation");
+        let skill = source
+            .records
+            .iter()
+            .find(|record| record.skill_read.as_ref() == Some(&skill_read))
+            .expect("the skill result stays projected");
+        assert_eq!(skill.source_task, None);
     }
 
     #[test]

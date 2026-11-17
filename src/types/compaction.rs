@@ -457,7 +457,7 @@ pub struct CompactionData {
 ///
 /// Readers validate every checkpoint as it is parsed, so an unknown version or
 /// structurally unsafe tail fails loudly in every consumer rather than only in
-/// the paths that remember to call [`CompactionData::validate`].
+/// the paths that remember to serialize the record.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CompactionDataWire {
@@ -511,12 +511,8 @@ impl<'de> Deserialize<'de> for CompactionData {
 }
 
 impl CompactionData {
-    /// Validate the checkpoint before it is committed.
-    ///
-    /// # Errors
-    ///
-    /// Rejects everything [`Self::validate_structure`] rejects, plus a record
-    /// above the serialized size ceiling.
+    /// Validate a checkpoint in tests without keeping the value.
+    #[cfg(test)]
     pub fn validate(&self) -> anyhow::Result<()> {
         self.to_record_bytes().map(|_| ())
     }
