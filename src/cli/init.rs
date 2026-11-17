@@ -293,9 +293,12 @@ const DEFAULT_SETTINGS: &str = r#"# Cake project settings, created by `cake init
 # Automatic pre-request compaction is opt-in. Enabling it requires the selected
 # model to declare context_window. threshold_percent is the fallback trigger;
 # trigger_tokens replaces it with an absolute input-token line. The retained
-# tail and generated summary are capped by their token targets. See
-# docs/configuration.md. A selected profile can also set
-# [profiles.NAME.compaction]; profile values override top-level values per key.
+# tail and generated summary are capped by their token targets. Existing
+# checkpoints still restore when enabled = false, including on the Codex
+# Responses backend, which cannot create new checkpoints because it removes the
+# bounded summary generation cap. See docs/configuration.md. A selected profile
+# can also set [profiles.NAME.compaction]; profile values override top-level
+# values per key.
 # [compaction]
 # enabled = false          # opt in to automatic pre-request compaction
 # threshold_percent = 80   # fallback trigger as a percent of context_window

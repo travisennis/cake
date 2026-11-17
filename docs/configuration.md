@@ -22,7 +22,7 @@ Model definitions are global-only. A project settings file may select a global `
 
 Project `.cake/` configuration has three trust classes (ADR 053):
 
-- **Low-authority** settings load without a trust record: `default_model` and profile `default_model` naming a global model, profile selection and non-authority profile overlays, `[tools].enabled` when it only narrows, `[limits]`, `[images]`, project `AGENTS.md`, and skills under the default project roots. These can change behavior or cost but cannot add filesystem authority, execute code, read arbitrary host files, or select a new provider endpoint.
+- **Low-authority** settings load without a trust record: `default_model` and profile `default_model` naming a global model, profile selection and non-authority profile overlays, `[tools].enabled` when it only narrows, `[limits]`, `[images]`, `[compaction]`, project `AGENTS.md`, and skills under the default project roots. These can change behavior or cost but cannot add filesystem authority, execute code, read arbitrary host files, or select a new provider endpoint.
 - **Authority-bearing** settings require an explicit trust record: `directories`, `[sandbox].read_only` and `[sandbox].writable`, `[tools.bash].gates`, every `[gates.<name>]` table, the legacy `[tools.bash.judge]` table, `system_prompt`, `skills.path`, `.cake/hooks.json`, `.cake/hooks.local.json`, `.cake/mcp.json`, and every file under `.cake/tools/`. The same keys inside a project profile overlay also require trust.
 - **Model definitions** are user-owned global configuration. A project cannot define a `[[models]]` entry; move it to `<config>/cake/settings.toml` and select it by name.
 
@@ -273,6 +273,38 @@ Once the budget is full, later images in the same run are omitted until compacti
 Request fitting changes only the request projection, not session history, checkpoint records, or the source file. A later request plans again from the stored images, and a resumed run applies the same rule from the same starting point.
 
 `[images]` is low-authority configuration: it can change request size and cost but cannot add filesystem authority, execute code, or select a provider. `cake debug config` reports the resolved `images` values along with `read_image_max_bytes` and the 2048-pixel edge.
+
+## Compaction
+
+The optional `[compaction]` section controls automatic pre-request compaction. It is off by default. When enabled, Cake estimates the request it is about to send; at or above the trigger it replaces the oldest complete tool exchanges with a self-contained checkpoint containing a bounded summary and the recent tail needed for the next request.
+
+```toml
+[compaction]
+enabled = false          # opt in to automatic pre-request compaction
+threshold_percent = 80   # fallback trigger as a percent of context_window
+trigger_tokens = 350000  # optional absolute trigger; must be below context_window
+keep_recent_tokens = 20000  # retained-tail token target
+summary_tokens = 4096    # generated summary token target
+```
+
+`enabled` defaults to `false`. Enabling it requires the selected model to declare a nonzero `context_window`; otherwise the run fails before it starts. An existing checkpoint is still restored and used when `enabled = false`, including on a backend that cannot create new checkpoints: the setting controls creation, not restoration. `trigger_tokens` does not enable compaction on its own.
+
+The model's `context_window` keeps its input-token meaning here: it is the limit for the whole request, and Cake does not subtract the output allowance a second time. With a known window, the trigger is:
+
+- `trigger_tokens` when set: the positive absolute input-token line, which must be strictly below the window;
+- otherwise `floor(context_window * threshold_percent / 100)`.
+
+`threshold_percent` must be between 10 and 80; the percent trigger remains the fallback when `trigger_tokens` is absent. The post-compaction target is `floor(3 * trigger / 4)`, so the default 80% trigger targets 60% of the window. A candidate must also reduce the estimated input by at least 10% of the source projection; otherwise preparation reports no fit rather than committing a negligible reduction.
+
+`keep_recent_tokens` is the target for the retained tail and is clamped to `floor(context_window / 4)`. `summary_tokens` is the target for the generated summary text and is clamped to `floor(context_window / 16)`. Both configured values must be positive, and a window that clamps an effective target to zero is rejected. Estimates are heuristics, not provider measurements; the session records whether they came from measured usage or content classes.
+
+Project `[compaction]` values override global values per key, and a selected profile may define `[profiles.NAME.compaction]`; profile values override the merged top-level values per key, with project profile values taking precedence over global profile values. All keys are optional, so a section overrides only what it sets.
+
+Automatic checks run immediately before each logical provider request, after tool results and context-affecting hook additions have settled. After a failed summary or a no-fit result, Cake makes no further automatic attempt in that invocation, including after new content arrives; every later request is still measured, and an over-window request fails before it is sent. A new invocation starts with a fresh attempt budget.
+
+Creating a checkpoint requires a backend that preserves a bounded summary generation cap. Chat Completions and ordinary Responses satisfy this; the Codex Responses backend strips `max_output_tokens`, so enabling automatic compaction on that backend fails before the run. Restoring an existing checkpoint remains supported there.
+
+`[compaction]` is low-authority configuration: it can change request size and cost but cannot add filesystem authority, execute code, or select a provider. `cake debug config` reports the configured values before window clamping. The generated `cake init` settings template includes the same keys and defaults. See [Integrations](integrations.md#compaction-lifecycle) for the session and replay records.
 
 ## Tool selection
 

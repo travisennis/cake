@@ -65,7 +65,7 @@ Persisted sessions are append-only, versioned JSONL logs plus an optional adjace
 - Production imports use absolute `crate::` paths; verified by `just lint-imports`.
 - Production code does not use `unwrap` or `expect`; verified by clippy.
 - Conversation state has one typed internal representation.
-- Within one invocation, conversation growth is tail-only: each provider request's message sequence is an exact prefix-extension of the previous request's. A committed context checkpoint is the one sanctioned boundary: the next request starts a new projection from the prompt prefix, marked summary, retained tail, and current invocation context, and every later request extends that projection exactly; provider prompt caches depend on it.
+- Within one invocation, conversation growth is tail-only: each provider request's message sequence is an exact prefix-extension of the previous request's. A committed context checkpoint is the one sanctioned exception: the next request starts a new projection from the prompt prefix, marked summary, retained tail, and current invocation context, and every later request extends that projection exactly; provider prompt caches depend on it. Compaction lifecycle records are audit metadata: they never enter model context or change the projection.
 - Filesystem tools validate paths before side effects.
 - Sandboxing is default-on and availability failures fail closed, except for the documented recognized nested-Seatbelt fallback.
 - Session files are append-only and versioned; older records are never silently rewritten.

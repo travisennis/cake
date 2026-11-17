@@ -45,12 +45,14 @@ A user can see it working without reading code. In a text run, a long task print
 - [ ] (2026-11-16) M5 writer failure between turns: `terminal_writer_failure_between_turns_stops_the_next_request` completes one tool turn, flips a terminal writer state when its output is persisted, and asserts both enabled and disabled policies stop before a second provider request with the writer cause. The existing direct tests cover the terminal failure between summary batches, between summary retries, and before a disabled-policy request. Verification: focused test passed; `just check` exit 0 with 2,667 tests across 23 binaries (2,329 unit), CC 2,442 functions, 0 over.
 - [ ] (2026-11-16) M5 lifecycle record snapshots and replay: `snapshot_session_json_compaction_start` and `snapshot_session_json_compaction_end` pin the serialized lifecycle payloads and prove both round-trip as loadable records. `replay_emits_compaction_lifecycle_once_in_physical_order` inserts start, checkpoint, and end before `task_complete` in the real-binary fixture, then asserts that exact contiguous order, one committed end naming the checkpoint, an intact retained tail, and no expansion into duplicate message, function-call, or function-call-output events. Verification: the focused snapshots and replay fixture passed.
 - [ ] (2026-11-16) M5 image-recovery synthetic pin: `image_recovery_note_is_persisted_and_stays_pinned_across_a_checkpoint` drives a real provider image rejection, asserts the persisted recovery note, prepares a checkpoint from that invocation, activates it, and proves the note appears once with `SyntheticInput`, synthetic origin, and the current source task after activation. Verification: focused `image_recovery` 3 passed; after both slices, `just check` exit 0 with 2,669 tests across 23 binaries (2,331 unit), CC 2,442 functions, 0 over. M5 complete.
+- [x] (2026-11-16) M6 documentation and closeout: `docs/configuration.md` now has the `[compaction]` section after Images covering all five keys, defaults, per-key precedence, low-authority status, the input-window meaning, absolute and percent triggers, the three-quarter target, the 10% minimum reduction, clamped retained and summary targets, opt-in creation versus disabled-policy restoration, backend cap restriction, diagnostics, and the init template link. `docs/integrations.md` now documents the `compaction_start` and `compaction_end` fields, statuses, bounded reasons, success and failure ordering, live and replay visibility, no retained-tail expansion, audit-only semantics, and the checkpoint pin and synthetic-origin validator. `ARCHITECTURE.md` names the committed checkpoint as the sole tail-only exception and lifecycle records as audit metadata. The init template now states the restoration and backend-cap behavior. `cake debug config` already reported all five configured values
+  before window clamping, so its text needed no change. Verification: `cargo test --offline --bin cake init` 38 passed; `just check` exit 0 with 2,669 tests across 23 binaries (2,331 unit), CC 2,442 functions checked with 13 grandfathered and 0 over; `panache lint`, `just docs-check`, and `git diff --check` clean. M6 complete; 034g is delivered.
 - [x] Milestone 1: add resolved `[compaction]` settings, validation, diagnostics, and agent policy application.
 - [x] Milestone 2: add live provenance, preparation-source construction, pin normalization, and image-consumption tracking.
 - [x] Milestone 3: make trigger, measurement, and retained-tail selection explicit and testable.
 - [x] Milestone 4: call preparation before provider requests, commit and activate checkpoints, emit lifecycle records, suppress failed proactive attempts, and gate on writer health.
 - [x] Milestone 5: prove deterministic continuation, prefix-only growth except at checkpoints, failure behavior, image behavior, usage accounting, and session modes offline.
-- [ ] Milestone 6: update configuration, integrations, architecture, init-template, and debug-config documentation; run the full gates and record acceptance evidence.
+- [x] Milestone 6: update configuration, integrations, architecture, init-template, and debug-config documentation; run the full gates and record acceptance evidence.
 
 ## Surprises & Discoveries
 
@@ -120,6 +122,9 @@ Planning outcome (2026-11-15): this stage plan translates parent-plan M3 into im
 
 Review outcome (2026-11-15): a five-finding review tightened the plan before implementation. Candidate image selection now validates against the next request's admission plan and retires more exchanges when a protected image would be omitted. Writer health moved into the provider attempt loop so summary batches and retries cannot spend after a terminal append failure. Restored images with unknown evidence are conservatively pinned instead of rejected, and activation transfers the evidence the checkpoint already carries. Selection continues until the retained target and every hard bound fit, not just the first bound. Invocation pins gained explicit `SyntheticInput` and `DeveloperContext` variants and a concrete source-index input so two successive checkpoints preserve roles, origins, and pins. No code has changed. Review verification: `cargo test compaction --offline` passed 65 tests; image-budget checks passed 22 tests, with three localhost tests rerun outside the sandbox after
 port-binding denials; documentation checks and `git diff --check master...HEAD` passed.
+
+Delivery outcome (2026-11-16): 034g is complete. The stage added opt-in `[compaction]` settings and validation, live provenance and preparation sources, trigger and retained-tail selection, automatic pre-request compaction with writer-health and failure suppression, lifecycle records with physical-order replay, and an offline proof matrix covering continuation, targets, no-fit, summary failure, images, schema and hook pins, resume and fork, usage accounting, and writer failure. M6 documented the configuration surface, lifecycle records, replay ordering, and synthetic pin behavior; the init template states restoration and backend-cap behavior. Verification at the final gate: `cargo test --offline --bin cake init` 38 passed; `just check` exit 0 with 2,669 tests across 23 binaries (2,331 unit), CC 2,442 functions checked with 13 grandfathered and 0 over; `panache lint`, `just docs-check`, and `git diff --check` clean. The parent plan remains active for M7 qualification; next children are
+034i, 034h, 034j, and 034d.
 
 ## Context and Orientation
 
@@ -367,8 +372,8 @@ git diff --check
 For this planning-only branch, validate the new plan with the documentation checks:
 
 ```
-panache format --check docs/exec-plans/active/automatic-compaction.md
-panache lint docs/exec-plans/active/automatic-compaction.md
+panache format --check docs/exec-plans/completed/automatic-compaction.md
+panache lint docs/exec-plans/completed/automatic-compaction.md
 just docs-check
 git diff --check
 ```
@@ -400,7 +405,7 @@ If implementation changes a durable decision, create a successor ADR and revise 
 
 ## Artifacts and Notes
 
-Expected observations, not results already achieved:
+The stage's acceptance observations:
 
 ```
 automatic checkpoints in one long invocation: at least 1
@@ -417,6 +422,8 @@ restored unknown-evidence images rejected as no-fit: 0
 ```
 
 A successful text run prints one stderr progress line before the next request and continues. A stream-json run emits the lifecycle records and the checkpoint; a replay of the session emits the same records in physical order and never expands the retained tail. `cake debug config --json` reports the configured compaction policy. No provider body, summary text, or credential appears in a lifecycle reason.
+
+Final M6 gate (2026-11-16): `cargo test --offline --bin cake init` 38 passed; `just check` exit 0 with 2,669 tests across 23 binaries (2,331 unit), CC 2,442 functions checked with 13 grandfathered and 0 over; `panache lint`, `just docs-check`, and `git diff --check` clean. The M6 slice changed documentation and init-template comments only, not runtime behavior; the full gate re-ran because the generated template text changed.
 
 Record the baseline commit, implemented commits, exact gate results, and the documentation assessment on task 034g. Record the delivered commit or PR URL after integration.
 
@@ -593,3 +600,5 @@ The production summary adapter remains `AgentSummaryCaller`; no deterministic te
 Revision note (2026-11-15): initial stage plan for task 034g. It records the settings shape, the policy move, absolute-trigger semantics, the preparation report, live provenance and source construction, image-consumption tracking, lifecycle records, writer health, measurement reset, pre-request integration, and the offline proof. No implementation has started.
 
 Review revision (2026-11-15): folded five review findings into the plan. Candidate image protection is validated with `plan_admitted_images` against the exact next projection; writer health is a per-attempt precondition inside `AgentRunner::complete_turn`; restored images with unknown evidence are conservatively pinned instead of rejected; selection continues until the retained target and all hard bounds fit; and `PinReason::SyntheticInput`/`DeveloperContext` plus explicit `InvocationPin` values preserve invocation context across successive checkpoints. No implementation has started.
+
+Delivery revision (2026-11-16): M6 documented the shipped `[compaction]` surface, the lifecycle records and replay order, and the retained pin and synthetic-origin contract; the init template now explains disabled-policy restoration and the backend cap limit. The full gate passed and the plan moved to the completed bucket. No runtime behavior changed in this slice.
