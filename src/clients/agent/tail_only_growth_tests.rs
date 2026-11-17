@@ -307,6 +307,19 @@ fn responses_tool_call(call_id: &str, read_path: &str) -> serde_json::Value {
     })
 }
 
+fn responses_with_usage(
+    mut body: serde_json::Value,
+    input_tokens: u64,
+    output_tokens: u64,
+) -> serde_json::Value {
+    body["usage"] = serde_json::json!({
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens.saturating_add(output_tokens)
+    });
+    body
+}
+
 /// The same call without reported usage. Omitting usage forces the full
 /// projected request estimate instead of a measured-input basis that only
 /// accumulates the newest appended items.
@@ -983,6 +996,116 @@ fn test_message(role: Role, content: &str) -> ConversationItem {
         timestamp: None,
         images: Vec::new(),
     }
+}
+
+/// Main-agent `turn_usage` records stay in physical order around the
+/// compaction lifecycle, while the first post-checkpoint main attempt reports
+/// the reduced context. Summary usage remains purpose-tagged and carries no
+/// main-agent budget.
+#[tokio::test]
+async fn main_turn_usage_follows_lifecycle_and_reports_reduced_context() {
+    let server = MockServer::start().await;
+    let fixture_dir = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+    let fixture_path = fixture_dir.path().join("usage-input.txt");
+    std::fs::write(&fixture_path, "alpha\n").unwrap();
+    let read_path = fixture_path.display().to_string();
+
+    let provider = ScriptedProvider::new();
+    provider
+        .mount_split(
+            &server,
+            "/responses",
+            vec![
+                ResponseTemplate::new(200).set_body_json(responses_with_usage(
+                    responses_tool_call("call-read", &read_path),
+                    9_000,
+                    100,
+                )),
+                ResponseTemplate::new(200).set_body_json(responses_with_usage(
+                    responses_text("done"),
+                    2_000,
+                    50,
+                )),
+            ],
+            vec![
+                ResponseTemplate::new(200).set_body_json(responses_with_usage(
+                    responses_text("usage summary"),
+                    500,
+                    50,
+                )),
+            ],
+        )
+        .await;
+
+    let persisted = Arc::new(Mutex::new(Vec::<SessionRecord>::new()));
+    let sink = Arc::clone(&persisted);
+    let mut agent = test_agent_with_window(ApiType::Responses, &server.uri(), 10_000)
+        .with_compaction_policy(compaction_policy())
+        .unwrap()
+        .with_persist_callback(move |record| {
+            sink.lock().unwrap().push(record.clone());
+            Ok(())
+        })
+        .with_tools(crate::clients::tools::read_tool_registry());
+
+    let result = agent
+        .send("read the usage fixture".to_string())
+        .await
+        .unwrap();
+
+    assert_eq!(result, "done");
+    assert_eq!(agent.turn_count(), 2);
+    assert_eq!(
+        agent.last_usage().map(|usage| usage.input_tokens),
+        Some(2_000)
+    );
+    assert_usage_lifecycle_order(&persisted.lock().unwrap());
+}
+
+fn assert_usage_lifecycle_order(records: &[SessionRecord]) {
+    let position = |wanted: fn(&SessionRecord) -> bool| {
+        records
+            .iter()
+            .position(wanted)
+            .expect("expected lifecycle record")
+    };
+    let start = position(|record| matches!(record, SessionRecord::CompactionStart(_)));
+    let checkpoint = position(|record| matches!(record, SessionRecord::Compaction(_)));
+    let end = position(|record| matches!(record, SessionRecord::CompactionEnd(_)));
+    let usages: Vec<_> = records
+        .iter()
+        .enumerate()
+        .filter_map(|(index, record)| match record {
+            SessionRecord::TurnUsage(data) => Some((index, data)),
+            _ => None,
+        })
+        .collect();
+    let main: Vec<_> = usages
+        .iter()
+        .filter(|(_, data)| data.purpose.is_none())
+        .collect();
+    let summary: Vec<_> = usages
+        .iter()
+        .filter(|(_, data)| data.purpose == Some(TurnUsagePurpose::Compaction))
+        .collect();
+    assert_eq!(main.len(), 2, "one usage record per main-agent turn");
+    assert_eq!(summary.len(), 1, "one usage record per summary batch");
+    assert!(
+        main[0].0 < start,
+        "the first main usage precedes the lifecycle"
+    );
+    assert!(
+        start < summary[0].0 && summary[0].0 < checkpoint,
+        "summary usage is persisted before the checkpoint"
+    );
+    assert!(checkpoint < end, "the end follows the checkpoint");
+    assert!(end < main[1].0, "the post-checkpoint usage follows the end");
+    assert_eq!(main[0].1.usage.input_tokens, 9_000);
+    assert_eq!(main[0].1.remaining_context_tokens, Some(1_000));
+    assert_eq!(main[1].1.usage.input_tokens, 2_000);
+    assert_eq!(main[1].1.remaining_context_tokens, Some(8_000));
+    assert_eq!(summary[0].1.context_window, None);
+    assert_eq!(summary[0].1.remaining_context_tokens, None);
 }
 
 const SEEDED_IMAGE_CALL_ID: &str = "call-seeded-image";
