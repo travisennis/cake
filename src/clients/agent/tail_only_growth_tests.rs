@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 use std::io::Cursor;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
@@ -26,6 +26,7 @@ use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 use super::*;
 use crate::config::model::{ApiType, ResolvedModelConfig};
 use crate::config::output_schema::OutputSchema;
+use crate::config::settings::CompactionPolicy;
 use crate::config::skills::{Skill, SkillScope};
 use crate::types::ImagePart;
 use crate::types::compaction::{
@@ -1758,6 +1759,67 @@ async fn failed_checkpoint_commit_through_the_persist_callback_stops_the_loop() 
             },
             WriterFault::Serialize => unreachable!("only write stages are exercised"),
         }
+    }
+}
+
+/// A terminal writer failure after a completed turn stops the next provider
+/// request for both enabled and disabled compaction policies.
+#[tokio::test]
+async fn terminal_writer_failure_between_turns_stops_the_next_request() {
+    for policy in [CompactionPolicy::default(), compaction_policy()] {
+        let server = MockServer::start().await;
+        let fixture_dir = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        let fixture_path = fixture_dir.path().join("writer-failure-input.txt");
+        std::fs::write(&fixture_path, "alpha\n").unwrap();
+        let read_path = fixture_path.display().to_string();
+
+        let provider = ScriptedProvider::new();
+        provider
+            .mount(
+                &server,
+                "/responses",
+                vec![
+                    ResponseTemplate::new(200)
+                        .set_body_json(responses_tool_call("call-read", &read_path)),
+                ],
+            )
+            .await;
+
+        let terminal = Arc::new(AtomicBool::new(false));
+        let health_flag = Arc::clone(&terminal);
+        let persist_flag = Arc::clone(&terminal);
+        let mut agent = test_agent_with_window(ApiType::Responses, &server.uri(), 10_000)
+            .with_compaction_policy(policy)
+            .unwrap()
+            .with_health_callback(move || {
+                if health_flag.load(Ordering::SeqCst) {
+                    anyhow::bail!("writer failed between turns")
+                }
+                Ok(())
+            })
+            .with_persist_callback(move |record| {
+                if matches!(record, SessionRecord::FunctionCallOutput(_)) {
+                    persist_flag.store(true, Ordering::SeqCst);
+                }
+                Ok(())
+            })
+            .with_tools(crate::clients::tools::read_tool_registry());
+
+        let error = agent
+            .send("read the writer fixture".to_string())
+            .await
+            .expect_err("a terminal writer must stop the next turn");
+
+        assert!(
+            format!("{error:#}").contains("writer failed between turns"),
+            "{error:#}"
+        );
+        assert_eq!(agent.turn_count(), 1);
+        assert_eq!(
+            provider.requests.lock().unwrap().len(),
+            1,
+            "a terminal writer must prevent the next provider request"
+        );
     }
 }
 
