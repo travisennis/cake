@@ -19,7 +19,8 @@ use fs4::{FileExt, TryLockError};
 
 use crate::types::ProviderIdentity;
 use crate::types::{
-    CompactionData, ContextSeed, ConversationItem, GitState, SessionRecord, TurnUsageData, Usage,
+    CompactionData, ContextProvenance, ContextSeed, ConversationItem, GitState, SessionRecord,
+    TurnUsageData, Usage,
 };
 
 /// Shared writer that holds the locked append handle for a session JSONL file.
@@ -346,7 +347,13 @@ impl Session {
                 SessionRecord::Compaction(_) => {},
                 record => {
                     if let Some(item) = record.to_conversation_item() {
+                        let replay = match record {
+                            SessionRecord::FunctionCall(data) => data.replay,
+                            SessionRecord::FunctionCallOutput(data) => data.replay,
+                            _ => None,
+                        };
                         seed.messages.push(item);
+                        seed.provenance.push(ContextProvenance { replay });
                     }
                 },
             }
@@ -892,6 +899,7 @@ fn try_lock_session_file(file: &File, path: &Path) -> anyhow::Result<bool> {
 mod tests {
     use super::*;
     use crate::types::ReasoningSummary;
+    use crate::types::ReplaySafety;
     use crate::types::session::{
         FunctionCallData, FunctionCallOutputData, MessageData, ReasoningData,
     };
@@ -2094,6 +2102,40 @@ mod tests {
             !checkpoint.retained.is_empty(),
             "the latest tail is selected"
         );
+    }
+
+    #[test]
+    fn session_context_seed_carries_replay_declarations() {
+        let mut session = make_test_session();
+        session.records.push(meta_record(&session));
+        session.records.push(task_start(&session, "task-1"));
+        session
+            .records
+            .push(SessionRecord::FunctionCall(FunctionCallData {
+                id: "fc-replay".to_string(),
+                call_id: "call-replay".to_string(),
+                name: "Read".to_string(),
+                arguments: "{}".to_string(),
+                arguments_parse_error: None,
+                replay: Some(ReplaySafety::Safe),
+                timestamp: None,
+            }));
+        session
+            .records
+            .push(SessionRecord::FunctionCallOutput(FunctionCallOutputData {
+                call_id: "call-replay".to_string(),
+                output: "tool output".to_string(),
+                content_id: None,
+                replay: Some(ReplaySafety::Safe),
+                timestamp: None,
+                images: Vec::new(),
+            }));
+
+        let seed = session.context_seed();
+
+        assert_eq!(seed.provenance.len(), seed.messages.len());
+        assert_eq!(seed.provenance[0].replay, Some(ReplaySafety::Safe));
+        assert_eq!(seed.provenance[1].replay, Some(ReplaySafety::Safe));
     }
 
     #[test]

@@ -796,6 +796,22 @@ fn checkpointed_records_with_large_tail(env: &TestEnv) -> Vec<serde_json::Value>
         "output": "post-large output",
         "timestamp": "2026-07-27T12:00:08Z",
     }));
+    for replay in ["safe", "never"] {
+        records.push(serde_json::json!({
+            "type": "function_call",
+            "id": format!("fc-{replay}"),
+            "call_id": format!("call-{replay}"),
+            "name": "Read",
+            "arguments": "{}",
+            "replay": replay,
+        }));
+        records.push(serde_json::json!({
+            "type": "function_call_output",
+            "call_id": format!("call-{replay}"),
+            "output": "small recent result",
+            "replay": replay,
+        }));
+    }
     records
 }
 
@@ -1086,6 +1102,26 @@ fn assert_compacted_session(mode: &str, env: &TestEnv) {
         .expect("compaction should append a checkpoint");
     assert_eq!(checkpoint["summary"], "fresh check summary");
     assert_ne!(checkpoint["checkpoint_id"], "checkpoint-newer summary");
+    let retained = checkpoint["retained"].as_array().expect("retained records");
+    for replay in ["safe", "never"] {
+        let call_id = format!("call-{replay}");
+        for kind in ["function_call", "function_call_output"] {
+            let record = retained
+                .iter()
+                .find(|record| record["type"] == kind && record["call_id"] == call_id)
+                .expect("recent call and result should be retained");
+            assert_eq!(
+                record["replay"], replay,
+                "{mode}: {kind} replay declaration"
+            );
+        }
+    }
+    let previous_input = retained
+        .iter()
+        .find(|record| record["content"] == "retained latest")
+        .expect("the ownerless exact pin should survive automatic compaction");
+    assert_eq!(previous_input["pin"]["kind"], "user_input");
+    assert!(previous_input["source_task"].is_null());
 
     let start = records
         .iter()

@@ -1650,3 +1650,64 @@ impl FakeCaller {
         })
     }
 }
+
+#[test]
+fn an_ownerless_exact_pin_survives_source_pin_normalization() {
+    let mut unknown_owner = pinned(user("promised request"), PinReason::UserInput);
+    unknown_owner.origin = Some(MessageOrigin::User);
+    let source = vec![unknown_owner, user("new request")];
+    let input = input(&source, 0, Some(1), Some(100_000), &[]);
+    let pinned_source = apply_pins(&input).unwrap();
+
+    assert_eq!(pinned_source[0].pin, Some(PinReason::UserInput));
+    assert_eq!(pinned_source[0].source_task, None);
+    assert_eq!(pinned_source[1].pin, Some(PinReason::UserInput));
+    assert_eq!(pinned_source[1].source_task.as_deref(), Some("task-1"));
+}
+
+#[test]
+fn an_assistant_answer_before_a_pinned_input_is_its_own_exchange() {
+    let mut source = vec![message(Role::System, "system")];
+    source.push(assistant(&"a".repeat(80_000)));
+    source.push(user("current request"));
+    source.push(assistant("ok"));
+
+    let prepared = prepared(prepare(input(&source, 1, Some(2), Some(10_000), &[])).unwrap());
+    assert!(
+        prepared
+            .retired_exchanges
+            .iter()
+            .flatten()
+            .any(|record| matches!(
+                &record.record,
+                RetainedConversationRecord::Message(data)
+                    if data.role == Role::Assistant && data.content.len() > 10_000
+            )),
+        "the prior answer is a complete exchange on its own"
+    );
+    assert!(
+        prepared.retained.iter().any(|record| matches!(
+            &record.record,
+            RetainedConversationRecord::Message(data)
+                if data.role == Role::User && data.content == "current request"
+        )),
+        "segmenting at the user message keeps the pinned input out of the answer's exchange"
+    );
+}
+
+#[test]
+fn segment_exchanges_gives_every_non_assistant_message_its_own_exchange() {
+    let source = vec![
+        message(Role::System, "system"),
+        assistant("first answer"),
+        message(Role::Developer, "developer context"),
+        message(Role::User, "request"),
+        assistant("second answer"),
+    ];
+    let ranges: Vec<std::ops::Range<usize>> = segment_exchanges(&source, 1)
+        .unwrap()
+        .iter()
+        .map(|exchange| exchange.range.clone())
+        .collect();
+    assert_eq!(ranges, vec![1..2, 2..3, 3..4, 4..5]);
+}

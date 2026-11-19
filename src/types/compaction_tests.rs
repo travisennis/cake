@@ -750,6 +750,7 @@ fn compaction_context_seed_default_is_empty() {
 fn compaction_context_seed_re_envelopes_only_the_checkpoint_for_a_fork() {
     let seed = ContextSeed {
         messages: vec![user_message("retained")],
+        provenance: Vec::new(),
         checkpoint: Some(checkpoint("checkpoint-1", "summary", Vec::new())),
         boundary: Some(1),
     };

@@ -564,23 +564,25 @@ fn segment_exchanges(source: &[RetainedRecord], start: usize) -> anyhow::Result<
     while index < source.len() {
         let exchange_start = index;
         match &source[index].record {
-            RetainedConversationRecord::Message(data)
-                if matches!(data.role, Role::User | Role::Developer) =>
-            {
+            RetainedConversationRecord::Message(data) if data.role != Role::Assistant => {
                 index += 1;
             },
             RetainedConversationRecord::Message(_)
             | RetainedConversationRecord::Reasoning(_)
             | RetainedConversationRecord::FunctionCall(_) => {
                 // One assistant response: every consecutive assistant item,
-                // then the outputs that close its calls.
+                // then the outputs that close its calls. A user, developer, or
+                // system message starts its own exchange, so an answer never
+                // shares an exchange with the input that follows it.
                 while index < source.len()
-                    && matches!(
-                        source[index].record,
-                        RetainedConversationRecord::Message(_)
-                            | RetainedConversationRecord::Reasoning(_)
+                    && (matches!(
+                        &source[index].record,
+                        RetainedConversationRecord::Message(data) if data.role == Role::Assistant
+                    ) || matches!(
+                        &source[index].record,
+                        RetainedConversationRecord::Reasoning(_)
                             | RetainedConversationRecord::FunctionCall(_)
-                    )
+                    ))
                 {
                     index += 1;
                 }
@@ -777,6 +779,12 @@ fn clear_stale_exact_pin(
             | PinReason::SkillInstructions { .. }
     ) || record.source_task.as_deref() == Some(current_task_id)
     {
+        return Ok(());
+    }
+    if record.source_task.is_none() {
+        // The pin owner is unknown. Clearing the pin would let selection retire
+        // content the active checkpoint promised to keep, so treat the pin as
+        // current until the record's ownership can be established.
         return Ok(());
     }
     if matches!(pin, PinReason::SkillInstructions { .. }) {

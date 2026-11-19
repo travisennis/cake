@@ -22,7 +22,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::types::conversation::{ConversationItem, Role};
-use crate::types::session::{FunctionCallData, FunctionCallOutputData, MessageData, ReasoningData};
+use crate::types::session::{
+    FunctionCallData, FunctionCallOutputData, MessageData, ReasoningData, ReplaySafety,
+};
 
 /// The only checkpoint record version this build writes and reads.
 pub const CHECKPOINT_VERSION: u32 = 1;
@@ -867,14 +869,27 @@ pub const fn image_tokens(count: usize) -> u64 {
     }
 }
 
+/// Persisted metadata that [`ConversationItem`] does not carry.
+///
+/// A session record's replay declaration is not part of the provider item, but
+/// checkpoint preparation must copy it into every retained call or output.
+/// Restore carries this evidence alongside the corresponding provider item.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ContextProvenance {
+    pub replay: Option<ReplaySafety>,
+}
+
 /// Raw history and the latest checkpoint, as restore reads them from a session.
 ///
-/// `messages` is the full raw conversation. `boundary` is the conversation-item
-/// count at the latest `compaction` record, so `messages[..boundary]` is
-/// represented by `checkpoint` and `messages[boundary..]` is sent as-is.
+/// `messages` is the full raw conversation. `provenance` is parallel to it and
+/// may be empty when the caller only has provider items. `boundary` is the
+/// conversation-item count at the latest `compaction` record, so
+/// `messages[..boundary]` is represented by `checkpoint` and
+/// `messages[boundary..]` is sent as-is.
 #[derive(Debug, Clone, Default)]
 pub struct ContextSeed {
     pub messages: Vec<ConversationItem>,
+    pub provenance: Vec<ContextProvenance>,
     pub checkpoint: Option<CompactionData>,
     pub boundary: Option<usize>,
 }

@@ -8,8 +8,8 @@ use crate::types::compaction::{
 };
 use crate::types::session::{FunctionCallData, FunctionCallOutputData, MessageData, ReasoningData};
 use crate::types::{
-    CompactionData, ContextSeed, ConversationItem, ImagePart, ReplaySafety, Role, Usage,
-    project_context,
+    CompactionData, ContextProvenance, ContextSeed, ConversationItem, ImagePart, ReplaySafety,
+    Role, Usage, project_context,
 };
 
 /// Checkpoint provenance for one raw-history record.
@@ -62,14 +62,15 @@ impl RecordProvenance {
         }
     }
 
-    /// Provenance for a restored raw record. Session records are not part of
-    /// this seed, so origin, task, skill, and replay evidence stay unknown.
-    const fn restored(item: &ConversationItem) -> Self {
+    /// Provenance for a restored raw record. Session records carry replay
+    /// declarations separately from provider items; origin, task, and skill
+    /// evidence remain unknown until a caller reconstructs them.
+    const fn restored(item: &ConversationItem, persisted: ContextProvenance) -> Self {
         Self {
             origin: None,
             source_task: None,
             skill_read: None,
-            replay: None,
+            replay: persisted.replay,
             image_consumption: if item.image_count() == 0 {
                 ImageConsumption::Consumed
             } else {
@@ -603,6 +604,7 @@ impl ConversationState {
     ) -> anyhow::Result<()> {
         self.with_restored_context(ContextSeed {
             messages,
+            provenance: Vec::new(),
             checkpoint: None,
             boundary: None,
         })
@@ -626,9 +628,21 @@ impl ConversationState {
         );
         let ContextSeed {
             messages,
+            provenance,
             checkpoint,
             boundary,
         } = seed;
+        anyhow::ensure!(
+            provenance.is_empty() || provenance.len() == messages.len(),
+            "restored context has {} provenance entries for {} history records",
+            provenance.len(),
+            messages.len()
+        );
+        let provenance = if provenance.is_empty() {
+            vec![ContextProvenance::default(); messages.len()]
+        } else {
+            provenance
+        };
         let boundary = match boundary {
             Some(boundary) => {
                 anyhow::ensure!(
@@ -665,8 +679,9 @@ impl ConversationState {
         )?;
         let restored_provenance: Vec<RecordProvenance> = messages
             .iter()
+            .zip(&provenance)
             .skip(first_non_prompt)
-            .map(RecordProvenance::restored)
+            .map(|(item, persisted)| RecordProvenance::restored(item, *persisted))
             .collect();
         self.history
             .extend(messages.into_iter().skip(first_non_prompt));
@@ -2389,6 +2404,7 @@ mod tests {
     ) -> ContextSeed {
         ContextSeed {
             messages,
+            provenance: Vec::new(),
             checkpoint: Some(checkpoint),
             boundary: Some(boundary),
         }
@@ -2587,6 +2603,7 @@ mod tests {
         let error = state
             .with_restored_context(ContextSeed {
                 messages: vec![user_message("go")],
+                provenance: Vec::new(),
                 checkpoint: Some(test_support::checkpoint(
                     "checkpoint-1",
                     "summary",
