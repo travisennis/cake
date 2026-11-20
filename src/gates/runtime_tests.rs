@@ -57,6 +57,7 @@ fn model_definition(name: &str, base_url: &str, api_key_env: &str) -> ModelDefin
         max_output_tokens: None,
         context_window: None,
         reasoning_effort: None,
+        reasoning_efforts: None,
         reasoning_summary: None,
         reasoning_max_tokens: None,
         providers: Vec::new(),

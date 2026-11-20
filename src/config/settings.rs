@@ -1484,6 +1484,13 @@ pub struct ModelDefinition {
     /// Reasoning effort level
     #[serde(default)]
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Reasoning-effort levels to expand into selectable variants.
+    ///
+    /// Each level generates a model named `<name>-<level>` that copies this
+    /// definition and sets `reasoning_effort` to that level. The base entry
+    /// remains selectable with its own configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_efforts: Option<Vec<ReasoningEffort>>,
     /// Reasoning summary mode (Responses API only)
     #[serde(default)]
     pub reasoning_summary: Option<String>,
@@ -1581,6 +1588,15 @@ pub enum SettingsError {
 
     #[error("Duplicate model name '{name}' in settings")]
     DuplicateModelName { name: String },
+
+    #[error("Model '{name}' lists reasoning effort '{level}' more than once in reasoning_efforts")]
+    DuplicateReasoningEffort { name: String, level: String },
+
+    #[error(
+        "Model '{base}' generates model '{name}' from reasoning_efforts, but '{name}' is also \
+         defined in the same settings file"
+    )]
+    GeneratedModelNameConflict { base: String, name: String },
 
     #[error("Invalid profile name '{name}': {reason}")]
     InvalidProfileName { name: String, reason: String },
@@ -2400,6 +2416,8 @@ impl SettingsLoader {
         map: &mut HashMap<String, ModelDefinition>,
         definitions: Vec<ModelDefinition>,
     ) -> Result<(), SettingsError> {
+        let definitions = Self::expand_model_variants(definitions)?;
+
         // First, check for duplicates within the same file
         let mut seen: HashSet<&str> = HashSet::new();
         for def in &definitions {
@@ -2448,6 +2466,51 @@ impl SettingsLoader {
         }
 
         Ok(())
+    }
+
+    /// Expand `reasoning_efforts` into selectable variants.
+    ///
+    /// Each listed level produces `<name>-<level>` with `reasoning_effort` set
+    /// to the level and the generator field cleared. The base entry keeps its
+    /// `reasoning_efforts` so `debug models` shows what it generated.
+    fn expand_model_variants(
+        definitions: Vec<ModelDefinition>,
+    ) -> Result<Vec<ModelDefinition>, SettingsError> {
+        let explicit_names: HashSet<String> =
+            definitions.iter().map(|def| def.name.clone()).collect();
+        let mut expanded = Vec::with_capacity(definitions.len());
+        for def in definitions {
+            let Some(levels) = def.reasoning_efforts.clone() else {
+                expanded.push(def);
+                continue;
+            };
+            // Push the base first so name validation reports it before any
+            // generated variant, then clone it as the template for variants.
+            let template = def.clone();
+            expanded.push(def);
+            let mut seen = HashSet::new();
+            for level in levels {
+                if !seen.insert(level.as_str()) {
+                    return Err(SettingsError::DuplicateReasoningEffort {
+                        name: template.name,
+                        level: level.as_str().to_string(),
+                    });
+                }
+                let name = format!("{}-{}", template.name, level.as_str());
+                if explicit_names.contains(&name) {
+                    return Err(SettingsError::GeneratedModelNameConflict {
+                        base: template.name,
+                        name,
+                    });
+                }
+                let mut variant = template.clone();
+                variant.name = name;
+                variant.reasoning_effort = Some(level);
+                variant.reasoning_efforts = None;
+                expanded.push(variant);
+            }
+        }
+        Ok(expanded)
     }
 }
 

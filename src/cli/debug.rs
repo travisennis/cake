@@ -1058,6 +1058,7 @@ mod tests {
             max_output_tokens: None,
             context_window: None,
             reasoning_effort: None,
+            reasoning_efforts: None,
             reasoning_summary: None,
             reasoning_max_tokens: None,
             providers: vec![],

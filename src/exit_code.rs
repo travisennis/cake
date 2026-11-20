@@ -242,6 +242,8 @@ const fn classify_settings_error(error: &SettingsError) -> u8 {
         | SettingsError::InvalidModelBaseUrl { .. }
         | SettingsError::InvalidModelApiKeyEnv { .. }
         | SettingsError::DuplicateModelName { .. }
+        | SettingsError::DuplicateReasoningEffort { .. }
+        | SettingsError::GeneratedModelNameConflict { .. }
         | SettingsError::InvalidProfileName { .. }
         | SettingsError::ProfileModelsUnsupported { .. }
         | SettingsError::ProjectModelsUnsupported { .. }

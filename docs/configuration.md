@@ -155,7 +155,24 @@ Run `codex login` first. For this exact `base_url`, Cake reads the access token 
 
 This uses an internal Codex backend and is intended for experimentation rather than a stable provider integration. The backend may require a currently supported Codex model and Responses API request shape.
 
-Optional model fields are `api_type` (`chat_completions` or `responses`), `provider`, `provider_headers`, `temperature`, `top_p`, `top_k`, `max_output_tokens`, `context_window`, `reasoning_effort`, `reasoning_summary`, `reasoning_max_tokens`, `providers`, and `supports_images`. `top_k` is an integer top-k sampling cutoff, omitted when unset.
+Optional model fields are `api_type` (`chat_completions` or `responses`), `provider`, `provider_headers`, `temperature`, `top_p`, `top_k`, `max_output_tokens`, `context_window`, `reasoning_effort`, `reasoning_efforts`, `reasoning_summary`, `reasoning_max_tokens`, `providers`, and `supports_images`. `top_k` is an integer top-k sampling cutoff, omitted when unset.
+
+### Reasoning-effort variants
+
+When several entries differ only by `reasoning_effort`, list the levels once with `reasoning_efforts` instead of repeating the block. Each level generates a model named `<name>-<level>` that copies the entry and sets `reasoning_effort` to that level:
+
+```toml
+[[models]]
+name = "deepseek-flash"
+model = "deepseek-v4.1-flash"
+base_url = "https://opencode.ai/inference/go/openai/v1/"
+api_key_env = "OPENCODE_ZEN_API_TOKEN"
+reasoning_efforts = ["max", "xhigh", "low"]
+```
+
+This defines `deepseek-flash` as written, plus `deepseek-flash-max`, `deepseek-flash-xhigh`, and `deepseek-flash-low`. Generated names are ordinary model names: they work with `--model`, `default_model`, profiles, compaction, the bash judge, and gates like any other entry. The levels are `none`, `low`, `medium`, `high`, `xhigh`, and `max`. Listing a level twice, or defining an explicit entry whose name collides with a generated one in the same file, fails settings load.
+
+A variant inherits every field from its base. When a variant also needs different sampling, token limits, or image support --- common for `none`, where providers often reject reasoning settings --- keep that variant as an explicit `[[models]]` block instead.
 
 ### Provider-specific behavior
 

@@ -421,6 +421,142 @@ top_k = 40
 }
 
 #[test]
+fn test_reasoning_efforts_generate_variants() {
+    let dir = create_project_settings("");
+
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"default_model = "flash-max"
+
+[[models]]
+name = "flash"
+model = "test/flash"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+temperature = 0.4
+context_window = 1000000
+reasoning_effort = "medium"
+reasoning_efforts = ["max", "xhigh"]
+"#,
+    );
+
+    let loaded = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(dir.path()))
+    })
+    .unwrap();
+
+    assert_eq!(loaded.default_model.as_deref(), Some("flash-max"));
+    assert_eq!(loaded.models.len(), 3);
+
+    let base = loaded.models.get("flash").unwrap();
+    assert_eq!(base.reasoning_effort, Some(ReasoningEffort::Medium));
+    assert_eq!(
+        base.reasoning_efforts,
+        Some(vec![ReasoningEffort::Max, ReasoningEffort::Xhigh])
+    );
+
+    let max = loaded.models.get("flash-max").unwrap();
+    assert_eq!(max.reasoning_effort, Some(ReasoningEffort::Max));
+    assert_eq!(max.model, "test/flash");
+    assert_eq!(max.base_url, "https://example.com");
+    assert_eq!(max.api_key_env, "MY_KEY");
+    assert_eq!(max.temperature, Some(0.4));
+    assert_eq!(max.context_window, Some(1_000_000));
+    assert_eq!(max.reasoning_efforts, None);
+    assert!(loaded.models.contains_key("flash-xhigh"));
+    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+}
+
+#[test]
+fn test_reasoning_efforts_duplicate_level_is_rejected() {
+    let dir = create_project_settings("");
+
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
+name = "flash"
+model = "test/flash"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+reasoning_efforts = ["max", "max"]
+"#,
+    );
+
+    let error = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(dir.path()))
+    })
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        SettingsError::DuplicateReasoningEffort { ref name, ref level }
+            if name == "flash" && level == "max"
+    ));
+    assert!(error.to_string().contains("more than once"));
+}
+
+#[test]
+fn test_reasoning_efforts_generated_name_collision_is_rejected() {
+    let dir = create_project_settings("");
+
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
+name = "flash"
+model = "test/flash"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+reasoning_efforts = ["max"]
+
+[[models]]
+name = "flash-max"
+model = "test/flash"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+"#,
+    );
+
+    let error = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(dir.path()))
+    })
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        SettingsError::GeneratedModelNameConflict { ref base, ref name }
+            if base == "flash" && name == "flash-max"
+    ));
+}
+
+#[test]
+fn test_reasoning_efforts_reject_unknown_level() {
+    let dir = create_project_settings("");
+
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"[[models]]
+name = "flash"
+model = "test/flash"
+base_url = "https://example.com"
+api_key_env = "MY_KEY"
+reasoning_efforts = ["turbo"]
+"#,
+    );
+
+    let error = with_var("HOME", Some(home.path()), || {
+        SettingsLoader::load(Some(dir.path()))
+    })
+    .unwrap_err();
+
+    assert!(matches!(error, SettingsError::ParseError(_)));
+    assert!(error.to_string().contains("turbo"), "{error}");
+}
+
+#[test]
 fn test_validate_name_valid() {
     assert!(ModelDefinition::validate_name("simple").is_ok());
     assert!(ModelDefinition::validate_name("my-model").is_ok());
@@ -458,6 +594,7 @@ fn test_to_model_config() {
         max_output_tokens: Some(4000),
         context_window: Some(200_000),
         reasoning_effort: Some(ReasoningEffort::High),
+        reasoning_efforts: None,
         reasoning_summary: Some("concise".to_string()),
         reasoning_max_tokens: Some(8000),
         providers: vec!["Provider1".to_string()],
