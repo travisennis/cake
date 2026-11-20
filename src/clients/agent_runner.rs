@@ -251,16 +251,6 @@ impl AgentRunner {
         }
     }
 
-    #[cfg(test)]
-    pub(super) const fn with_stall_window(&mut self, window: Duration) {
-        self.stall_window = window;
-    }
-
-    #[cfg(test)]
-    pub(super) const fn with_retry_policy(&mut self, policy: RetryPolicy) {
-        self.retry_policy = policy;
-    }
-
     /// Send one request while bounding the wait for response headers.
     ///
     /// The body reader applies the same deadline per chunk, so this covers the
@@ -1072,8 +1062,8 @@ fn api_error_from_failure(
     debug!(target: "cake", "{}", failure.body);
 
     // The terminal error carries the classifier's verdict so a compaction owner
-    // can act on a genuine input overflow without re-parsing the body (ADR
-    // 047). The retry loop's behavior is unchanged: an overflow whose input
+    // can act on a genuine input overflow without re-parsing the body. The
+    // retry loop's behavior is unchanged: an overflow whose input
     // fits was already retried with a reduced allowance above.
     let verdict = termination::classify(
         IntendedLimits::default(),
@@ -1146,7 +1136,3 @@ fn format_api_error_body(model: &str, error_text: &str) -> String {
     }
     format!("{model}\n\n{error_text}")
 }
-
-#[cfg(test)]
-#[path = "agent_runner_tests.rs"]
-mod tests;

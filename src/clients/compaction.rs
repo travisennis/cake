@@ -11,8 +11,8 @@
 //! checkpoint.
 //!
 //! Automatic pre-request compaction calls [`measure`], [`prepare`], and
-//! [`summarize`] from the agent loop; manual compaction (task 034i) will share
-//! the same rule and bounds. Preparation stays side-effect free so the trigger
+//! [`summarize`] from the agent loop; manual compaction shares the same rule
+//! and bounds. Preparation stays side-effect free so the trigger
 //! decision, selection, and explicit manual call cannot drift.
 
 use std::ops::Range;
@@ -182,25 +182,11 @@ pub struct Preparation {
 
 impl Preparation {
     /// The no-op reason, when the outcome is a no-op.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "preparation accessors are consumed by tests and the manual caller"
-        )
-    )]
     pub fn no_op_reason(&self) -> Option<&str> {
         self.outcome.no_op_reason()
     }
 
     /// The no-fit reason, when the outcome is a no-fit.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "preparation accessors are consumed by tests and the manual caller"
-        )
-    )]
     pub fn no_fit_reason(&self) -> Option<&str> {
         self.outcome.no_fit_reason()
     }
@@ -219,13 +205,6 @@ pub enum PrepareOutcome {
 
 impl PrepareOutcome {
     /// The no-op reason, when this outcome is a no-op.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "preparation accessors are consumed by tests and the manual caller"
-        )
-    )]
     pub fn no_op_reason(&self) -> Option<&str> {
         match self {
             Self::NoOp { reason } => Some(reason),
@@ -234,13 +213,6 @@ impl PrepareOutcome {
     }
 
     /// The no-fit reason, when this outcome is a no-fit.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "preparation accessors are consumed by tests and the manual caller"
-        )
-    )]
     pub fn no_fit_reason(&self) -> Option<&str> {
         match self {
             Self::NoFit { reason } => Some(reason),
@@ -258,13 +230,6 @@ pub struct PreparedCompaction {
     ///
     /// Retained records keep their original image references; this plan is
     /// used only to estimate the request projection.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the selected plan is verified by preparation tests; activation uses the checkpoint"
-        )
-    )]
     pub image_plan: ImageBudgetPlan,
     /// Retired whole exchanges, oldest first, for the summary caller.
     pub retired_exchanges: Vec<Vec<RetainedRecord>>,
@@ -298,7 +263,7 @@ pub struct SummaryTurn {
 
 /// The summary-call seam.
 ///
-/// The production adapter is [`AgentSummaryCaller`]; deterministic tests use a
+/// The production adapter is [`AgentSummaryCaller`]; callers may substitute a
 /// fake. Implementations must send the conversation's resolved provider,
 /// credentials, model, and reasoning effort with no tools, no task hooks, and
 /// no output schema.
@@ -2342,7 +2307,3 @@ pub(super) fn backend_supports_generation_cap(
 ) -> bool {
     backend.supports_generation_cap(config)
 }
-
-#[cfg(test)]
-#[path = "compaction_tests.rs"]
-mod tests;

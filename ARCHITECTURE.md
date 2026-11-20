@@ -6,20 +6,20 @@ This document records durable system boundaries and invariants. It deliberately 
 
 ```text
 CLI and configuration
-        |
-        v
+ |
+ v
 Agent loop -----> API backend -----> OpenAI-compatible provider
-   |
-   +-----> hooks (trusted control-plane commands)
-   |
-   +-----> tool registry
-              |
-              +-----> Read / ReadImage / Edit / Write path validation
-              +-----> Bash LLM-judge preflight and OS sandbox
-              +-----> toolbox executables (trusted extensions)
-              +-----> MCP servers (trusted stdio extensions)
-   |
-   +-----> session transcript / stream output / telemetry
+ |
+ +-----> hooks (trusted control-plane commands)
+ |
+ +-----> tool registry
+ |
+ +-----> Read / ReadImage / Edit / Write path validation
+ +-----> Bash LLM-judge preflight and OS sandbox
+ +-----> toolbox executables (trusted extensions)
+ +-----> MCP servers (trusted stdio extensions)
+ |
+ +-----> session transcript / stream output / telemetry
 ```
 
 Cake is a binary crate. The CLI resolves configuration and run mode, builds an agent, and owns user-facing output. The agent loop owns conversation state, provider turns, tool scheduling, hooks, retries, and event fan-out. Backend adapters translate a shared conversation representation to Chat Completions or Responses wire formats. Configuration and persisted record types sit below those orchestration layers.
@@ -40,7 +40,7 @@ The CLI owns argument validation, configuration resolution, session selection, a
 
 ### Conversation and backends
 
-`ConversationItem` is the internal conversation authority. Backends translate it at their edges; provider-specific wire shapes must not become a second conversation model. Request and response snapshots protect those translations.
+`ConversationItem` is the internal conversation authority. Backends translate it at their edges; provider-specific wire shapes must not become a second conversation model.
 
 ### Agent and tools
 
@@ -50,10 +50,10 @@ Built-in Edit, Write, Read, and ReadImage calls targeting the same canonical pat
 
 ### Host and model-generated commands
 
-`PathGrants` is the single owner of resolved filesystem grants. It projects one view for the OS sandbox and one for the in-process file tools: `Read` and `ReadImage` accept read-write and read-only grants, `Edit` and `Write` accept only read-write grants, and a credential denylist wins over both. The OS projection lets Bash write built-in toolchain caches; the in-process projection keeps those paths read-only and excludes OS-only paths. Bash observes supported literal script references through in-process Read grants (ADR-035), then applies an LLM-judge command-safety preflight (ADR-018) and an operating-system filesystem sandbox: Seatbelt on macOS and Landlock on Linux. Every non-empty command is judged before spawn; the judge is default-on and fail-closed with no deterministic rule floor, and it replaced the compiled `bash_safety` guard. Hooks, toolbox executables, and MCP servers are trusted control-plane extensions outside that sandbox. [Security](docs/security.md) defines the
-guarantees and limitations.
+`PathGrants` is the single owner of resolved filesystem grants. It projects one view for the OS sandbox and one for the in-process file tools: `Read` and `ReadImage` accept read-write and read-only grants, `Edit` and `Write` accept only read-write grants, and a credential denylist wins over both. The OS projection lets Bash write built-in toolchain caches; the in-process projection keeps those paths read-only and excludes OS-only paths. Bash observes supported literal script references through in-process Read grants, then applies an LLM-judge command-safety preflight and an operating-system filesystem sandbox: Seatbelt on macOS and Landlock on Linux. Every non-empty command is judged before spawn; the judge is default-on and fail-closed with no deterministic rule floor, and it replaced the compiled `bash_safety` guard. Hooks, toolbox executables, and MCP servers are trusted control-plane extensions outside that sandbox. [Security](docs/security.md) defines the guarantees and
+limitations.
 
-An opt-in TypeSafe evaluator observes the same command context under its own bounded deadline. Its probability or failure never blocks a command, and the default-off path makes no TypeSafe request. Under `mode = "shadow"` the observation changes nothing. Under `mode = "cascade"` (ADR 034) a clean observation at or above a cutoff compiled into the binary approves the command without a judge call, and every other outcome --- including every failure class --- falls back to the judge, so no TypeSafe outcome can approve on a failure, skip the sandbox, or skip the emergency bypass.
+An opt-in TypeSafe evaluator observes the same command context under its own bounded deadline. Its probability or failure never blocks a command, and the default-off path makes no TypeSafe request. Under `mode = "shadow"` the observation changes nothing. Under `mode = "cascade"` a clean observation at or above a cutoff compiled into the binary approves the command without a judge call, and every other outcome --- including every failure class --- falls back to the judge, so no TypeSafe outcome can approve on a failure, skip the sandbox, or skip the emergency bypass.
 
 ### Persistence and integrations
 
@@ -73,17 +73,8 @@ Persisted sessions are append-only, versioned JSONL logs plus an optional adjace
 - Machine-readable stdout contains only its declared JSON format.
 - Provider-specific behavior remains at provider/backend boundaries.
 - Untrusted model actions never acquire the authority of trusted hooks, toolbox executables, or MCP servers implicitly.
-- Project configuration authority requires an explicit trust decision: low-authority project settings load without a record, authority-bearing settings and extensions require a matching snapshot record, and project `[[models]]` definitions are global-only (ADR 053).
+- Project configuration authority requires an explicit trust decision: low-authority project settings load without a record, authority-bearing settings and extensions require a matching snapshot record, and project `[[models]]` definitions are global-only.
 
 ## Authorities
 
-Use `src/main.rs` and `cake --help` for CLI shape, `src/config/` for configuration and sessions, `src/types/` for internal and serialized records, `src/clients/` for providers and the agent loop, `src/clients/tools/` for tool and sandbox behavior, `src/clients/mcp/` for the MCP process and protocol client, snapshots for wire examples, and `justfile` for repository commands. Architecture changes only when the boundaries or invariants above change.
-
-## Related decisions
-
-- [ADR 001](docs/adr/001-agent-loop-architecture.md), the agent loop.
-- [ADR 008](docs/adr/008-structured-provider-headers.md), structured provider headers.
-- [ADR 011](docs/adr/011-interrupt-handling.md), interrupt handling and graceful shutdown.
-- [ADR 012](docs/adr/012-schema-constrained-final-output.md), schema-constrained final output.
-- [ADR 013](docs/adr/013-per-path-serialization-of-mutating-tool-calls.md), serialization of mutating tool calls.
-- [ADR 018](docs/adr/018-llm-judge-command-gate.md), the LLM judge command gate.
+Use `src/main.rs` and `cake --help` for CLI shape, `src/config/` for configuration and sessions, `src/types/` for internal and serialized records, `src/clients/` for providers and the agent loop, `src/clients/tools/` for tool and sandbox behavior, `src/clients/mcp/` for the MCP process and protocol client and `justfile` for repository commands. Architecture changes only when the boundaries or invariants above change.

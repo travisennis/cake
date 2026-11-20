@@ -3,11 +3,10 @@
 
 Usage: scripts/doctor.py [--json] [--scope {all,setup}] [--quiet]
 
-The report groups checks by the capability they unlock: the baseline
-`just check` gate, the full `just check-full` gate, the installed git hooks,
-and optional capabilities such as profiling and cross-compilation. `--scope
-setup` narrows the report to what `just setup` promises: every pinned Cargo
-utility and the three hook wrappers.
+The report groups checks by the capability they unlock: the `just check`
+gate, the installed git hooks, and optional capabilities such as profiling and
+cross-compilation. `--scope setup` narrows the report to what `just setup`
+promises: every pinned Cargo utility and the three hook wrappers.
 
 Doctor never installs anything, runs a hook, changes checkout or configuration
 state, contacts a provider, or prints secrets. It reads the pins from
@@ -30,11 +29,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-REQUIRED_GROUPS = ("baseline", "full", "hooks")
-GROUP_ORDER = ("baseline", "full", "hooks", "optional")
+REQUIRED_GROUPS = ("baseline", "hooks")
+GROUP_ORDER = ("baseline", "hooks", "optional")
 GROUP_LABELS = {
     "baseline": "Baseline (just check)",
-    "full": "Full gate (just check-full)",
     "hooks": "Git hooks",
     "optional": "Optional capabilities",
     "setup": "Setup postconditions",
@@ -47,11 +45,9 @@ CROSS_TARGET = "x86_64-unknown-linux-gnu"
 # leave a capability unchecked.
 PIN_GROUPS = {
     "cargo-edit": ("optional",),
-    "cargo-deny": ("full",),
-    "cargo-insta": ("optional",),
-    "cargo-llvm-cov": ("full",),
-    "cargo-crap": ("baseline", "full"),
-    "panache": ("full", "hooks"),
+    "cargo-deny": ("optional",),
+    "cargo-crap": ("baseline",),
+    "panache": ("baseline", "hooks"),
     "prek": ("hooks",),
     "cocogitto": ("hooks",),
 }
@@ -334,7 +330,7 @@ def check_pins() -> list[Check]:
         return [
             Check(
                 "pinned development tools",
-                ("baseline", "full", "hooks"),
+                ("baseline", "hooks"),
                 status="broken",
                 setup=True,
                 detail=error,
@@ -348,7 +344,7 @@ def check_pins() -> list[Check]:
         return [
             Check(
                 "pinned development tools",
-                ("baseline", "full", "hooks"),
+                ("baseline", "hooks"),
                 status="broken",
                 setup=True,
                 detail=shorten(detail),
@@ -360,7 +356,7 @@ def check_pins() -> list[Check]:
         return [
             Check(
                 "pinned development tools",
-                ("baseline", "full", "hooks"),
+                ("baseline", "hooks"),
                 status="broken",
                 setup=True,
                 detail=payload["error"],
@@ -373,7 +369,7 @@ def check_pins() -> list[Check]:
         return [
             Check(
                 "pinned development tools",
-                ("baseline", "full", "hooks"),
+                ("baseline", "hooks"),
                 status="broken",
                 setup=True,
                 detail="the checker returned no tool list",
@@ -398,7 +394,7 @@ def check_pins() -> list[Check]:
             checks.append(
                 Check(
                     package,
-                    ("full",),
+                    ("baseline",),
                     status="broken",
                     setup=True,
                     expected=version,
@@ -593,7 +589,7 @@ def check_cross_compiler() -> list[Check]:
             "x86_64-linux-gnu-gcc",
             ("optional",),
             ["x86_64-linux-gnu-gcc", "--version"],
-            hint="install an x86_64 Linux cross compiler (see docs/runbooks/local-gate-prerequisites.md)",
+            hint="install an x86_64 Linux cross compiler (see CONTRIBUTING.md)",
         )
     )
     return checks

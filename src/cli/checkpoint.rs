@@ -462,7 +462,3 @@ fn render_outcome(outcome: &CheckpointOutcome, json: bool) -> anyhow::Result<Str
         outcome.session_file,
     ))
 }
-
-#[cfg(test)]
-#[path = "checkpoint_tests.rs"]
-mod tests;

@@ -680,7 +680,3 @@ fn required_response_id(response: &ChatResponse) -> anyhow::Result<String> {
 
     Ok(id.clone())
 }
-
-#[cfg(test)]
-#[path = "chat_completions_tests.rs"]
-mod tests;

@@ -2,7 +2,7 @@
 
 This document records concepts whose names collide with other concepts in Cake. It exists to prevent one specific mistake: treating two code paths as duplicate implementations of one idea when they answer different questions.
 
-It is a glossary and nothing else. It is not a specification, not a design record, and not a place for open questions --- those belong in ahm tasks. Decisions belong in [ADRs](adr/README.md); this document records only what a term means and what it is confused with.
+It is a glossary and nothing else. It is not a specification, not a design record, and not a place for open questions; this document records only what a term means and what it is confused with.
 
 ## When to read it
 

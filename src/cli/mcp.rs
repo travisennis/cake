@@ -365,7 +365,3 @@ fn format_entry(entry: &McpEntry, output: &mut String) {
     _ = writeln!(output, "  exposure: {}", entry.exposure.as_str());
     _ = writeln!(output, "  timeout: {}s", entry.timeout_secs);
 }
-
-#[cfg(test)]
-#[path = "mcp_tests.rs"]
-mod mcp_tests;

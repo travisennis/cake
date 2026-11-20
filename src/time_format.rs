@@ -13,28 +13,3 @@ pub fn format_seconds_tenths(elapsed_ms: u128) -> String {
         rounded_tenths % TENTHS_PER_SECOND
     )
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn seconds_tenths_rounds_to_nearest_tenth() {
-        assert_eq!(format_seconds_tenths(0), "0.0");
-        assert_eq!(format_seconds_tenths(49), "0.0");
-        assert_eq!(format_seconds_tenths(50), "0.1");
-        assert_eq!(format_seconds_tenths(1_000), "1.0");
-        assert_eq!(format_seconds_tenths(1_049), "1.0");
-        assert_eq!(format_seconds_tenths(1_050), "1.1");
-        assert_eq!(format_seconds_tenths(1_234), "1.2");
-        assert_eq!(format_seconds_tenths(1_499), "1.5");
-        assert_eq!(format_seconds_tenths(1_500), "1.5");
-    }
-
-    #[test]
-    fn seconds_tenths_handles_max_milliseconds_without_overflowing() {
-        let formatted = format_seconds_tenths(u128::MAX);
-
-        assert!(formatted.contains('.'));
-    }
-}

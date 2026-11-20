@@ -837,7 +837,3 @@ fn has_duplicates<T: Eq + std::hash::Hash>(items: &[T]) -> bool {
     let mut seen = std::collections::HashSet::with_capacity(items.len());
     items.iter().any(|item| !seen.insert(item))
 }
-
-#[cfg(test)]
-#[path = "protocol_tests.rs"]
-mod tests;

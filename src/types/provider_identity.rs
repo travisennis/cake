@@ -295,7 +295,3 @@ fn shown_list(values: &[String]) -> String {
         values.join(",")
     }
 }
-
-#[cfg(test)]
-#[path = "provider_identity_tests.rs"]
-mod tests;

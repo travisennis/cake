@@ -63,20 +63,7 @@ pub(super) struct ChatMessage<'a> {
     pub(super) tool_call_id: Option<Cow<'a, str>>,
 }
 
-impl ChatMessage<'_> {
-    /// This message's content as plain text, or `None` when the message is
-    /// content-free or carries a multi-part content array.
-    ///
-    /// Test-only: assertions compare the text of text-only messages, which the
-    /// request builder itself never needs to read back.
-    #[cfg(test)]
-    pub(super) fn text(&self) -> Option<&str> {
-        match self.content.as_ref()? {
-            ChatContent::Text(text) => Some(text),
-            ChatContent::Parts(_) => None,
-        }
-    }
-}
+impl ChatMessage<'_> {}
 
 /// A request message's content: a bare string for every text-only message, or
 /// an array of parts when the message carries images.

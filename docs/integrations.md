@@ -1,6 +1,6 @@
 # Integration contracts
 
-This document describes Cake's stable shell-facing and machine-facing contracts. Rust types and snapshots are the field-level serialization authority; this guide explains semantics, identity, ordering, and compatibility.
+This document describes Cake's stable shell-facing and machine-facing contracts. Rust types are the field-level serialization authority; this guide explains semantics, identity, ordering, and compatibility.
 
 ## Exit codes
 
@@ -11,19 +11,15 @@ This document describes Cake's stable shell-facing and machine-facing contracts.
   | `2`  | authentication, rate-limit, network, or request-timeout error |
   | `3`  | invalid input, flags, configuration, or missing credentials   |
 
-Class `2` is the provider-failure class: authentication (`401`, `403`), rate limiting (`429`), request timeouts (`408`), and transport failures such as connect errors or client timeouts. Retryability is a separate transport-recovery concern and does not decide the class: `409` (lock timeout), `5xx`, and `529` are retried but exit `1`, because the provider answered the request. A tool-level timeout --- a toolbox tool or a hook exceeding its timeout --- is a tool error, `1`; the Bash tool's own wait is a yield window, not a timeout failure. See [ADR 045](adr/045-classify-request-timeouts-as-api-errors.md).
+Class `2` is the provider-failure class: authentication (`401`, `403`), rate limiting (`429`), request timeouts (`408`), and transport failures such as connect errors or client timeouts. Retryability is a separate transport-recovery concern and does not decide the class: `409` (lock timeout), `5xx`, and `529` are retried but exit `1`, because the provider answered the request. A tool-level timeout --- a toolbox tool or a hook exceeding its timeout --- is a tool error, `1`; the Bash tool's own wait is a yield window, not a timeout failure. Class `3` includes settings and project-trust failures: an invalid `settings.toml`, a project `[[models]]` definition, and authority-bearing project configuration without a matching trust record all exit `3`.
 
-Class `3` includes settings and project-trust failures: an invalid `settings.toml`, a project `[[models]]` definition, and authority-bearing project configuration without a matching trust record all exit `3`.
-
-Provider requests use a ten-minute no-data stall deadline instead of a total wall-clock limit. A turn may run longer than ten minutes as long as data keeps arriving; every received body chunk, including an SSE comment or keep-alive line, resets the window. Ten minutes without a received byte fails the attempt with a request-timeout error that names the model, the stall phase (`connect`, `first byte`, or `mid-body`), the window, and the bytes received. The ten-second connect timeout is unchanged. A stall before response headers is retried under the existing transport retry policy; a stall after a `2xx` response is terminal and is not retried automatically. See [ADR 052](adr/052-bound-provider-requests-by-silence.md).
-
-Human diagnostics go to stderr. Machine-readable stdout must contain only its declared JSON format.
+Provider requests use a ten-minute no-data stall deadline instead of a total wall-clock limit. A turn may run longer than ten minutes as long as data keeps arriving; every received body chunk, including an SSE comment or keep-alive line, resets the window. Ten minutes without a received byte fails the attempt with a request-timeout error that names the model, the stall phase (`connect`, `first byte`, or `mid-body`), the window, and the bytes received. The ten-second connect timeout is unchanged. A stall before response headers is retried under the existing transport retry policy; a stall after a `2xx` response is terminal and is not retried automatically. Human diagnostics go to stderr. Machine-readable stdout must contain only its declared JSON format.
 
 Root agent-run inputs, including a prompt and run-only flags such as `--output-schema`, cannot be combined with a selected subcommand. Cake reports that invalid usage on stderr and exits `3` before dispatching the subcommand. Options explicitly shared with a command, such as `--output-format stream-json replay <uuid>`, remain valid. The one-run project-trust flags `--trust-project` and `--no-project-config` are shared with `debug`, `gates`, and `bash check`, and are rejected on `sessions`, `replay`, `init`, and `trust`.
 
 ## Project configuration trust
 
-Project `.cake/` configuration is trusted by capability (ADR 053). Low-authority settings (`default_model` selecting a global model, profiles, narrowing `[tools].enabled`, `[limits]`, project `AGENTS.md`, and default-root project skills) load without a trust record. Authority-bearing settings (`directories`, `[sandbox]`, gates, the legacy judge table, `system_prompt`, `skills.path`), project hook files, and project `.cake/tools` entries require a matching record at `<config>/cake/trust/<project-key>.json`. Project `[[models]]` definitions are a settings error, even after trust.
+Project `.cake/` configuration is trusted by capability. Low-authority settings (`default_model` selecting a global model, profiles, narrowing `[tools].enabled`, `[limits]`, project `AGENTS.md`, and default-root project skills) load without a trust record. Authority-bearing settings (`directories`, `[sandbox]`, gates, the legacy judge table, `system_prompt`, `skills.path`), project hook files, and project `.cake/tools` entries require a matching record at `<config>/cake/trust/<project-key>.json`. Project `[[models]]` definitions are a settings error, even after trust.
 
 An untrusted authority-bearing project exits `3` before provider credential resolution, hooks, toolbox discovery, gate startup, tool registration, writable-grant creation, or session creation. `cake trust` writes the record; `cake trust --check` exits `0` for `not_required` or `trusted` and `3` for `untrusted`, `changed`, or `invalid`. `--trust-project` / `CAKE_TRUST_PROJECT=1` and `--no-project-config` / `CAKE_PROJECT_CONFIG=off` are one-run modes that never write state; requesting both is an input error. `cake trust --status` and the other read-only inspection commands exit `0` while reporting an untrusted state.
 
@@ -31,22 +27,22 @@ An untrusted authority-bearing project exits `3` before provider credential reso
 
 ```json
 {
-  "state": "untrusted",
-  "project_root": "/Users/example/project",
-  "project_key": "6b2e...",
-  "record_path": "/Users/example/.config/cake/trust/6b2e....json",
-  "authority": [
-    {
-      "path": ".cake/settings.toml",
-      "kind": "settings",
-      "keys": ["[sandbox].writable", "[gates.safety]", "system_prompt"]
-    },
-    { "path": ".cake/hooks.json", "kind": "hooks" },
-    { "path": ".cake/tools/lint", "kind": "toolbox", "executable": true }
-  ],
-  "changes": [
-    { "path": ".cake/settings.toml", "change": "modified" }
-  ]
+ "state": "untrusted",
+ "project_root": "/Users/example/project",
+ "project_key": "6b2e...",
+ "record_path": "/Users/example/.config/cake/trust/6b2e....json",
+ "authority": [
+ {
+ "path": ".cake/settings.toml",
+ "kind": "settings",
+ "keys": ["[sandbox].writable", "[gates.safety]", "system_prompt"]
+ },
+ { "path": ".cake/hooks.json", "kind": "hooks" },
+ { "path": ".cake/tools/lint", "kind": "toolbox", "executable": true }
+ ],
+ "changes": [
+ { "path": ".cake/settings.toml", "change": "modified" }
+ ]
 }
 ```
 
@@ -58,7 +54,7 @@ An untrusted authority-bearing project exits `3` before provider credential reso
 
 For `stream-json`, validation failures before a task stream starts still use the codes above. Once streaming begins, ordinary agent, provider, and tool failures are represented by the final `task_complete` record and the process exits `0`. An unsatisfied output schema remains nonzero, and interruption exits `130`. A hit `max_turns` or `max_tool_calls` limit is an in-stream outcome: stream-json exits `0`, text and JSON modes exit `1`. If a consumer closes stdout early (for example, `head -1`), Cake treats the resulting broken pipe as normal consumer cancellation in every output mode, emits no broken-pipe diagnostic, and exits `0`.
 
-`cake --fail-on-error` opts a `stream-json` run into a strict version of that contract, so a pipeline can act on `$?` alone ([ADR 046](adr/046-opt-in-strict-exit-codes-for-stream-json.md)). Without the flag nothing changes. With it, the run's own outcome decides the status:
+`cake --fail-on-error` opts a `stream-json` run into a strict version of that contract, so a pipeline can act on `$?` alone. Without the flag nothing changes. With it, the run's own outcome decides the status:
 
 - A failed (`error`/`limit`) `task_complete` exits with the class of that outcome: `1` for an agent-class failure (including a fatal tool error), a cut-off, or a `max_turns`/`max_tool_calls` limit outcome, and for a provider failure that is none of the class-2 kinds (`5xx`, for example); `2` for an authentication, rate-limit, or network failure. Input and configuration failures are rejected before the stream starts, so an in-stream `3` does not exist. An unsatisfied output schema stays `1` with or without the flag.
 - A broken pipe from a consumer that closes stdout still exits `0`, and an interruption still exits `130`.
@@ -72,15 +68,13 @@ Interruption follows one graceful path for both Ctrl-C (SIGINT) and, on Unix, SI
 
 A prompt run reports its own state with the [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status), so a terminal or an agent inbox can show what cake is doing without window-title heuristics or a per-tool integration. Reports go to stderr, only when stderr is a terminal, and only from a prompt run: a piped, redirected, or captured stderr never carries a sequence, and stdout, session records, stream-json events, hook payloads, and the model-visible conversation never carry one at all. Reporting needs no setting, because a terminal that does not know the sequence ignores it.
 
-Each report replaces cake's root record: no `id`, `app=cake` on every report. `working` starts an agent turn, `done` ends a turn whose result is ready to be seen, `error` ends a turn that failed and carries the run's error text as `msg`, `idle` reports a user interruption, and `blocked` with `kind=question` reports the wait for a prompt on piped stdin. A failure before the agent turn --- input validation, configuration, or worktree setup --- reports nothing, and the terminal drops the transient record it was showing when the process exits. `msg` values are single-line, control characters collapsed to spaces, and shortened to the protocol's decoded limit. A failed write is ignored, and no report changes an exit code. Cake never sends `clear`: a process exit already drops a `working` or `blocked` record, and a `done` or `error` record is left behind for the user to find. See [ADR 042](adr/042-report-run-state-with-the-osc-7501-program-status-protocol.md).
-
-## Provider tool schemas
+Each report replaces cake's root record: no `id`, `app=cake` on every report. `working` starts an agent turn, `done` ends a turn whose result is ready to be seen, `error` ends a turn that failed and carries the run's error text as `msg`, `idle` reports a user interruption, and `blocked` with `kind=question` reports the wait for a prompt on piped stdin. A failure before the agent turn --- input validation, configuration, or worktree setup --- reports nothing, and the terminal drops the transient record it was showing when the process exits. `msg` values are single-line, control characters collapsed to spaces, and shortened to the protocol's decoded limit. A failed write is ignored, and no report changes an exit code. Cake never sends `clear`: a process exit already drops a `working` or `blocked` record, and a `done` or `error` record is left behind for the user to find. ## Provider tool schemas
 
 For Responses requests to `api.openai.com` and the ChatGPT Codex backend, Cake sends function tools with explicit `strict: false`. This opts out of automatic strict-schema normalization and preserves the original parameter schemas and optional fields. Tool calling remains best-effort; executors still validate arguments. Other Responses providers and Chat Completions keep their existing tool serialization. This setting does not change strict final-output constraints from `--output-schema`.
 
 ## Request image budgets
 
-The `[images]` policy is applied while a request is built, after source acceptance and before provider serialization. It does not change the provider wire shape: an emitted image is still an inline data URL in the same message or tool-output content, a downscaled image replaces that image part with its new media type and bytes, and an omitted image becomes an `[image omitted: ...]` text part in the same item. Count, pixel, and byte budgets are evaluated together as each image is admitted in source order: an image that would overflow a budget is omitted, and every image admitted before it is untouched. That keeps each request an exact prefix-extension of the previous one, which provider prompt caches depend on. A request never fails because of an image budget.
+The `[images]` policy is applied while a request is built, after source acceptance and before provider serialization. It does not change the provider wire shape: an emitted image is still an inline data URL in the same message or tool-output content, a downscaled image replaces that image part with its new media type and bytes, and an omitted image becomes an `[image omitted:...]` text part in the same item. Count, pixel, and byte budgets are evaluated together as each image is admitted in source order: an image that would overflow a budget is omitted, and every image admitted before it is untouched. That keeps each request an exact prefix-extension of the previous one, which provider prompt caches depend on. A request never fails because of an image budget.
 
 Image planning is a request projection only. Session transcript records, checkpoint retained records, and their `content_id` blob references keep the source images and are never rewritten by a budget decision; stream-json and replay therefore report the stored items, not the fitted projection. A resumed or later request plans again from those stored images. See [Configuration](configuration.md#images) for the keys, defaults, and encoding rules.
 
@@ -105,9 +99,9 @@ The agent loop is uncapped by default; a user-configured `[limits]` section (see
 
 `--output-format json` emits one JSON object after the invocation completes. It contains the final result or error plus session metadata, usage, working directory, turn count, and elapsed time.
 
-`usage` is the task aggregate (see [Persisted sessions](#persisted-sessions)); per-attempt usage and provider identity are not part of this document. Text output likewise reports the task. Stream-JSON keeps `task_complete.usage` as that same aggregate while also emitting main-agent `turn_usage` records for clients that measure context use (ADR 048); the remaining per-attempt audit detail lives in the session file and the telemetry sidecar's `api_attempt` records.
+`usage` is the task aggregate (see [Persisted sessions](#persisted-sessions)); per-attempt usage and provider identity are not part of this document. Text output likewise reports the task. Stream-JSON keeps `task_complete.usage` as that same aggregate while also emitting main-agent `turn_usage` records for clients that measure context use; the remaining per-attempt audit detail lives in the session file and the telemetry sidecar's `api_attempt` records.
 
-Progress and retry rendering are suppressed so stdout remains parseable. The exact serialized shape is protected by CLI tests; consumers should tolerate additional optional fields.
+Progress and retry rendering are suppressed so stdout remains parseable. The exact serialized shape is part of the CLI contract; consumers should tolerate additional optional fields.
 
 ## Stream JSON
 
@@ -135,12 +129,12 @@ An automatic semantic continuation is visible as the provider's partial conversa
 
 ```json
 {
-  "schema_version": 1,
-  "command": "debug models",
-  "status": "ok",
-  "summary": { "count": 1 },
-  "checks": [],
-  "data": { "default_model": null, "models": [] }
+ "schema_version": 1,
+ "command": "debug models",
+ "status": "ok",
+ "summary": { "count": 1 },
+ "checks": [],
+ "data": { "default_model": null, "models": [] }
 }
 ```
 
@@ -262,8 +256,8 @@ The current format version is 4:
 3. Conversation and metadata records are appended live.
 4. The invocation ends with one `task_complete` when Cake can record an outcome.
 
-Conversation records restored into model history are `message`, `function_call`, `function_call_output`, and `reasoning`. `session_meta`, `task_start`, `prompt_context`, `skill_activated`, `mcp_tools_activated`, `hook_event`, `turn_usage`, `compaction_start`, `compaction_end`, `compaction`, and `task_complete` are audit or lifecycle metadata and are not replayed as conversation. A `skill_activated` record marks the first `Read`-tool read of a known skill in a session; a skill loaded through `Bash` (`cat <location>`) is deliberately not recorded, because matching a known `SKILL.md` path inside arbitrary shell text is a heuristic (see [ADR 002](adr/002-agent-skills.md)). `turn_usage` records one normalized `usage` for every provider attempt that reports it, before retry or discard classification; compaction-purpose attempts carry `purpose: "compaction"` and are audit-only. A retried or failed attempt therefore has optional 1-based `attempt` and `terminal_class` fields; a first successful
-attempt keeps the legacy shape even if the response is later discarded, and a terminal failed turn is audited when usage is available. The record is audit metadata, never restored into model history, but replay emits main-agent records as stream records so a client can measure context use (ADR 048). Cake uses the most recent complete main-agent record to seed the agent's last-usage basis on resume and fork, so a restored run knows its current context size before the first new provider request. `task_complete.usage` totals all reported attempts, including failed or retried attempts.
+Conversation records restored into model history are `message`, `function_call`, `function_call_output`, and `reasoning`. `session_meta`, `task_start`, `prompt_context`, `skill_activated`, `mcp_tools_activated`, `hook_event`, `turn_usage`, `compaction_start`, `compaction_end`, `compaction`, and `task_complete` are audit or lifecycle metadata and are not replayed as conversation. A `skill_activated` record marks the first `Read`-tool read of a known skill in a session; a skill loaded through `Bash` (`cat <location>`) is deliberately not recorded, because matching a known `SKILL.md` path inside arbitrary shell text is a heuristic (see). `turn_usage` records one normalized `usage` for every provider attempt that reports it, before retry or discard classification; compaction-purpose attempts carry `purpose: "compaction"` and are audit-only. A retried or failed attempt therefore has optional 1-based `attempt` and `terminal_class` fields; a first successful attempt keeps the legacy shape
+even if the response is later discarded, and a terminal failed turn is audited when usage is available. The record is audit metadata, never restored into model history, but replay emits main-agent records as stream records so a client can measure context use. Cake uses the most recent complete main-agent record to seed the agent's last-usage basis on resume and fork, so a restored run knows its current context size before the first new provider request. `task_complete.usage` totals all reported attempts, including failed or retried attempts.
 
 Usage is reported at three layers, and each record states which one it describes:
 
@@ -311,11 +305,9 @@ Live `function_call` and `function_call_output` records may carry an optional `r
 - `turn_usage`: one main-agent or compaction-purpose provider attempt's reported usage, with optional 1-based `attempt`, `terminal_class`, `usage_presence`, `model`, `response_model`, `provider_request_id`, `context_window`, and `remaining_context_tokens`. The budget pair is present only when the window is configured and the provider reported complete usage. Compaction-purpose records add optional `purpose: "compaction"`, `compaction_id`, and `summary_step`; they carry no budget pair, never seed the context basis, and are omitted from stream-json.
 - `compaction_start`: one prepared automatic compaction candidate began summary generation. It carries `session_id`, `task_id`, `checkpoint_id`, `timestamp`, `trigger`, `estimated_before_tokens`, optional `context_window`, and `summary_instruction_version`. A request below the trigger and a no-op or no-fit that never prepared a candidate write no start record.
 - `compaction_end`: terminal metadata for one compaction attempt, whether or not it committed. It carries `session_id`, `task_id`, `checkpoint_id`, `timestamp`, `trigger`, `status`, and optional `estimated_before_tokens`, `estimated_after_tokens`, `basis`, `retired_count`, `retained_count`, and bounded `reason`. `status` is `committed`, `no_op`, `no_fit`, or `failed`; `basis` is `measured_usage` or `content_class`. A committed end identifies the checkpoint immediately before it.
-- `task_complete`: outcome, duration, turns, tool-call count, result or error, usage, and optional permission denials. Denial strings keep the existing `Tool(call): ...` shape; filesystem-sandbox entries use `sandbox: <operation> <path>` after that prefix, where operation is `read`, `write`, or `execute`. A `limit_exceeded` outcome also carries the fired `limit` key and a partial `result`.
+- `task_complete`: outcome, duration, turns, tool-call count, result or error, usage, and optional permission denials. Denial strings keep the existing `Tool(call):...` shape; filesystem-sandbox entries use `sandbox: <operation> <path>` after that prefix, where operation is `read`, `write`, or `execute`. A `limit_exceeded` outcome also carries the fired `limit` key and a partial `result`.
 - `compaction`: checkpoint identity, summary, retained tail, model and instruction metadata, token estimates, and optional summarizer `summary_usage` and `summary_time_ms`. The usage object is the flat provider measurement. Both fields are absent on records written before they existed; `summary_usage` is also absent when the summarizer made no model call, and `summary_time_ms` is absent when the summary stage was not measured. A retained message or function-call output may carry images in either inline or reference form, and a retained function-call output may carry an output `content_id` instead of text under the same 16 KiB boundary. The eight-MiB checkpoint ceiling applies to the externalized serialized record, so a referenced image or output text costs its digest rather than its bytes; a checkpoint that would exceed the ceiling inline can be accepted once externalized. A hydrated in-memory copy may be larger than that ceiling. Activation validates checkpoint structure only; the
   writer re-enforces the size limit on the externalized bytes it commits.
-
-Serialization snapshots under `src/types/snapshots/` provide canonical record examples.
 
 ### Compaction lifecycle
 
@@ -351,26 +343,26 @@ The caller owns the selection, the summary, the retained tail, the trigger, and 
 
 ```json
 {
-  "trigger": "manual",
-  "summary": "One paragraph describing the retired history.",
-  "retained": [
-    { "type": "message", "role": "assistant", "content": "the latest answer" },
-    { "type": "function_call", "id": "fc-1", "call_id": "call-1", "name": "Read", "arguments": "{}" },
-    { "type": "function_call_output", "call_id": "call-1", "output": "file contents" }
-  ],
-  "estimated_input": { "before_tokens": 12000, "after_tokens": 3000, "basis": "measured_usage" },
-  "summary_instruction_version": 1,
-  "summary_usage": {
-    "input_tokens": 1457,
-    "cached_tokens": 0,
-    "output_tokens": 779,
-    "reasoning_tokens": 291,
-    "summary_visible_tokens": 488,
-    "total_tokens": 2236
-  },
-  "summary_time_ms": 6757,
-  "model": { "model": "gpt-5.6-luna", "model_config": "luna-high" },
-  "task_id": "optional; defaults to the latest task_start"
+ "trigger": "manual",
+ "summary": "One paragraph describing the retired history.",
+ "retained": [
+ { "type": "message", "role": "assistant", "content": "the latest answer" },
+ { "type": "function_call", "id": "fc-1", "call_id": "call-1", "name": "Read", "arguments": "{}" },
+ { "type": "function_call_output", "call_id": "call-1", "output": "file contents" }
+ ],
+ "estimated_input": { "before_tokens": 12000, "after_tokens": 3000, "basis": "measured_usage" },
+ "summary_instruction_version": 1,
+ "summary_usage": {
+ "input_tokens": 1457,
+ "cached_tokens": 0,
+ "output_tokens": 779,
+ "reasoning_tokens": 291,
+ "summary_visible_tokens": 488,
+ "total_tokens": 2236
+ },
+ "summary_time_ms": 6757,
+ "model": { "model": "gpt-5.6-luna", "model_config": "luna-high" },
+ "task_id": "optional; defaults to the latest task_start"
 }
 ```
 
@@ -408,7 +400,7 @@ Main-provider `api_attempt.usage.input_tokens_details` may additionally contain 
 `telemetry_init` carries the invocation's `model` (provider ID) plus optional `settings.model_config` (the resolved `[[models]]` entry name) and `settings.base_url` (the provider endpoint, non-secret), so cache analysis can distinguish same-ID entries on different backends. New records also carry an optional `provider_identity` object with the sanitized `model`, `model_config`, `base_url`, `base_url_query_digest`, `api_type`, `provider`, `routing`, `credential_kind` (`env` or `codex_file`), and `request_shape`. The credential variable name and Codex account digest are deliberately omitted from telemetry; the telemetry identity carries only the kind. A record for a resume or fork that accepted a changed identity with `--allow-session-model-change` carries `session_model_change_override: true`; the field is omitted otherwise. New records also carry optional `build_commit` (full Git commit) and `build_dirty` (tracked changes at build time) for the cake binary that ran the invocation; both
 are omitted when the build did not run from a Git checkout. The endpoint is kept in its parsed, credential-free form: userinfo, query, and fragment are removed before the 1,024-byte bound is applied, and a value that is not a parsable URL writes `null` rather than the raw string. New records carry no `working_directory`, so a sidecar does not disclose the invocation's working directory or the local username embedded in it; a bounded `compensation.detail` value can still name a canonical target path. Project identity comes from the session transcript's `session_meta` record, and a historical sidecar that carries the field remains valid and is preferred by readers when present.
 
-A `compensation` carries its `kind`, optional bounded `detail`, gate-verdict `latency_ms`, and allowlist `overridden` flag. Kinds are `json_repair`, `judge_verdict`, `judge_fail_closed`, `judge_bypass`, `same_path_serialization`, `output_truncation`, `context_overflow_retry`, and `edit_invalid_arguments`. `same_path_serialization` records that a call's start was delayed behind an earlier call targeting the same canonical path; reads and mutations both qualify (ADR 043). The three `judge_*` kinds are compatibility projections emitted for current generic gate decisions: `judge_verdict` details are `block:<code>`, `warn:<code>`, or `allow`; fail-closed details name the failure class; and each event carries `call_id`, the one-way SHA-256 digest of the originating transcript tool-call identifier. `gate_decision` is the authoritative record; the compatibility event keeps existing denial attribution and metrics working.
+A `compensation` carries its `kind`, optional bounded `detail`, gate-verdict `latency_ms`, and allowlist `overridden` flag. Kinds are `json_repair`, `judge_verdict`, `judge_fail_closed`, `judge_bypass`, `same_path_serialization`, `output_truncation`, `context_overflow_retry`, and `edit_invalid_arguments`. `same_path_serialization` records that a call's start was delayed behind an earlier call targeting the same canonical path; reads and mutations both qualify. The three `judge_*` kinds are compatibility projections emitted for current generic gate decisions: `judge_verdict` details are `block:<code>`, `warn:<code>`, or `allow`; fail-closed details name the failure class; and each event carries `call_id`, the one-way SHA-256 digest of the originating transcript tool-call identifier. `gate_decision` is the authoritative record; the compatibility event keeps existing denial attribution and metrics working.
 
 The historical `type_safe_shadow` record contains the former in-process TypeSafe observation: elapsed time, model identity, probability, optional token usage, failure class, and call digest. Cake no longer runs TypeSafe or writes this record; it remains readable in old sidecars. A legacy `[tools.bash.judge.typesafe]` table is forwarded to the external gate's config, and that gate owns any current observation record.
 
@@ -437,8 +429,7 @@ Every non-empty Bash command runs through the configured external pipeline befor
 
 ## Gate protocol
 
-Status: this section freezes the `cake-gate/1` contract from [ADR 049](adr/049-external-policy-gates-with-the-cake-gate-1-protocol.md), as revised by [ADR 051](adr/051-external-judge-extraction-with-offline-acceptance.md). The external pipeline is the only command gate; `[gates]` settings are active and there is no in-process fallback. The machine-checkable frame schema is [`docs/schemas/cake-gate-1.schema.json`](schemas/cake-gate-1.schema.json); this section defines the semantics the schema cannot express. The schema's closed enums and cardinality bounds are the `cake-gate/1` known set: adding a field is free, adding an enum value or raising a bound is an additive schema edit that does not bump the version, and only removing or changing the meaning of a value requires `cake-gate/2`. Capabilities and error classes are open strings: Cake ignores a capability it does not know and treats an unknown error class as `protocol`, so a later capability or class is additive without a protocol
-bump.
+Status: this section freezes the `cake-gate/1` contract from, as revised by. The external pipeline is the only command gate; `[gates]` settings are active and there is no in-process fallback. The machine-checkable frame schema is [`docs/schemas/cake-gate-1.schema.json`](schemas/cake-gate-1.schema.json); this section defines the semantics the schema cannot express. The schema's closed enums and cardinality bounds are the `cake-gate/1` known set: adding a field is free, adding an enum value or raising a bound is an additive schema edit that does not bump the version, and only removing or changing the meaning of a value requires `cake-gate/2`. Capabilities and error classes are open strings: Cake ignores a capability it does not know and treats an unknown error class as `protocol`, so a later capability or class is additive without a protocol bump.
 
 A gate is a trusted executable that owns a pre- or post-action policy decision. Cake owns enforcement, context assembly, process lifecycle, composition, and observability. The initial supported phase and action pair is `pre_tool` and `bash.exec`; `post_tool`, Edit, Write, and toolbox gates are deferred. A gate never changes the command, the working directory, or the tool arguments. It can allow, warn, block, or abstain.
 
@@ -460,13 +451,13 @@ Cake runs `describe` once per gate per run, before any work, and validates the r
 
 ```json
 {
-  "protocol": "cake-gate/1",
-  "name": "safety",
-  "version": "0.1.0",
-  "phases": ["pre_tool"],
-  "actions": ["bash.exec"],
-  "transports": ["stdio"],
-  "capabilities": ["resolved-models", "diagnostic"]
+ "protocol": "cake-gate/1",
+ "name": "safety",
+ "version": "0.1.0",
+ "phases": ["pre_tool"],
+ "actions": ["bash.exec"],
+ "transports": ["stdio"],
+ "capabilities": ["resolved-models", "diagnostic"]
 }
 ```
 
@@ -484,29 +475,29 @@ After a gate process starts, Cake sends exactly one `init` frame before any chec
 
 ```json
 {
-  "protocol": "cake-gate/1",
-  "type": "init",
-  "id": "init",
-  "session": {
-    "session_id": "9f1c...",
-    "task_id": "4b2e...",
-    "invocation_id": "01J...",
-    "cwd": "/repo"
-  },
-  "config": {
-    "model": "judge",
-    "rubric_file": ".cake/judge-rubric.md"
-  },
-  "models": {
-    "judge": {
-      "provider": "openai",
-      "base_url": "https://api.example.test/v1",
-      "api_type": "chat_completions",
-      "model": "judge-model",
-      "api_key_env": "JUDGE_API_KEY"
-    }
-  },
-  "env": ["JUDGE_API_KEY"]
+ "protocol": "cake-gate/1",
+ "type": "init",
+ "id": "init",
+ "session": {
+ "session_id": "9f1c...",
+ "task_id": "4b2e...",
+ "invocation_id": "01J...",
+ "cwd": "/repo"
+ },
+ "config": {
+ "model": "judge",
+ "rubric_file": ".cake/judge-rubric.md"
+ },
+ "models": {
+ "judge": {
+ "provider": "openai",
+ "base_url": "https://api.example.test/v1",
+ "api_type": "chat_completions",
+ "model": "judge-model",
+ "api_key_env": "JUDGE_API_KEY"
+ }
+ },
+ "env": ["JUDGE_API_KEY"]
 }
 ```
 
@@ -523,12 +514,12 @@ The gate answers with `ready`:
 
 ```json
 {
-  "protocol": "cake-gate/1",
-  "type": "ready",
-  "id": "init",
-  "name": "safety",
-  "version": "0.1.0",
-  "warnings": []
+ "protocol": "cake-gate/1",
+ "type": "ready",
+ "id": "init",
+ "name": "safety",
+ "version": "0.1.0",
+ "warnings": []
 }
 ```
 
@@ -540,27 +531,27 @@ Cake sends one check frame per non-empty Bash command. An empty command is not g
 
 ```json
 {
-  "protocol": "cake-gate/1",
-  "type": "check",
-  "id": "01J...",
-  "phase": "pre_tool",
-  "action": "bash.exec",
-  "input": {
-    "command": "git status --short",
-    "cwd": "/repo",
-    "reason": null,
-    "repo_digest": "git repo, branch main",
-    "script_evidence": []
-  },
-  "session": {
-    "session_id": "9f1c...",
-    "task_id": "4b2e...",
-    "call_id": "call_...",
-    "turn": 3
-  },
-  "options": {
-    "diagnostic": false
-  }
+ "protocol": "cake-gate/1",
+ "type": "check",
+ "id": "01J...",
+ "phase": "pre_tool",
+ "action": "bash.exec",
+ "input": {
+ "command": "git status --short",
+ "cwd": "/repo",
+ "reason": null,
+ "repo_digest": "git repo, branch main",
+ "script_evidence": []
+ },
+ "session": {
+ "session_id": "9f1c...",
+ "task_id": "4b2e...",
+ "call_id": "call_...",
+ "turn": 3
+ },
+ "options": {
+ "diagnostic": false
+ }
 }
 ```
 
@@ -574,20 +565,20 @@ A gate replies to each check with exactly one decision frame carrying the same `
 
 ```json
 {
-  "protocol": "cake-gate/1",
-  "type": "decision",
-  "id": "01J...",
-  "decision": "warn",
-  "code": "rg-replace-footgun",
-  "message": "Use rg -n so the replace preview can be inspected.",
-  "confidence": 0.78,
-  "annotations": [
-    { "placement": "prepend", "text": "NOTICE: Use rg -n so the replace preview can be inspected." }
-  ],
-  "short_circuit": false,
-  "evidence": [
-    { "kind": "attempt", "data": { "model": "judge-model", "latency_ms": 1200 } }
-  ]
+ "protocol": "cake-gate/1",
+ "type": "decision",
+ "id": "01J...",
+ "decision": "warn",
+ "code": "rg-replace-footgun",
+ "message": "Use rg -n so the replace preview can be inspected.",
+ "confidence": 0.78,
+ "annotations": [
+ { "placement": "prepend", "text": "NOTICE: Use rg -n so the replace preview can be inspected." }
+ ],
+ "short_circuit": false,
+ "evidence": [
+ { "kind": "attempt", "data": { "model": "judge-model", "latency_ms": 1200 } }
+ ]
 }
 ```
 
@@ -605,11 +596,11 @@ A gate that cannot evaluate sends an error frame instead of a decision:
 
 ```json
 {
-  "protocol": "cake-gate/1",
-  "type": "error",
-  "id": "01J...",
-  "class": "timeout",
-  "message": "the upstream judge call exceeded its deadline"
+ "protocol": "cake-gate/1",
+ "type": "error",
+ "id": "01J...",
+ "class": "timeout",
+ "message": "the upstream judge call exceeded its deadline"
 }
 ```
 
@@ -645,15 +636,15 @@ Cake writes one `gate_startup` record per gate at startup and one `gate_decision
 
 ```json
 {
-  "type": "gate_startup",
-  "gate": "safety",
-  "version": "0.1.0",
-  "mode": "enforce",
-  "phases": ["pre_tool"],
-  "actions": ["bash.exec"],
-  "outcome": "failed",
-  "failure_class": "config",
-  "latency_ms": 42
+ "type": "gate_startup",
+ "gate": "safety",
+ "version": "0.1.0",
+ "mode": "enforce",
+ "phases": ["pre_tool"],
+ "actions": ["bash.exec"],
+ "outcome": "failed",
+ "failure_class": "config",
+ "latency_ms": 42
 }
 ```
 
@@ -661,21 +652,21 @@ Cake writes one `gate_startup` record per gate at startup and one `gate_decision
 
 ```json
 {
-  "type": "gate_decision",
-  "gate": "safety",
-  "version": "0.1.0",
-  "mode": "enforce",
-  "phase": "pre_tool",
-  "action": "bash.exec",
-  "decision": "block",
-  "code": "credential-disclosure",
-  "latency_ms": 1200,
-  "overridden": false,
-  "bypassed": false,
-  "failed_open": false,
-  "disabled": false,
-  "failure_class": null,
-  "call_id": "<sha256 digest>"
+ "type": "gate_decision",
+ "gate": "safety",
+ "version": "0.1.0",
+ "mode": "enforce",
+ "phase": "pre_tool",
+ "action": "bash.exec",
+ "decision": "block",
+ "code": "credential-disclosure",
+ "latency_ms": 1200,
+ "overridden": false,
+ "bypassed": false,
+ "failed_open": false,
+ "disabled": false,
+ "failure_class": null,
+ "call_id": "<sha256 digest>"
 }
 ```
 
@@ -685,11 +676,11 @@ Evidence is a separate record so a decision stays small:
 
 ```json
 {
-  "type": "gate_evidence",
-  "gate": "safety",
-  "call_id": "<sha256 digest>",
-  "kind": "attempt",
-  "data": { "model": "judge-model", "latency_ms": 1200 }
+ "type": "gate_evidence",
+ "gate": "safety",
+ "call_id": "<sha256 digest>",
+ "kind": "attempt",
+ "data": { "model": "judge-model", "latency_ms": 1200 }
 }
 ```
 
@@ -734,12 +725,12 @@ Decision JSON may use:
 
 ```json
 {
-  "continue": true,
-  "permission": "allow",
-  "reason": "optional explanation",
-  "updated_input": {},
-  "additional_context": "optional model context",
-  "follow_up": false
+ "continue": true,
+ "permission": "allow",
+ "reason": "optional explanation",
+ "updated_input": {},
+ "additional_context": "optional model context",
+ "follow_up": false
 }
 ```
 
@@ -763,8 +754,8 @@ With `TOOLBOX_ACTION=describe`, the executable prints either JSON or a line-base
 
 ```text
 name: run_tests
-description: Run the project test suite
-path: string? Optional test path
+description: Run the project build
+path: string? Optional build path
 replay: never
 ```
 
@@ -811,41 +802,25 @@ A server that cannot spawn, handshake, or list tools is skipped with a warning; 
 
 ## Compatibility changes
 
-Changes to session versioning, record names or required fields, stream ordering, exit-code meaning, hook decisions, toolbox framing, gate framing or decisions, or machine-readable stdout are compatibility changes. They require focused serialization or integration tests, migration analysis where applicable, and an update to this document's semantics.
+Changes to session versioning, record names or required fields, stream ordering, exit-code meaning, hook decisions, toolbox framing, gate framing or decisions, or machine-readable stdout are compatibility changes. They require focused serialization review, migration analysis where applicable, and an update to this document's semantics.
 
 MCP support adds the `--mcp-config` flag, the optional `<config>/cake/mcp.json` and trusted `.cake/mcp.json` sources, the `mcp__<server>__<tool>` tool namespace, the `cake debug mcp` command with its diagnostic checks, and the `cake mcp add`, `mcp get`, `mcp list`, and `mcp remove` management commands. Management edits only the global file and adds the `mcp.server_not_found` check id. The `description` and `exposure` entry fields are additive, but the default for a server without `exposure` is now `deferred`: its tools are not registered until `ToolSearch` selects them. Set `"exposure": "direct"` to preserve eager registration. Deferred activation adds the `mcp_tools_activated` session record and rehydrates it on resume and fork; the record is additive to format version 4. Tool-list refresh is additive: a server can change the model-visible surface between turns, and `tool_updates` is added to the `debug mcp --json` server row. No existing session record shape, tool, hook, toolbox,
 gate, or provider wire shape changes, and a run with no MCP configuration behaves as before.
 
 The `Stop` hook's `follow_up` request and its `follow_up_index`/`max_follow_ups` payload fields are additive. A hook that does not set `follow_up` keeps the previous log-only behavior, so an existing hook file cannot start spending model turns after an upgrade. `--output-format json` adds `intermediate_results` only for an invocation that ran a follow-up.
 
-A settings file that cannot be loaded or parsed exited `1`; it now exits `3`, the class this document already assigns to invalid configuration. Every command that loads settings reports the failure with that code: `cake <prompt>`, `cake debug models`, `cake debug models --json`, `cake debug skills`, `cake debug grants`, `cake debug grants --json`, `cake debug config`, `cake debug config --json`, and `cake bash check` in both output modes. A script that branched on `1` for a broken settings file must branch on `3` instead; the stderr diagnostic is unchanged. See [ADR 044](adr/044-classify-settings-failures-as-input-errors.md).
+A settings file that cannot be loaded or parsed exited `1`; it now exits `3`, the class this document already assigns to invalid configuration. Every command that loads settings reports the failure with that code: `cake <prompt>`, `cake debug models`, `cake debug models --json`, `cake debug skills`, `cake debug grants`, `cake debug grants --json`, `cake debug config`, `cake debug config --json`, and `cake bash check` in both output modes. A script that branched on `1` for a broken settings file must branch on `3` instead; the stderr diagnostic is unchanged. `debug models --json` and `sessions list --json` emitted a bare JSON array before the diagnostic document above; they now emit the document, and `bash check` gained `--json`. Consumers that parsed the bare array read `data.models` or `data.sessions` instead. No default behavior changed: the affected flags are explicitly opt-in.
 
-`debug models --json` and `sessions list --json` emitted a bare JSON array before the diagnostic document above; they now emit the document, and `bash check` gained `--json` ([ADR 029](adr/029-diagnostic-json-document.md)). Consumers that parsed the bare array read `data.models` or `data.sessions` instead. No default behavior changed: the affected flags are explicitly opt-in.
+An exhausted HTTP `408` request timeout from a provider now exits `2` instead of `1`, matching the client-side timeouts that already did. Scripts that branch on `$?` must treat `2` as the request-timeout class. The mapping depends on the status code the provider supplies, and every other status stays where it was: `400`, `404`, `409`, `5xx`, and `529` still exit `1`.
 
-An exhausted HTTP `408` request timeout from a provider now exits `2` instead of `1`, matching the client-side timeouts that already did ([ADR 045](adr/045-classify-request-timeouts-as-api-errors.md)). Scripts that branch on `$?` must treat `2` as the request-timeout class. The mapping depends on the status code the provider supplies, and every other status stays where it was: `400`, `404`, `409`, `5xx`, and `529` still exit `1`.
+`cake --fail-on-error` adds an opt-in strict exit contract for `stream-json`. Exit-code meaning grows, but no default behavior changes: without the flag, an in-stream agent, provider, or tool failure still exits `0`, so every existing consumer keeps working. A consumer that adopts the flag reads a nonzero exit where it previously read `0`, which is the point of opting in.
 
-`cake --fail-on-error` adds an opt-in strict exit contract for `stream-json` ([ADR 046](adr/046-opt-in-strict-exit-codes-for-stream-json.md)). Exit-code meaning grows, but no default behavior changes: without the flag, an in-stream agent, provider, or tool failure still exits `0`, so every existing consumer keeps working. A consumer that adopts the flag reads a nonzero exit where it previously read `0`, which is the point of opting in.
+Project configuration trust is a breaking change for checkouts that rely on project `[[models]]`, sandbox grants, gates, `system_prompt`, `skills.path`, hooks, or toolbox tools without a trust record. A project `[[models]]` entry now exits `3`; an untrusted authority-bearing project now exits `3` instead of applying that authority. Run `cake trust` after review, `cake --trust-project` in CI, or `--no-project-config` to ignore project configuration. `cake trust` and its `--status`, `--revoke`, and `--check` actions, the one-run flags and their environment variables, and the additive `project_trust` diagnostic/telemetry fields are new surface. The session format version and every hook, toolbox, gate, and provider wire shape are unchanged.
 
-Project configuration trust (ADR 053) is a breaking change for checkouts that rely on project `[[models]]`, sandbox grants, gates, `system_prompt`, `skills.path`, hooks, or toolbox tools without a trust record. A project `[[models]]` entry now exits `3`; an untrusted authority-bearing project now exits `3` instead of applying that authority. Run `cake trust` after review, `cake --trust-project` in CI, or `--no-project-config` to ignore project configuration. `cake trust` and its `--status`, `--revoke`, and `--check` actions, the one-run flags and their environment variables, and the additive `project_trust` diagnostic/telemetry fields are new surface. The session format version and every hook, toolbox, gate, and provider wire shape are unchanged.
-
-Session provider identity pinning (ADR 053, task 052) adds the optional `session_meta.provider_identity`, the `--allow-session-model-change` resume/fork override, and the additive `telemetry_init.provider_identity` and `session_model_change_override` fields. A resume or fork whose current `[[models]]` entry changed its endpoint, endpoint query, API type, provider strategy, model identity, credential source, or request-shape controls now exits `3` instead of proceeding; `--allow-session-model-change` restores the old one-run behavior. Sessions written before the snapshot warn and resume normally. Format version 4, all existing record shapes, and every provider wire shape are unchanged.
+Session provider identity pinning adds the optional `session_meta.provider_identity`, the `--allow-session-model-change` resume/fork override, and the additive `telemetry_init.provider_identity` and `session_model_change_override` fields. A resume or fork whose current `[[models]]` entry changed its endpoint, endpoint query, API type, provider strategy, model identity, credential source, or request-shape controls now exits `3` instead of proceeding; `--allow-session-model-change` restores the old one-run behavior. Sessions written before the snapshot warn and resume normally. Format version 4, all existing record shapes, and every provider wire shape are unchanged.
 
 `cake debug config` adds a read-only configuration and trust report. It does not change run behavior and performs no provider, hook, gate, toolbox, or MCP call; the local report flags only affect what the report describes.
 
 `cake doctor` adds a read-only settings-health command with a `--json` diagnostic document. It reuses the existing settings loader, settings warnings, and grant report; it changes no run behavior, existing finding severity, or exit code. A settings load failure exits `3` through the existing settings classification, and unknown-key and grant-path findings stay warnings and exit `0`.
 
-The `cake-gate/1` contract adds `gate_startup`, `gate_decision`, and `gate_evidence` sidecar records and the additive `bash check` fields `data.gate` and `data.stages` ([ADR 049](adr/049-external-policy-gates-with-the-cake-gate-1-protocol.md)). The generic gate records are authoritative, while the compatibility `judge_*` compensation events, document fields, and exit codes keep their meanings. `CAKE_JUDGE=off` remains an alias for `CAKE_GATE=off`. A resolved pipeline with no `bash.exec` pre-tool gate is a configuration failure: `cake bash check` exits `3`, and the Bash tool is not offered at all. There is no in-process fallback; a missing `cake-safety-judge` executable is a startup failure. Consumers should tolerate historical `judge_attempt` and `type_safe_shadow` records in old sidecars and read `gate_decision` for current decisions.
-
-## Related decisions
-
-- [ADR 004](adr/004-append-only-session-task-events.md), append-only task events.
-- [ADR 005](adr/005-command-hooks.md), command hooks.
-- [ADR 007](adr/007-per-session-telemetry-sidecar.md), the telemetry sidecar.
-- [ADR 017](adr/017-trusted-executable-toolbox-tools.md), trusted toolbox executables.
-- [ADR 021](adr/021-session-transcript-replay.md), session transcript replay.
-- [ADR 029](adr/029-diagnostic-json-document.md), the diagnostic JSON document.
-- [ADR 044](adr/044-classify-settings-failures-as-input-errors.md), the exit class for a settings load or parse failure.
-- [ADR 049](adr/049-external-policy-gates-with-the-cake-gate-1-protocol.md), external policy gates and the `cake-gate/1` protocol.
-- [ADR 053](adr/053-trust-project-configuration-by-capability.md), capability-based project configuration trust.
-- [ADR 055](adr/055-use-a-dual-era-stdio-mcp-client-configured-by-mcp-json.md), the dual-era stdio MCP client and `mcp.json` configuration.
-- [ADR 062](adr/062-bound-request-images-by-count-pixels-and-bytes.md), per-request image budgets and request-only fitting.
+The `cake-gate/1` contract adds `gate_startup`, `gate_decision`, and `gate_evidence` sidecar records and the additive `bash check` fields `data.gate` and `data.stages`. The generic gate records are authoritative, while the compatibility `judge_*` compensation events, document fields, and exit codes keep their meanings. `CAKE_JUDGE=off` remains an alias for `CAKE_GATE=off`. A resolved pipeline with no `bash.exec` pre-tool gate is a configuration failure: `cake bash check` exits `3`, and the Bash tool is not offered at all. There is no in-process fallback; a missing `cake-safety-judge` executable is a startup failure. Consumers should tolerate historical `judge_attempt` and `type_safe_shadow` records in old sidecars and read `gate_decision` for current decisions.

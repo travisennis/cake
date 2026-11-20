@@ -6,7 +6,7 @@ Cake ships a binary that executes model-generated commands on a user's machine. 
 
 ## Principles
 
-- Prefer the standard library and repo-local helpers when the behavior is small, stable, and easy to test.
+- Prefer the standard library and repo-local helpers when the behavior is small, stable, and easy to review.
 - Add a dependency only when it removes more risk or complexity than it introduces. A direct dependency is a standing commitment to track its releases, advisories, and breaking changes.
 - Pin developer and CI tooling to exact versions. Tooling determines what the gates actually check, so a floating tool version means the gate is not reproducible.
 - Do not use mutable selectors such as `latest`, `stable`, branch names, or floating tags for durable tooling inputs. Cake pins an exact Rust version rather than tracking a channel, because the strict Clippy configuration in `Cargo.toml` makes a compiler upgrade a behavior change to the lint gate.
@@ -55,7 +55,7 @@ Platform-specific dependencies belong behind a target gate, as `landlock` is tod
 
 The `setup` recipe in the `justfile` and the tool installations in `.github/workflows/` describe the same tools for two audiences, so they must agree. A contributor whose local tool version differs from CI's gets gate results that CI will not reproduce.
 
-Pin these tools to exact versions with `--locked`. Tools that gate the build --- the formatter, the linter, the coverage and change-risk tooling, the documentation linter --- change their own output across releases, so an unpinned upgrade can turn a green branch red with no source change, or hide a finding the pinned version reported.
+Pin these tools to exact versions with `--locked`. Tools that gate the build --- the formatter, the linter, the complexity analyzer, the documentation linter --- change their own output across releases, so an unpinned upgrade can turn a green branch red with no source change, or hide a finding the pinned version reported.
 
 ## Reviewing a dependency update
 
@@ -70,12 +70,12 @@ Before merging a dependency update:
 - Confirm that generated artifacts correspond to their source when a dependency ships generated code.
 - Apply the cooldown when the update adopts a newly published release.
 
-If the upstream diff is unavailable, too large to review, or generated without reviewable source, do not merge it on the strength of a green CI run. CI shows that Cake's tests pass against the new version; it does not show what the new version does.
+If the upstream diff is unavailable, too large to review, or generated without reviewable source, do not merge it on the strength of a green CI run. CI shows that Cake builds and lints against the new version; it does not show what the new version does.
 
 Merge mechanically safe updates. Escalate an update that changes behavior, migrates an API, alters a security boundary, or moves a major version, and keep it separate from unrelated work.
 
 ## Enforcement
 
-`just check` runs the fast local gate. `just check-full` adds coverage/change-risk, the CI fixture suites, dependency checks, documentation, and a release build. The scheduled workflow runs advisories, outdated dependencies, unused dependencies, and MSRV weekly. Dependabot opens weekly Cargo and GitHub Actions updates, with a one-week cooldown on version updates for both. The manual review procedure for the remaining version surfaces is [Dependency sweep](automations/dependency-sweep.md).
+`just check` runs the local gate. `just build` produces a release binary, `just check-deps` audits advisories and licenses, and `just docs-check` checks the Markdown corpus. The scheduled workflow runs advisories, outdated dependencies, unused dependencies, and MSRV weekly. Dependabot opens weekly Cargo and GitHub Actions updates, with a one-week cooldown on version updates for both. The manual review procedure for the remaining version surfaces is [Dependency sweep](automations/dependency-sweep.md).
 
 These mechanisms enforce parts of this posture, not all of it. Where a rule here has no check, it is a rule a reviewer applies.

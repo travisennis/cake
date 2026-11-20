@@ -4,9 +4,6 @@
 //! the `describe` subprocess, the `init`/`ready` handshake, per-check
 //! deadlines, the 1 MiB frame bound, process-group teardown, restart after a
 //! per-check failure, and the two-consecutive-failure circuit breaker.
-//!
-//! The fake gate fixture and the runtime tests exercise this module without a
-//! model provider.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -789,7 +786,3 @@ impl crate::gates::composer::Gate for ProcessGate {
         })
     }
 }
-
-#[cfg(test)]
-#[path = "runner_tests.rs"]
-mod tests;

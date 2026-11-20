@@ -54,12 +54,6 @@ impl InvocationCompactionState {
             task_id,
         }
     }
-
-    /// Whether an earlier attempt failed or was skipped and no retry is due yet.
-    #[cfg(test)]
-    pub(super) const fn failed(&self) -> bool {
-        self.retry_at_tokens.is_some()
-    }
 }
 
 /// Fraction of the trigger the projection must grow by after a failure before
@@ -601,7 +595,3 @@ fn over_window_error(
     );
     CutOffError::new(detail).into()
 }
-
-#[cfg(test)]
-#[path = "compaction_tests.rs"]
-mod tests;

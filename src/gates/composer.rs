@@ -966,7 +966,7 @@ impl Composer {
 /// Pure composition over already-executed stage results, in execution order.
 ///
 /// The pipeline uses the same composer incrementally so it can stop the enforce
-/// chain at the right gate; tests use this entry point directly.
+/// chain at the right gate; callers use this entry point directly.
 pub fn compose(
     configs: &[GateStageConfig],
     command: &str,
@@ -987,7 +987,3 @@ pub fn compose(
 fn duration_millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
-
-#[cfg(test)]
-#[path = "composer_tests.rs"]
-mod tests;

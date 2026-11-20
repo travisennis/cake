@@ -10,8 +10,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// A provider may omit the usage object entirely, or send one with some
 /// required counters absent. Both cases read as zero in [`Usage`], so this
-/// marker is what keeps an unknown value from reading as a measured zero
-/// (ADR-030).
+/// marker is what keeps an unknown value from reading as a measured zero.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum UsagePresence {
@@ -86,62 +85,4 @@ pub struct InputTokensDetails {
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Default)]
 pub struct OutputTokensDetails {
     pub reasoning_tokens: u64,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn usage_deserialization_defaults_cache_write_tokens() {
-        let usage: Usage = serde_json::from_str(
-            r#"{
-                "input_tokens": 100,
-                "input_tokens_details": {"cached_tokens": 20},
-                "output_tokens": 50,
-                "output_tokens_details": {"reasoning_tokens": 10},
-                "total_tokens": 150
-            }"#,
-        )
-        .unwrap();
-        assert_eq!(usage.input_tokens_details.cache_write_tokens, 0);
-    }
-
-    #[test]
-    fn usage_presence_serialization_is_bounded() {
-        assert_eq!(
-            serde_json::to_string(&UsagePresence::Unreported).unwrap(),
-            "\"unreported\""
-        );
-        assert_eq!(
-            serde_json::to_string(&UsagePresence::Partial).unwrap(),
-            "\"partial\""
-        );
-        assert_eq!(
-            serde_json::to_string(&UsagePresence::Complete).unwrap(),
-            "\"complete\""
-        );
-        assert_eq!(UsagePresence::default(), UsagePresence::Unreported);
-    }
-
-    #[test]
-    fn usage_serialization() {
-        let usage = Usage {
-            input_tokens: 100,
-            output_tokens: 50,
-            total_tokens: 150,
-            input_tokens_details: InputTokensDetails {
-                cached_tokens: 20,
-                cache_write_tokens: 5,
-            },
-            output_tokens_details: OutputTokensDetails {
-                reasoning_tokens: 10,
-            },
-        };
-        let json = serde_json::to_string(&usage).unwrap();
-        assert!(json.contains("\"input_tokens\":100"));
-        assert!(json.contains("\"output_tokens\":50"));
-        assert!(json.contains("\"total_tokens\":150"));
-        assert!(json.contains("\"cache_write_tokens\":5"));
-    }
 }

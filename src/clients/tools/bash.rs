@@ -16,9 +16,6 @@ use crate::gates::protocol::{BashInput, CheckSession, GateDecision};
 use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
 use crate::time_format::format_seconds_tenths;
 
-#[cfg(test)]
-use crate::config::settings::DEFAULT_BASH_OUTPUT_MAX_BYTES;
-
 /// Maximum number of null bytes or control characters (excluding common whitespace)
 /// allowed before considering output as binary.
 const BINARY_NULL_BYTE_THRESHOLD: usize = 8;
@@ -33,16 +30,6 @@ const BYTES_PER_KIB: u128 = 1024;
 const TENTHS_PER_KIB: u128 = 10;
 const EXIT_ZERO_STDERR_WARNING: &str = "[stderr output present despite exit 0]";
 const EMPTY_SEARCH_NO_MATCH_ANNOTATION: &str = "(no matches)";
-
-/// Maximum number of bytes the Bash tool will return inline (the compiled
-/// default for `[limits] bash_output_max_bytes`).
-/// Output exceeding this limit is written to a temporary file and the agent
-/// receives a truncated message with a path to the full output.
-///
-/// Test-only: production reads the configured budget from
-/// `context.limits.bash_output_max_bytes`.
-#[cfg(test)]
-pub(super) const BASH_OUTPUT_MAX_BYTES: usize = DEFAULT_BASH_OUTPUT_MAX_BYTES as usize;
 
 /// Default foreground yield window in seconds.
 const BASH_TIMEOUT_DEFAULT_SECS: u64 = 60;
@@ -361,10 +348,6 @@ fn denied_path_refs_in_command(
 
 /// Preserve the existing model-facing path-detail helper while the Bash
 /// executor carries structured references for completion audit labels.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "retained for focused path-detail unit tests")
-)]
 pub(super) fn denied_paths_in_command(
     command: &str,
     cwd: &Path,
@@ -901,16 +884,6 @@ pub(super) async fn terminate_process_group_gracefully(child: &mut Child, _grace
     // then reap under the same bound as the Unix path.
     drop(child.start_kill());
     drop(timeout(TERMINATE_REAP_TIMEOUT, child.wait()).await);
-}
-
-/// Execute a bash command. Tests use this convenience wrapper; the tool
-/// executor calls [`execute_bash_for_call`] to attribute gate decisions.
-#[cfg(test)]
-pub(super) async fn execute_bash(
-    context: &super::ToolContext,
-    arguments: &str,
-) -> Result<super::ToolResult, super::ToolError> {
-    execute_bash_for_call(context, arguments, None).await
 }
 
 /// Execute a bash command, attributing gate decisions to the originating tool
@@ -1647,46 +1620,6 @@ fn gate_tool_error(
     }
 }
 
-/// Offline Bash tests use an explicit bypass pipeline.
-#[cfg(test)]
-async fn execute_bash_unsandboxed(arguments: &str) -> Result<super::ToolResult, super::ToolError> {
-    execute_bash_with_gates(arguments, Some(bypassed_gate_context())).await
-}
-
-#[cfg(test)]
-async fn execute_bash_with_gates(
-    arguments: &str,
-    gates: Option<std::sync::Arc<crate::gates::composer::GatePipeline>>,
-) -> Result<super::ToolResult, super::ToolError> {
-    let dir = tempfile::tempdir().expect("hermetic bash test");
-    execute_bash_with_gates_in(arguments, gates, dir.path()).await
-}
-
-#[cfg(test)]
-async fn execute_bash_with_gates_in(
-    arguments: &str,
-    gates: Option<std::sync::Arc<crate::gates::composer::GatePipeline>>,
-    cwd: &Path,
-) -> Result<super::ToolResult, super::ToolError> {
-    let mut context = super::ToolContext::from_current_process().with_gates(gates);
-    context.cwd = cwd.to_path_buf();
-    context.set_sandbox_policy(super::sandbox::SandboxPolicy::DangerFullAccess);
-    let (args, effective_cwd, sandbox_config) = parse_bash_call(&context, arguments)?;
-    Box::pin(execute_bash_with_args(
-        &context,
-        args,
-        effective_cwd,
-        &sandbox_config,
-        None,
-    ))
-    .await
-}
-
-#[cfg(test)]
-fn bypassed_gate_context() -> std::sync::Arc<crate::gates::composer::GatePipeline> {
-    std::sync::Arc::new(crate::gates::composer::GatePipeline::bypass())
-}
-
 /// If `output` exceeds `max_bytes`, write the full text to a temporary file
 /// and return a summary pointing to that file. Otherwise return the output
 /// with the metadata footer appended. `max_bytes` is the `[limits]
@@ -1772,11 +1705,3 @@ fn prepend_safety_warnings(output: String, warnings: &[String]) -> String {
         format!("{}\n\n{output}", warnings.join("\n\n"))
     }
 }
-
-#[cfg(test)]
-#[path = "bash_tests.rs"]
-mod tests;
-
-#[cfg(test)]
-#[path = "bash_issue_366_tests.rs"]
-mod issue_366_tests;

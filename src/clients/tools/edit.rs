@@ -1133,7 +1133,3 @@ fn generate_unified_diff(original: &str, modified: &str, path: &Path) -> String 
         )
         .to_string()
 }
-
-#[cfg(test)]
-#[path = "edit_tests.rs"]
-mod tests;

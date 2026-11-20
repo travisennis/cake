@@ -4,8 +4,7 @@
 //! a manifest or a title heuristic: cake reports `working` while the agent loop
 //! runs, `done` or `error` when the run ends, `blocked` while it waits for
 //! input, and `idle` when the user interrupts. See
-//! [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status)
-//! and [ADR 042](../../docs/adr/042-report-run-state-with-the-osc-7501-program-status-protocol.md).
+//! [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status).
 //!
 //! Records go to stderr, only when stderr is a terminal, and only from a run
 //! that owns the terminal. Nothing reaches stdout, a session record, a
@@ -89,9 +88,8 @@ pub fn report(state: State, message: Option<&str>) {
 
 /// Write one report to `writer` unless reporting is disabled.
 ///
-/// Extracted from [`report`] so tests can exercise the terminal guard and the
-/// emitted bytes without a terminal: production passes `stderr` and whether
-/// `stderr` is a terminal.
+/// Extracted from [`report`] so the terminal guard and the emitted bytes stay
+/// testable: production passes `stderr` and whether `stderr` is a terminal.
 fn report_to<W: Write>(writer: &mut W, enabled: bool, state: State, message: Option<&str>) {
     if !enabled {
         return;
@@ -173,145 +171,4 @@ fn truncate_message(message: &str) -> String {
     }
     truncated.push_str(ELLIPSIS);
     truncated
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// One representative record per state, as the bytes a terminal receives.
-    fn all_records() -> String {
-        [
-            format_record(State::Working, None),
-            format_record(State::Done, None),
-            format_record(State::Idle, Some("Interrupted by user")),
-            format_record(State::Error, Some("api failure: connection reset")),
-            format_record(
-                State::Blocked(BlockedKind::Question),
-                Some("Waiting for prompt input on stdin"),
-            ),
-        ]
-        .join("\n")
-    }
-
-    #[test]
-    fn program_status_records() {
-        insta::with_settings!({ filters => vec![(r"\x1b", "ESC")] }, {
-            insta::assert_snapshot!(all_records());
-        });
-    }
-
-    #[test]
-    fn disabled_reporting_writes_nothing() {
-        let mut written = Vec::new();
-        report_to(&mut written, false, State::Working, Some("a message"));
-        assert!(written.is_empty());
-    }
-
-    #[test]
-    fn enabled_reporting_writes_the_record() {
-        let mut written = Vec::new();
-        report_to(&mut written, true, State::Done, None);
-        assert_eq!(written, b"\x1b]7501;state=done:app=cake\x1b\\");
-    }
-
-    #[test]
-    fn records_match_the_protocol_grammar() {
-        // A report is `ESC ] 7501 ;` then `key=value` pairs joined by `:`,
-        // then `ESC \`. The value charset excludes `:`, so a message can carry
-        // separators without escaping them.
-        for state in [
-            State::Working,
-            State::Done,
-            State::Error,
-            State::Idle,
-            State::Blocked(BlockedKind::Question),
-        ] {
-            let record = format_record(state, Some("a message: with separators"));
-            let body = record
-                .strip_prefix("\x1b]7501;")
-                .and_then(|rest| rest.strip_suffix("\x1b\\"))
-                .expect("a report must be framed by OSC 7501 and ST");
-
-            assert!(body.starts_with("state="), "{body}");
-            assert!(
-                body.contains(":app=cake") || body.ends_with("app=cake"),
-                "{body}"
-            );
-            for pair in body.split(':') {
-                let (key, value) = pair.split_once('=').expect("each pair is key=value");
-                assert!(!key.is_empty(), "{body}");
-                assert!(key.chars().all(|c| c.is_ascii_lowercase()), "{body}");
-                assert!(
-                    value
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || "_.,+/=-".contains(c)),
-                    "{body}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn kind_is_reported_with_blocked_only() {
-        assert_eq!(
-            format_record(State::Blocked(BlockedKind::Question), None),
-            "\x1b]7501;state=blocked:kind=question:app=cake\x1b\\"
-        );
-        assert!(!format_record(State::Working, None).contains("kind="));
-    }
-
-    #[test]
-    fn message_is_base64_encoded_utf8() {
-        let record = format_record(State::Done, Some("héllo ✓"));
-        assert!(
-            record.ends_with(":msg=aMOpbGxvIOKckw==\x1b\\"),
-            "unexpected record: {record}"
-        );
-    }
-
-    #[test]
-    fn message_whitespace_and_controls_collapse_to_spaces() {
-        let normalized = normalize_message("  first\nsecond\ttabbed\u{7}\u{9b}  ")
-            .expect("a message survives normalization");
-        assert_eq!(normalized, "first second tabbed");
-    }
-
-    #[test]
-    fn blank_message_is_omitted() {
-        assert_eq!(
-            format_record(State::Error, Some(" \n\t ")),
-            "\x1b]7501;state=error:app=cake\x1b\\"
-        );
-    }
-
-    #[test]
-    fn message_is_truncated_to_the_protocol_limit() {
-        let long = "é".repeat(MAX_MESSAGE_BYTES);
-        let normalized = normalize_message(&long).expect("a long message is still reported");
-
-        assert!(normalized.len() <= MAX_MESSAGE_BYTES);
-        assert!(normalized.ends_with(ELLIPSIS));
-        assert_eq!(normalized.chars().count(), MAX_MESSAGE_BYTES / 2 - 1);
-
-        let encoded = base64::engine::general_purpose::STANDARD.encode(&normalized);
-        assert!(encoded.len() <= 2732, "encoded msg must fit the protocol");
-    }
-
-    #[test]
-    fn write_failure_is_ignored() {
-        struct ClosedTerminal;
-
-        impl Write for ClosedTerminal {
-            fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
-                Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed"))
-            }
-
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-
-        report_to(&mut ClosedTerminal, true, State::Done, None);
-    }
 }

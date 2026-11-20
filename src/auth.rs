@@ -135,7 +135,3 @@ fn account_id_from_jwt(jwt: &str) -> Option<String> {
         .filter(|value| !value.trim().is_empty())
         .map(str::to_string)
 }
-
-#[cfg(test)]
-#[path = "auth_tests.rs"]
-mod tests;

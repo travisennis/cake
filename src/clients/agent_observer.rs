@@ -21,14 +21,6 @@ pub(super) struct AgentObserver {
 }
 
 impl AgentObserver {
-    #[cfg(test)]
-    pub(super) fn set_streaming_json(&mut self, callback: impl Fn(&str) + Send + Sync + 'static) {
-        self.streaming = Some(Box::new(move |json| {
-            callback(json);
-            Ok(())
-        }));
-    }
-
     pub(super) fn set_fallible_streaming_json(
         &mut self,
         callback: impl Fn(&str) -> anyhow::Result<()> + Send + Sync + 'static,

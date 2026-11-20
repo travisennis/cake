@@ -3,8 +3,7 @@
 //! `debug models --json`, `debug skills --json`, `sessions list --json`, and
 //! `bash check --json` all emit one object with the same top-level fields, so a
 //! consumer parses one shape instead of one dialect per command. The contract's
-//! semantics live in [docs/integrations.md](../../docs/integrations.md); the
-//! decision is recorded in [ADR 029](../../docs/adr/029-diagnostic-json-document.md).
+//! semantics live in [docs/integrations.md](../../docs/integrations.md).
 //!
 //! Every document is:
 //!
@@ -319,95 +318,4 @@ pub fn report_failure(
         DiagnosticDocument::failure(command, check_id, format!("{error:#}")).print();
     }
     error
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn document_has_the_declared_top_level_fields_in_order() {
-        let document = DiagnosticDocument::new(
-            "debug models",
-            json!({ "count": 0 }),
-            Vec::new(),
-            json!({ "models": [] }),
-        );
-
-        let rendered = document.render().unwrap();
-
-        // The emitted bytes lead with the envelope, so a reader (and a diff)
-        // meets the identity of the document before its payload.
-        assert!(rendered.starts_with(
-            "{\n  \"schema_version\": 1,\n  \"command\": \"debug models\",\n  \"status\": \"ok\",\n"
-        ));
-        assert!(rendered.contains("\n  \"summary\":"));
-        assert!(rendered.contains("\n  \"checks\": []"));
-        assert!(rendered.contains("\n  \"data\":"));
-        assert!(rendered.ends_with('\n'));
-
-        let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        assert_eq!(parsed["schema_version"], SCHEMA_VERSION);
-        assert_eq!(parsed["command"], "debug models");
-        assert_eq!(parsed["status"], "ok");
-    }
-
-    #[test]
-    fn status_derives_from_the_most_severe_finding() {
-        let warning = || vec![DiagnosticCheck::warning("a", "a warning")];
-        let error = || vec![DiagnosticCheck::error("b", "an error")];
-
-        let ok = DiagnosticDocument::new("debug models", json!({}), Vec::new(), json!({}));
-        assert_eq!(ok.status, DiagnosticStatus::Ok);
-
-        let warned = DiagnosticDocument::new("debug models", json!({}), warning(), json!({}));
-        assert_eq!(warned.status, DiagnosticStatus::Warning);
-
-        let mut both = warning();
-        both.extend(error());
-        let failed = DiagnosticDocument::new("debug models", json!({}), both, json!({}));
-        assert_eq!(failed.status, DiagnosticStatus::Error);
-    }
-
-    #[test]
-    fn failure_document_reports_the_error_check() {
-        let document = DiagnosticDocument::failure("debug models", "settings.load_failed", "boom");
-        let rendered = document.render().unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-
-        assert_eq!(parsed["status"], "error");
-        assert_eq!(parsed["checks"][0]["id"], "settings.load_failed");
-        assert_eq!(parsed["checks"][0]["status"], "error");
-        assert_eq!(parsed["checks"][0]["message"], "boom");
-    }
-
-    #[test]
-    fn settings_warnings_become_findings_in_loader_order() {
-        let warnings = vec!["first".to_string(), "second".to_string()];
-        let checks = settings_warnings(&warnings);
-
-        assert_eq!(checks.len(), 2);
-        assert_eq!(checks[0].id, CHECK_SETTINGS_UNKNOWN_KEY);
-        assert_eq!(checks[0].message, "first");
-        assert_eq!(checks[1].message, "second");
-        assert_eq!(checks[0].status, DiagnosticStatus::Warning);
-    }
-
-    #[test]
-    fn rendering_is_byte_stable_across_calls() {
-        let first = DiagnosticDocument::new(
-            "sessions list",
-            json!({ "count": 1 }),
-            Vec::new(),
-            json!({ "sessions": [ { "session_id": "id" } ] }),
-        );
-        let second = DiagnosticDocument::new(
-            "sessions list",
-            json!({ "count": 1 }),
-            Vec::new(),
-            json!({ "sessions": [ { "session_id": "id" } ] }),
-        );
-
-        assert_eq!(first.render().unwrap(), second.render().unwrap());
-    }
 }

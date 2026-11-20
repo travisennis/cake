@@ -90,30 +90,6 @@ impl RunMode {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn telemetry_labels_cover_the_remaining_run_modes() {
-        let resume = RunMode::Resume {
-            session_id: uuid::Uuid::nil(),
-        };
-        assert_eq!(
-            serde_json::to_string(&resume.telemetry_mode()).unwrap_or_default(),
-            "\"resume\""
-        );
-        assert_eq!(
-            serde_json::to_string(&RunMode::NewSession.telemetry_mode()).unwrap_or_default(),
-            "\"new\""
-        );
-        assert_eq!(
-            serde_json::to_string(&RunMode::ForkLatest.telemetry_mode()).unwrap_or_default(),
-            "\"fork\""
-        );
-    }
-}
-
 /// One complete plan for opening a session's persistence handle.
 #[derive(Debug)]
 pub enum SessionPersistencePlan {

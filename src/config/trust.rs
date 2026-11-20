@@ -330,7 +330,7 @@ pub struct ProjectManifest {
 impl ProjectManifest {
     /// Compare this snapshot against a stored record.
     ///
-    /// The result is sorted by path so diagnostics and tests are stable.
+    /// The result is sorted by path so diagnostics are stable.
     #[must_use]
     pub fn compare(&self, record: &TrustRecord) -> Vec<ManifestChange> {
         let current: BTreeMap<&str, &TrustedFile> = self
@@ -760,7 +760,7 @@ impl ProjectConfigSnapshot {
             Ok(root) => root,
             Err(TrustError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
                 // A missing project directory has no configuration to trust;
-                // callers such as tests may probe a path before it exists.
+                // a caller may probe a path before it exists.
                 project_dir.to_path_buf()
             },
             Err(error) => return Err(error.into()),
@@ -1040,7 +1040,7 @@ pub fn scan_project_cake(project_root: &Path) -> Result<ProjectConfigSnapshotFil
     })
 }
 
-/// Files read from project `.cake/`, exposed for focused tests.
+/// Files read from project `.cake/`, exposed for focused inspection.
 #[derive(Debug)]
 pub struct ProjectConfigSnapshotFiles {
     /// Every regular file under `.cake/`.
@@ -1386,7 +1386,3 @@ fn format_changes(changes: &[ManifestChange]) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
-
-#[cfg(test)]
-#[path = "trust_tests.rs"]
-mod tests;

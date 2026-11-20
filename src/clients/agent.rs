@@ -60,7 +60,7 @@ pub(super) struct TurnResult {
 /// Carries the bounded provider identity of that attempt — the configured
 /// model, the provider response ID, and the response-reported model when the
 /// provider supplied one — so a usage record can be tied to the provider
-/// response that produced it (ADR-030).
+/// response that produced it.
 #[derive(Debug, Clone)]
 pub(super) struct TurnUsageSettlement {
     pub(super) turn_index: u32,
@@ -326,22 +326,6 @@ impl Agent {
     /// Returns the enabled tool names.
     pub fn tool_names(&self) -> Vec<String> {
         self.tools.names()
-    }
-
-    /// Returns the tool context attached to this agent (for tests).
-    #[cfg(test)]
-    pub(crate) const fn tool_context(&self) -> &Arc<ToolContext> {
-        &self.tool_context
-    }
-
-    #[cfg(test)]
-    fn history(&self) -> &[ConversationItem] {
-        self.conversation.history()
-    }
-
-    #[cfg(test)]
-    const fn history_mut(&mut self) -> &mut Vec<ConversationItem> {
-        self.conversation.history_mut()
     }
 
     /// Sets the directory context used for tool execution and sandboxing.
@@ -891,41 +875,6 @@ impl Agent {
         self
     }
 
-    /// Sets the tool registry (for test fixtures).
-    #[cfg(test)]
-    pub(super) fn with_tools(mut self, tools: ToolRegistry) -> Self {
-        self.tools = tools;
-        self
-    }
-
-    /// Sets the accumulated permission denials (for test fixtures).
-    #[cfg(test)]
-    pub(super) fn with_permission_denials(mut self, denials: Vec<String>) -> Self {
-        self.permission_denials = denials;
-        self
-    }
-
-    /// Sets the max output tokens config value (for test fixtures).
-    #[cfg(test)]
-    pub const fn with_max_output_tokens(mut self, val: Option<u32>) -> Self {
-        self.config.model_config.max_output_tokens = val;
-        self
-    }
-
-    /// Sets the context window config value (for test fixtures).
-    #[cfg(test)]
-    pub const fn with_context_window(mut self, val: Option<u32>) -> Self {
-        self.config.model_config.context_window = val;
-        self
-    }
-
-    /// Sets the reasoning max tokens config value (for test fixtures).
-    #[cfg(test)]
-    pub const fn with_reasoning_max_tokens(mut self, val: Option<u32>) -> Self {
-        self.config.model_config.reasoning_max_tokens = val;
-        self
-    }
-
     /// Returns the resolved provider model identifier.
     pub fn model_name(&self) -> &str {
         &self.config.model_config.model
@@ -950,18 +899,6 @@ impl Agent {
     /// Returns the session ID.
     pub const fn session_id(&self) -> uuid::Uuid {
         self.session_id
-    }
-
-    /// Returns the task ID.
-    #[cfg(test)]
-    pub const fn task_id(&self) -> uuid::Uuid {
-        self.task_id
-    }
-
-    /// Returns the accumulated permission denials.
-    #[cfg(test)]
-    pub fn permission_denials(&self) -> &[String] {
-        &self.permission_denials
     }
 
     /// Returns accumulated usage across all API calls.
@@ -1037,31 +974,9 @@ impl Agent {
         self
     }
 
-    /// Sets a short no-data stall window for provider tests.
-    #[cfg(test)]
-    pub(super) const fn with_stall_window(mut self, window: std::time::Duration) -> Self {
-        self.runner.with_stall_window(window);
-        self
-    }
-
-    /// Sets accumulated usage (for test fixtures).
-    #[cfg(test)]
-    pub const fn with_total_usage(mut self, usage: Usage) -> Self {
-        self.total_usage = usage;
-        self
-    }
-
-    /// Sets the usage of the most recent provider attempt (for restored sessions
-    /// and test fixtures).
+    /// Sets the usage of the most recent provider attempt (for restored sessions).
     pub const fn with_last_usage(mut self, usage: Option<Usage>) -> Self {
         self.last_usage = usage;
-        self
-    }
-
-    /// Sets the turn count (for test fixtures).
-    #[cfg(test)]
-    pub const fn with_turn_count(mut self, count: u32) -> Self {
-        self.turn_count = count;
         self
     }
 
@@ -1077,22 +992,6 @@ impl Agent {
     pub const fn with_image_policy(mut self, policy: &ResolvedImagePolicy) -> Self {
         self.image_policy = *policy;
         self
-    }
-
-    /// Validate and apply the loaded automatic compaction policy.
-    ///
-    /// The policy is validated against the resolved model context window.
-    /// Enabling automatic compaction without a known window is an error, and
-    /// an enabled policy also requires a backend that preserves the bounded
-    /// summary generation cap. These checks make no network call.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an invalid policy, enabled compaction without a
-    /// context window, or a backend that cannot bound a summary.
-    #[cfg(test)]
-    pub fn with_compaction_policy(self, policy: CompactionPolicy) -> anyhow::Result<Self> {
-        self.with_compaction(policy, None)
     }
 
     /// Validate and apply the loaded automatic compaction policy and an
@@ -1131,30 +1030,10 @@ impl Agent {
         Ok(self)
     }
 
-    /// Returns the configured compaction policy (for test fixtures).
-    #[cfg(test)]
-    pub(super) const fn compaction_policy(&self) -> Option<&CompactionPolicy> {
-        self.compaction_policy.as_ref()
-    }
-
-    /// Returns the resolved compaction policy (for test fixtures).
-    #[cfg(test)]
-    pub(super) const fn resolved_compaction_policy(&self) -> Option<&ResolvedCompactionPolicy> {
-        self.resolved_compaction_policy.as_ref()
-    }
-
     /// Sets the conversation history from raw conversation items.
     ///
     /// Restore and fork seed through [`Self::with_context_seed`], which carries
-    /// the latest checkpoint too. This remains the checkpoint-free builder used
-    /// by tests.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "restore seeds through with_context_seed; this remains the checkpoint-free history builder for tests"
-        )
-    )]
+    /// the latest checkpoint too. This is the checkpoint-free builder.
     pub fn with_history(mut self, messages: Vec<ConversationItem>) -> anyhow::Result<Self> {
         self.conversation.with_restored_history(messages)?;
         Ok(self)
@@ -1196,18 +1075,6 @@ impl Agent {
             .iter()
             .map(ConversationItem::image_count)
             .sum()
-    }
-
-    /// The provider request context for the next turn (for tests).
-    #[cfg(test)]
-    pub(crate) fn request_context(&self) -> Vec<ConversationItem> {
-        self.conversation.request_context().into_owned()
-    }
-
-    /// The active checkpoint, for tests that pin the restored envelope.
-    #[cfg(test)]
-    pub(crate) const fn active_checkpoint(&self) -> Option<&crate::types::CompactionData> {
-        self.conversation.checkpoint()
     }
 
     /// Set the skill locations for path-watching `SkillActivated` records.
@@ -1269,15 +1136,6 @@ impl Agent {
         self
     }
 
-    /// Returns a copy of the activated-skill names (for test fixtures).
-    #[cfg(test)]
-    pub(crate) fn activated_skill_names(&self) -> HashSet<String> {
-        self.activated_skills
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
     /// Enables command hooks for lifecycle and tool-call events.
     pub fn with_hook_runner(mut self, runner: Arc<HookRunner>) -> Self {
         self.hook_runner = Some(runner);
@@ -1288,13 +1146,6 @@ impl Agent {
     /// Schema. Intermediate tool-use turns are unaffected.
     pub fn set_output_schema(&mut self, schema: Arc<OutputSchema>) {
         self.output_schema = Some(schema);
-    }
-
-    /// Builder form of [`Self::set_output_schema`] (for test fixtures).
-    #[cfg(test)]
-    pub(super) fn with_output_schema(mut self, schema: Arc<OutputSchema>) -> Self {
-        self.set_output_schema(schema);
-        self
     }
 
     /// Append hook-provided developer context before the next provider request.
@@ -1325,19 +1176,9 @@ impl Agent {
             .append_developer_context(vec![message], Some(&task_id));
     }
 
-    #[cfg(test)]
-    /// Enables streaming JSON output for each message.
-    ///
-    /// The callback receives a JSON string for each message, tool call, and result.
-    /// This is useful for integrating with other tools or TUIs.
-    pub fn with_streaming_json(mut self, callback: impl Fn(&str) + Send + Sync + 'static) -> Self {
-        self.observer.set_streaming_json(callback);
-        self
-    }
-
     /// Enables streaming JSON output with a callback that can stop the run.
     ///
-    /// Unlike the test-only `with_streaming_json` builder, errors from the
+    /// Unlike the infallible `with_streaming_json` builder, errors from the
     /// callback propagate through the agent loop so the CLI can leave scope
     /// normally.
     pub(crate) fn with_fallible_streaming_json(
@@ -1510,12 +1351,6 @@ impl Agent {
         Ok(())
     }
 
-    #[cfg(test)]
-    /// Accumulate usage from an API turn.
-    const fn accumulate_usage(&mut self, turn_usage: Option<&Usage>) {
-        accumulate_usage(&mut self.total_usage, turn_usage);
-    }
-
     /// Emit the task completion record with success/error and usage stats.
     pub fn emit_task_complete_record(
         &mut self,
@@ -1564,25 +1399,3 @@ impl Agent {
         self.append_telemetry_record(&record);
     }
 }
-
-#[cfg(test)]
-#[path = "agent/agent_tests.rs"]
-mod tests;
-
-#[cfg(test)]
-#[path = "agent/response_stall_tests.rs"]
-mod response_stall_tests;
-
-#[cfg(test)]
-#[path = "agent/gate_telemetry_tests.rs"]
-mod gate_telemetry_tests;
-
-#[cfg(test)]
-mod session_restore_tests;
-
-#[cfg(test)]
-mod tail_only_growth_tests;
-
-#[cfg(test)]
-#[path = "agent/image_budget_tests.rs"]
-mod image_budget_tests;

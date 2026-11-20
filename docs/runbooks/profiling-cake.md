@@ -44,8 +44,8 @@ The default 5,000-call batch is intentionally amplified so Samply can collect a 
 
 ```sh
 just profile \
-  --tool-calls 1000 \
-  --output profiling/artifacts/agent-loop-1000.jslb.gz
+ --tool-calls 1000 \
+ --output profiling/artifacts/agent-loop-1000.jslb.gz
 ```
 
 To inspect a saved profile, use Samply's loader:
@@ -70,7 +70,7 @@ samply load profiling/artifacts/agent-loop-after.jslb.gz
 
 Keep these variables constant:
 
-- commit or source diff, except for the change under test;
+- commit or source diff, except for the change under investigation;
 - operating system, CPU architecture, Rust toolchain, and Cargo profile;
 - workload command, `--tool-calls` value, and artifact format; and
 - provider response sequence and fixture size.
@@ -83,8 +83,8 @@ Samply records sampled CPU stacks; it does not count every allocation. On macOS,
 
 ```sh
 just profile \
-  --profiler instruments \
-  --output profiling/artifacts/agent-loop-before.trace
+ --profiler instruments \
+ --output profiling/artifacts/agent-loop-before.trace
 ```
 
 This path is optional and exploratory. It is macOS-only, depends on Xcode's developer-tool authorization and process attachment behavior, and is not a prerequisite for the supported Samply workflow. Follow-up issue [#383] evaluates a portable in-process allocation profiler and whether Instruments should remain available.

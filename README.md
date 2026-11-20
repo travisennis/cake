@@ -52,7 +52,7 @@ git diff --staged | cake "Review this change"
 cake - < prompt.md
 
 # Select a configured model
-cake --model openrouter "Fix the failing test"
+cake --model openrouter "Fix the failing build"
 ```
 
 Run `cake --help` for the authoritative flag list.
@@ -88,8 +88,8 @@ Cake removes an unchanged worktree when the task finishes and retains one with u
 
 ```bash
 cake --output-format json "Summarize this repository" | jq '.result'
-cake --output-format stream-json "Run the tests" | jq -c '.type'
-cake --fail-on-error --output-format stream-json "Run the tests" | jq -c '.type'
+cake --output-format stream-json "Explain the parser" | jq -c '.type'
+cake --fail-on-error --output-format stream-json "Summarize this change" | jq -c '.type'
 cake --output-schema result.schema.json "Return structured findings"
 ```
 
@@ -121,11 +121,10 @@ Configuration and precedence are in [Configuration](docs/configuration.md); exte
   | Understand permissions and trust boundaries                | [Security](docs/security.md)           |
   | Understand durable system boundaries                       | [Architecture](ARCHITECTURE.md)        |
   | Contribute changes                                         | [Contributing](CONTRIBUTING.md)        |
-  | Understand past decisions                                  | [ADR archive](docs/adr/README.md)      |
 
 ## Platform support
 
-Cake is developed and primarily validated on macOS. Linux builds include Landlock support, but CI provides less runtime coverage than on macOS.
+Cake is developed and primarily validated on macOS. Linux builds include Landlock support, and CI keeps Linux at compile level.
 
 ## License
 

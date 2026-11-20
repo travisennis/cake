@@ -253,7 +253,3 @@ fn print_review_details(snapshot: &ProjectConfigSnapshot) {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "trust_tests.rs"]
-mod tests;

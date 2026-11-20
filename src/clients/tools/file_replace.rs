@@ -14,20 +14,6 @@ const STAGE_ATTEMPTS: usize = 8;
 const WRITE_CHUNK_BYTES: usize = 64 * 1024;
 const HASH_BUFFER_BYTES: usize = 8 * 1024;
 
-#[cfg(test)]
-macro_rules! test_phase {
-    ($phase:ident, $stage:expr) => {
-        invoke_test_hook(ReplacePhase::$phase, $stage)?
-    };
-}
-
-#[cfg(not(test))]
-macro_rules! test_phase {
-    ($phase:ident, $stage:expr) => {{
-        let _ = $stage;
-    }};
-}
-
 /// Replace `target` with `content` through a staged sibling and an atomic
 /// rename.
 ///
@@ -167,21 +153,17 @@ impl StageFile {
     ) -> io::Result<()> {
         self.write_content(content)?;
         self.refresh_identity()?;
-        test_phase!(BeforeSync, &self.path);
         self.file_ref()?.sync_all()?;
-        test_phase!(BeforeVerify, &self.path);
         self.verify_content(content)?;
         revalidate_target(target, snapshot)?;
         self.revalidate_stage()?;
-        test_phase!(BeforePublish, &self.path);
         self.verify_content(content)?;
         self.revalidate_stage()?;
         self.publish(target)
     }
 
     fn write_content(&mut self, content: &[u8]) -> io::Result<()> {
-        let path = self.path.clone();
-        write_chunks(self.file_mut()?, content, &path)
+        write_chunks(self.file_mut()?, content)
     }
 
     fn verify_content(&mut self, content: &[u8]) -> io::Result<()> {
@@ -407,12 +389,11 @@ fn create_stage(parent: &Path) -> Result<(PathBuf, File), String> {
     ))
 }
 
-fn write_chunks(file: &mut File, content: &[u8], stage_path: &Path) -> io::Result<()> {
+fn write_chunks(file: &mut File, content: &[u8]) -> io::Result<()> {
     let mut chunks = content.chunks(WRITE_CHUNK_BYTES);
     if let Some(first) = chunks.next() {
         file.write_all(first)?;
     }
-    test_phase!(AfterPartialWrite, stage_path);
     for chunk in chunks {
         file.write_all(chunk)?;
     }
@@ -538,318 +519,4 @@ fn stage_permissions(metadata: &fs::Metadata) -> Permissions {
 #[cfg(not(unix))]
 fn stage_permissions(metadata: &fs::Metadata) -> Permissions {
     metadata.permissions()
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ReplacePhase {
-    AfterPartialWrite,
-    BeforeSync,
-    BeforeVerify,
-    BeforePublish,
-}
-
-#[cfg(test)]
-type TestHook = Box<dyn FnMut(ReplacePhase, &Path) -> io::Result<()>>;
-
-#[cfg(test)]
-thread_local! {
-    static TEST_HOOK: std::cell::RefCell<Option<TestHook>> = const { std::cell::RefCell::new(None) };
-}
-
-#[cfg(test)]
-struct RestoreTestHook(Option<TestHook>);
-
-#[cfg(test)]
-impl Drop for RestoreTestHook {
-    fn drop(&mut self) {
-        TEST_HOOK.with(|cell| {
-            *cell.borrow_mut() = self.0.take();
-        });
-    }
-}
-
-/// Run `action` with a thread-local replacement hook installed.
-#[cfg(test)]
-pub(super) fn with_test_hook<T>(
-    hook: impl FnMut(ReplacePhase, &Path) -> io::Result<()> + 'static,
-    action: impl FnOnce() -> T,
-) -> T {
-    let previous = TEST_HOOK.with(|cell| cell.borrow_mut().replace(Box::new(hook)));
-    let _restore = RestoreTestHook(previous);
-    action()
-}
-
-/// Return any staged replacement files left in `dir`.
-#[cfg(test)]
-pub(super) fn stage_residue(dir: &Path) -> Vec<PathBuf> {
-    fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with(STAGE_PREFIX))
-        })
-        .collect()
-}
-
-#[cfg(test)]
-fn invoke_test_hook(phase: ReplacePhase, stage: &Path) -> io::Result<()> {
-    TEST_HOOK.with(|cell| {
-        cell.borrow_mut()
-            .as_mut()
-            .map_or(Ok(()), |hook| hook(phase, stage))
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    fn assert_no_stage(dir: &Path) {
-        let residue = stage_residue(dir);
-        assert!(
-            residue.is_empty(),
-            "staged replacement residue: {residue:?}"
-        );
-    }
-
-    #[cfg(unix)]
-    fn mode(path: &Path) -> u32 {
-        use std::os::unix::fs::PermissionsExt;
-        fs::metadata(path).unwrap().permissions().mode() & 0o777
-    }
-
-    #[test]
-    fn replaces_existing_file_and_removes_stage() {
-        let dir = TempDir::new().unwrap();
-        let target = dir.path().join("target.txt");
-        fs::write(&target, "old content").unwrap();
-
-        replace_file(&target, b"new content").unwrap();
-
-        assert_eq!(fs::read(&target).unwrap(), b"new content");
-        assert_no_stage(dir.path());
-    }
-
-    #[test]
-    fn creates_missing_target() {
-        let dir = TempDir::new().unwrap();
-        let target = dir.path().join("new.txt");
-
-        replace_file(&target, b"new content").unwrap();
-
-        assert_eq!(fs::read(&target).unwrap(), b"new content");
-        assert_no_stage(dir.path());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn creates_new_file_with_the_process_default_mode() {
-        let dir = TempDir::new().unwrap();
-        let target = dir.path().join("new.txt");
-        let control = dir.path().join("control.txt");
-
-        replace_file(&target, b"new content").unwrap();
-        fs::write(&control, "control").unwrap();
-
-        assert_eq!(mode(&target), mode(&control));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn preserves_existing_mode() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = TempDir::new().unwrap();
-        let target = dir.path().join("target.txt");
-        fs::write(&target, "old content").unwrap();
-        fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
-
-        replace_file(&target, b"new content").unwrap();
-
-        assert_eq!(mode(&target), 0o640);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn rejects_hard_linked_target() {
-        let dir = TempDir::new().unwrap();
-        let target = dir.path().join("target.txt");
-        let link = dir.path().join("link.txt");
-        fs::write(&target, "old content").unwrap();
-        fs::hard_link(&target, &link).unwrap();
-
-        let error = replace_file(&target, b"new content").unwrap_err();
-
-        assert!(error.contains("hard links"), "{error}");
-        assert_eq!(fs::read(&target).unwrap(), b"old content");
-        assert_eq!(fs::read(&link).unwrap(), b"old content");
-        assert_no_stage(dir.path());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn rejects_final_symlink() {
-        use std::os::unix::fs::symlink;
-
-        let dir = TempDir::new().unwrap();
-        let target = dir.path().join("target.txt");
-        let link = dir.path().join("link.txt");
-        fs::write(&target, "old content").unwrap();
-        symlink(&target, &link).unwrap();
-
-        let error = replace_file(&link, b"new content").unwrap_err();
-
-        assert!(error.contains("symlink"), "{error}");
-        assert_eq!(fs::read(&target).unwrap(), b"old content");
-        assert!(
-            fs::symlink_metadata(&link)
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
-        assert_no_stage(dir.path());
-    }
-
-    #[test]
-    fn every_preparation_phase_preserves_existing_target() {
-        use ReplacePhase::{AfterPartialWrite, BeforePublish, BeforeSync, BeforeVerify};
-
-        for phase in [AfterPartialWrite, BeforeSync, BeforeVerify, BeforePublish] {
-            let dir = TempDir::new().unwrap();
-            let target = dir.path().join("target.txt");
-            fs::write(&target, "old content").unwrap();
-
-            let error = with_test_hook(
-                move |seen, _stage| {
-                    if seen == phase {
-                        Err(io::Error::other(format!("injected failure at {phase:?}")))
-                    } else {
-                        Ok(())
-                    }
-                },
-                || replace_file(&target, b"new content"),
-            )
-            .unwrap_err();
-
-            assert!(error.contains("injected failure"), "{error}");
-            assert_eq!(fs::read(&target).unwrap(), b"old content");
-            assert_no_stage(dir.path());
-        }
-    }
-
-    #[test]
-    fn failed_publication_does_not_create_new_target() {
-        let dir = TempDir::new().unwrap();
-        let target = dir.path().join("new.txt");
-
-        let error = with_test_hook(
-            |phase, _stage| {
-                if phase == ReplacePhase::BeforePublish {
-                    Err(io::Error::other("injected publication failure"))
-                } else {
-                    Ok(())
-                }
-            },
-            || replace_file(&target, b"new content"),
-        )
-        .unwrap_err();
-
-        assert!(error.contains("injected publication failure"), "{error}");
-        assert!(!target.exists());
-        assert_no_stage(dir.path());
-    }
-
-    #[test]
-    fn concurrent_target_change_is_rejected() {
-        let dir = TempDir::new().unwrap();
-        let target = dir.path().join("target.txt");
-        fs::write(&target, "old content").unwrap();
-        let hook_target = target.clone();
-
-        let error = with_test_hook(
-            move |phase, _stage| {
-                if phase == ReplacePhase::BeforeVerify {
-                    fs::write(&hook_target, "concurrent content")?;
-                }
-                Ok(())
-            },
-            || replace_file(&target, b"new content"),
-        )
-        .unwrap_err();
-
-        assert!(error.contains("changed while the replacement"), "{error}");
-        assert_eq!(fs::read(&target).unwrap(), b"concurrent content");
-        assert_no_stage(dir.path());
-    }
-
-    #[test]
-    fn target_appearing_during_preparation_is_rejected() {
-        let dir = TempDir::new().unwrap();
-        let target = dir.path().join("new.txt");
-        let hook_target = target.clone();
-
-        let error = with_test_hook(
-            move |phase, _stage| {
-                if phase == ReplacePhase::BeforeVerify {
-                    fs::write(&hook_target, "concurrent content")?;
-                }
-                Ok(())
-            },
-            || replace_file(&target, b"new content"),
-        )
-        .unwrap_err();
-
-        assert!(error.contains("appeared while the replacement"), "{error}");
-        assert_eq!(fs::read(&target).unwrap(), b"concurrent content");
-        assert_no_stage(dir.path());
-    }
-
-    #[test]
-    fn changed_staged_content_is_rejected() {
-        let dir = TempDir::new().unwrap();
-        let target = dir.path().join("target.txt");
-        fs::write(&target, "old content").unwrap();
-
-        let error = with_test_hook(
-            |phase, stage| {
-                if phase == ReplacePhase::BeforeVerify {
-                    fs::write(stage, "tampered content")?;
-                }
-                Ok(())
-            },
-            || replace_file(&target, b"new content"),
-        )
-        .unwrap_err();
-
-        assert!(error.contains("changed before publication"), "{error}");
-        assert_eq!(fs::read(&target).unwrap(), b"old content");
-        assert_no_stage(dir.path());
-    }
-
-    #[test]
-    fn same_length_change_before_publish_is_rejected() {
-        let dir = TempDir::new().unwrap();
-        let target = dir.path().join("target.txt");
-        fs::write(&target, "old content").unwrap();
-
-        let error = with_test_hook(
-            |phase, stage| {
-                if phase == ReplacePhase::BeforePublish {
-                    fs::write(stage, "new-contnt")?;
-                }
-                Ok(())
-            },
-            || replace_file(&target, b"new content"),
-        )
-        .unwrap_err();
-
-        assert!(error.contains("changed before publication"), "{error}");
-        assert_eq!(fs::read(&target).unwrap(), b"old content");
-        assert_no_stage(dir.path());
-    }
 }

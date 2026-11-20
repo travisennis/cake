@@ -4,23 +4,7 @@ target/
 .acai/worktrees/
 .cake/worktrees/
 
-# Coverage output
-lcov.info
-target/llvm-cov/
-
 .local.justfile
 
 # Generated profiling artifacts
 profiling/artifacts/
-
-# Eval harness generated output (sessions, telemetry, run results)
-scripts/evals/results/
-
-# Judge SLO benchmark generated output (per-trial records, run reports)
-scripts/judge-bench/results/
-
-# cargo-mutants generated reports
-mutants.out/
-
-# Generated ahm ADR index
-docs/adr/index.md

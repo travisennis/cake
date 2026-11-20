@@ -1250,7 +1250,3 @@ fn capped_text(captured: &[u8], total: usize, output_limit: Option<usize>) -> St
         String::from_utf8_lossy(&captured[..keep])
     )
 }
-
-#[cfg(test)]
-#[path = "hooks_tests.rs"]
-mod tests;

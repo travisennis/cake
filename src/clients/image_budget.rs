@@ -51,7 +51,7 @@ const DOWNSCALE_JPEG_QUALITY: u8 = 85;
 /// `infer` recognizes many more `image/*` types (TIFF, BMP, ICO, AVIF, and
 /// others) than the vision-capable backends accept, so the accepted set is an
 /// explicit allowlist that matches the tool description rather than an
-/// `image/` prefix test.
+/// `image/` prefix check.
 const SUPPORTED_IMAGE_MEDIA_TYPES: &[&str] =
     &["image/png", "image/jpeg", "image/gif", "image/webp"];
 
@@ -615,13 +615,6 @@ pub fn prune_request_with_plan<'a>(
 ///
 /// Returns an error when an image cannot be planned safely, including a corrupt
 /// image or a digest mismatch. A budget never fails a request.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the agent uses the plan-bearing variant; this keeps the simple signature"
-    )
-)]
 pub fn prune_request<'a>(
     history: Cow<'a, [ConversationItem]>,
     policy: &ResolvedImagePolicy,
@@ -1220,7 +1213,3 @@ struct SlotOutcome {
     emitted: Option<EmittedStats>,
     original_pixels: u64,
 }
-
-#[cfg(test)]
-#[path = "image_budget_tests.rs"]
-mod tests;

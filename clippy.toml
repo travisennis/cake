@@ -1,11 +1,3 @@
-# Allow common test patterns in test code without per-function annotations.
-# Production code remains governed by Cargo.toml [lints.clippy].
-allow-unwrap-in-tests = true
-allow-expect-in-tests = true
-allow-dbg-in-tests = true
-allow-indexing-slicing-in-tests = true
-allow-panic-in-tests = true
-
 # Ceiling for clippy cognitive complexity in production code (see #103).
 # Enabled via Cargo.toml [lints.clippy] cognitive_complexity = "warn";
 # functions above the ceiling carry #[expect(clippy::cognitive_complexity)]

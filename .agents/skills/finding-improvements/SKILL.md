@@ -1,13 +1,13 @@
 ---
 name: finding-improvements
-description: Survey a codebase as a senior advisor, find the highest-value improvement opportunities, present them for acceptance, and create ahm tasks for accepted findings. Strictly read-only on source code — never implements, fixes, or refactors anything itself.
+description: Survey a codebase as a senior advisor, find the highest-value improvement opportunities, and present them for acceptance. Strictly read-only on source code — never implements, fixes, or refactors anything itself.
 ---
 
 # Finding Improvements
 
-You are a **senior advisor, not an implementer**. Your job is to deeply understand a codebase, find the highest-value improvement opportunities, present them to the user for acceptance, and create well-specified ahm tasks that a different agent can pick up and execute without additional context.
+You are a **senior advisor, not an implementer**. Your job is to deeply understand a codebase, find the highest-value improvement opportunities, and present them for acceptance as well-specified work items that a different agent can pick up and execute without additional context.
 
-This skill integrates with the local ahm backlog. Every accepted finding becomes a task with proper labels, priority, effort, dependencies, and verifiable acceptance criteria. See [Task workflow](../../../docs/workflow/tasks.md).
+Accepted findings are reported as self-contained work items: summary, evidence, fix direction, and verifiable acceptance notes. Do not create new durable records in the repository.
 
 ## Hard Rules
 
@@ -19,7 +19,7 @@ This skill integrates with the local ahm backlog. Every accepted finding becomes
 
 ## When to use
 
-- When asked to audit a codebase, find improvement opportunities, or survey for bugs, security issues, performance problems, test gaps, tech debt, or feature direction.
+- When asked to audit a codebase, find improvement opportunities, or survey for bugs, security issues, performance problems, reliability gaps, tech debt, or feature direction.
 - When asked to generate tasks from an audit.
 - When a project needs a prioritized improvement backlog.
 
@@ -30,12 +30,12 @@ This skill integrates with the local ahm backlog. Every accepted finding becomes
 Map the territory before judging it:
 
 - Read `README`, project `AGENTS.md`, `CONTRIBUTING`, root config files (`package.json`, `pyproject.toml`, `go.mod`, etc.), CI config, and the directory structure.
-- Identify: language(s), framework(s), package manager, **how to build / test / lint / typecheck** (exact commands --- these go into every task as verification gates), test coverage shape, deployment target.
+- Identify: language(s), framework(s), package manager, **how to build / lint / typecheck** (exact commands --- these go into every task as verification gates), existing verification surface, deployment target.
 - Note repo conventions: code style, naming, folder layout, error-handling and state-management patterns. Tasks must tell the executor to *match* these, with examples.
-- Ingest intent & design docs where present: ADRs (`docs/adr/`), `CONTEXT.md`, `DESIGN.md`, `PRODUCT.md`. Carry what you learn forward --- a tradeoff recorded in an ADR is by-design, not a finding.
+- Ingest intent & design docs where present: `CONTEXT.md`, `DESIGN.md`, `PRODUCT.md`, and the project's architecture documents. Carry what you learn forward --- a recorded design tradeoff is by-design, not a finding.
 - Check git signal where useful (`git log --oneline -30`, churn hotspots) for what's actively evolving vs. frozen.
 
-If the repo has no working verification command (no tests, broken build), record that --- "establish a verification baseline" is often finding #1, and it must precede risky tasks in the dependency order.
+If the repo has no working build or lint command, record that --- "establish a verification baseline" is often finding #1, and it must precede risky tasks in the dependency order.
 
 ### Phase 2 --- Audit
 
@@ -53,7 +53,7 @@ Every finding uses this format:
   Concrete: "every order-list render issues 1+N queries", not
   "suboptimal".
 - **Effort**: S (hours) / M (a day-ish) / L (multi-day) — for the *fix*,
-  including tests.
+  including verification.
 - **Risk**: What the fix could break; LOW/MED/HIGH plus one line why.
 - **Confidence**: HIGH (executed — probe output quoted) / MED (read the
   code, certain, but not run) / LOW (smell, needs investigation).
@@ -79,11 +79,11 @@ The highest-trust category --- real bugs found by reading, not speculation.
 
 #### 2. Security
 
-Review only what is directly supported by code evidence. Keep findings framed as defensive maintenance: identify the code pattern, explain the production impact, and describe the remediation. Keep plans at the level of code changes, configuration changes, and tests; do not include runnable demonstration strings or step-by-step misuse details.
+Review only what is directly supported by code evidence. Keep findings framed as defensive maintenance: identify the code pattern, explain the production impact, and describe the remediation. Keep plans at the level of code changes, configuration changes, and verification steps; do not include runnable demonstration strings or step-by-step misuse details.
 
 **Handling rule:** never copy a secret value into a finding or plan --- those files get committed. Reference the `file:line` and credential type only ("Stripe live key at `config.ts:12`"), and the fix sketch always includes rotation, not just removal (a committed secret is burned even after deletion).
 
-**By-design is not a finding:** standard platform conventions are intentional behavior --- honoring `https_proxy`/`NO_PROXY`, reading `~/.netrc`, an explicitly local dev tool shelling out to configured package managers. A tradeoff explicitly recorded in an ADR or decision doc is likewise settled, not a finding. Flag these only when the *implementation* adds risk beyond the convention or the documented decision itself --- and note that a **stale ADR is itself a finding**: if the code has drifted from what the decision doc says, report the decision drift (the doc or the code is wrong; either way the team should know), don't use the doc to suppress it.
+**By-design is not a finding:** standard platform conventions are intentional behavior --- honoring `https_proxy`/`NO_PROXY`, reading `~/.netrc`, an explicitly local dev tool shelling out to configured package managers. A tradeoff explicitly recorded in a design or architecture document is likewise settled, not a finding. Flag these only when the *implementation* adds risk beyond the convention or the documented decision itself --- and note that **doc drift is itself a finding**: if the code has drifted from what the design doc says, report the drift (the doc or the code is wrong; either way the team should know), don't use the doc to suppress it.
 
 - **Credential hygiene**: hardcoded keys/tokens/passwords, credentials in committed `.env` files, credentials logged or persisted in event/history stores. Findings name only the credential type and location, then recommend removal, rotation, and a safer configuration path.
 - **Data crossing into interpreters**: SQL or shell operations assembled from untrusted data (injection), dynamic execution APIs used with runtime input, or filesystem paths derived from it (path traversal). Describe the safer API or validation boundary; do not provide runnable examples.
@@ -102,19 +102,9 @@ Look for the algorithmic and architectural wins, not micro-optimizations.
 - **Caching gaps**: identical expensive computations or fetches repeated per request/render; missing memoization at clear function boundaries; no HTTP/data-layer caching on stable data.
 - **Payload size**: over-fetching (select \*, full objects where IDs suffice), missing pagination on unbounded lists, large JSON shipped to clients.
 - **Backend**: synchronous work that belongs in a queue, missing indexes implied by query patterns (flag for verification --- don't claim without schema evidence), connection-per-request patterns where pooling exists.
-- **Build/CI**: slow CI from missing caching, redundant pipeline steps, test suites that could parallelize.
+- **Build/CI**: slow CI from missing caching, redundant pipeline steps, and jobs that could run concurrently.
 
-#### 4. Test Coverage
-
-The goal is not a percentage --- it's *which untested code is dangerous*.
-
-- Map the **critical paths** (money, auth, data mutation, the feature the repo exists for) and check which have zero or trivial coverage.
-- **High-churn + no tests** = top refactor risk; flag as "characterization tests first" candidates.
-- **Existing test quality**: tests that assert nothing meaningful, heavy mocking that tests the mocks, snapshot tests nobody reads, flaky patterns (real timers, real network, order dependence).
-- **Missing test layers**: unit-only suites with zero integration coverage on API boundaries, or the inverse (slow E2E for what a unit test would catch).
-- **Verification infrastructure**: is there a one-command way to know the codebase works? If not, that's finding #1 and a prerequisite task for any risky change.
-
-#### 5. Tech Debt & Architecture
+#### 4. Tech Debt & Architecture
 
 - **Duplication**: the same logic re-implemented in 3+ places (search for near-identical functions/components); divergent copies that have drifted.
 - **Layering violations**: UI importing from data layer internals, circular dependencies, "utils" modules that became a junk drawer with high fan-in.
@@ -123,7 +113,7 @@ The goal is not a percentage --- it's *which untested code is dangerous*.
 - **Inconsistent patterns**: three ways of doing data fetching / error handling / styling in the same repo --- pick the winner (the one the team converged on most recently) and plan the consolidation.
 - **Abstraction mismatches**: premature abstractions with a single implementation, or missing abstractions where the same change always requires touching N files in lockstep.
 
-#### 6. Dependencies & Migrations
+#### 5. Dependencies & Migrations
 
 - **Major-version lag** on core framework/runtime (not every minor bump --- the ones with real cost to staying behind: EOL, security-fix cutoffs, ecosystem incompatibility).
 - **Deprecated APIs** in use that have announced removal timelines.
@@ -131,14 +121,14 @@ The goal is not a percentage --- it's *which untested code is dangerous*.
 - **Duplicate dependencies** solving the same problem (two date libs, two HTTP clients).
 - For each migration candidate, estimate **blast radius** (files touched) --- that drives effort and whether to recommend it at all.
 
-#### 7. DX & Tooling
+#### 6. DX & Tooling
 
 - **Missing or broken**: typecheck script, lint config, formatter, pre-commit hooks, editorconfig.
-- **Slow feedback loops**: dev-server or test startup measured in minutes, no watch mode, CI without caching.
+- **Slow feedback loops**: dev-server startup measured in minutes, no watch mode, CI without caching.
 - **Onboarding friction**: README setup steps that are wrong/incomplete, undocumented required env vars.
 - **Error messages/logging**: unstructured or uncorrelated logs; debugging that requires code changes.
 
-#### 8. Docs
+#### 7. Docs
 
 Lowest default priority --- only flag where absence has a concrete cost:
 
@@ -146,7 +136,7 @@ Lowest default priority --- only flag where absence has a concrete cost:
 - Architectural decisions nobody can reconstruct (why X over Y) for actively-contested areas.
 - Stale docs that are actively wrong (worse than missing) --- setup instructions, API examples that no longer compile.
 
-#### 9. Direction --- features & where to take this next
+#### 8. Direction --- features & where to take this next
 
 Forward-looking: not what's broken, but what this codebase wants to become. **Grounding rule:** every suggestion must cite evidence from the repo itself --- a suggestion that could apply to any project in the category ("add dark mode", "add AI") is noise, not a finding.
 
@@ -164,7 +154,7 @@ Direction findings use the standard format with two adaptations: **Impact** is p
 
 Order findings by **leverage = impact ÷ effort, discounted by confidence and fix-risk**. Tiebreakers:
 
-1. Anything that unblocks other findings (verification baseline, characterization tests) floats up.
+1. Anything that unblocks other findings (a working build or lint baseline) floats up.
 2. Security findings with HIGH confidence float above equivalent-leverage non-security findings.
 3. Prefer findings whose fix has a clean verification story --- executor agents succeed at those.
 4. "Not worth doing" is a valid verdict; record it with one line of reasoning so the user knows it was considered.
@@ -173,7 +163,7 @@ Order findings by **leverage = impact ÷ effort, discounted by confidence and fi
 
 **Vet before presenting.** For every finding that will make the table, open the cited code yourself and confirm it. Reject by-design behavior, mis- attributed evidence, and duplicates. Record rejections so they aren't re-audited next run.
 
-**Prefer execution to reading.** When a finding claims two code paths disagree, use an existing test, a read-only command, or an in-memory/temporary probe outside the repository to compare them. Never write or revert files in the repository during this audit. If the claim cannot be verified without repository mutation, cap the finding at MED confidence and state that verification was not run.
+**Prefer execution to reading.** When a finding claims two code paths disagree, use a read-only command or an in-memory/temporary probe outside the repository to compare them. Never write or revert files in the repository during this audit. If the claim cannot be verified without repository mutation, cap the finding at MED confidence and state that verification was not run.
 
 Present the vetted findings table to the user, ordered by leverage (impact ÷ effort, weighted by confidence):
 
@@ -183,7 +173,7 @@ Present the vetted findings table to the user, ordered by leverage (impact ÷ ef
 
 Present **direction findings separately**, after the table.
 
-**If the user asks for recommendations only**, present the vetted report and do not ask for task selection. Ask which findings to create only when the user requests tasks, issues, or backlog follow-up. Offer a default suggestion: the top 3--5 by leverage. Surface dependency ordering --- e.g. "characterization tests (task for finding #2) must land before the refactor (finding #5)."
+**If the user asks for recommendations only**, present the vetted report and do not ask for task selection. Ask which findings to write up only when the user requests tasks, issues, or backlog follow-up. Offer a default suggestion: the top 3--5 by leverage. Surface dependency ordering --- e.g. "the build baseline (finding #2) must land before the refactor (finding #5)."
 
 The user responds with which findings to accept. Accept responses like:
 
@@ -192,20 +182,20 @@ The user responds with which findings to accept. Accept responses like:
 - Keywords: `all`, `top 5`, `security`, `perf`
 - Combinations of the above
 
-Wait for the selection. Do not create tasks the user didn't accept.
+Wait for the selection. Do not write up findings the user didn't accept.
 
-### Phase 4 --- Create tasks
+### Phase 4 --- Hand off accepted findings
 
-For each accepted finding, create one ahm task. Before writing any task body, record `git rev-parse --short HEAD` --- every task stamps the commit it was written against.
+For each accepted finding, produce one self-contained work item. Before writing it, record `git rev-parse --short HEAD` so the item names the commit it describes. Report the items in the response, or open GitHub issues only when the user asks.
 
-**Determining task metadata:**
+**Determining work-item metadata:**
 
 - **Priority**: P0 (security/correctness, HIGH confidence, data loss or safety), P1 (security/correctness, MED+, user-visible breakage), P2 (performance, tech debt, DX), P3 (docs, direction, nice-to-have).
 - **Effort**: S (hours), M (a day-ish), L (multi-day).
 - **Labels**: Use `type:bug` for correctness findings, `type:security` for security, `type:task` for performance, tech debt, and other, `type:feature` for direction findings. Include an `area:<module>` label derived from the affected code.
-- **Status**: `Open` by default until triaged. Record dependencies in ahm front matter; Pending tasks with incomplete dependencies are excluded from the ready queue. Use `ahm task block <id> --reason <text>` for an explicit blocker.
+- **Dependencies**: name the findings or issues that must land first.
 
-**Task body structure.** Every task body must be self-contained --- the executor has not seen this conversation. Structure:
+**Work-item structure.** Every body must be self-contained --- the executor has not seen this conversation. Structure:
 
 ```markdown
 ## Summary
@@ -231,29 +221,23 @@ What to do, in concrete terms. 2–5 sentences. Include:
 
 - Specific, verifiable criterion (command + expected result)
 - Another criterion
-- Tests added at <path> following the pattern in <exemplar>
+- The build and lint commands that prove the change
 ```
 
-**Running the command.** For each accepted finding, write the body to a temp file, then:
-
-```bash
-ahm task create "<title>" --labels "<labels>" --priority <priority> --effort <effort> --body-file <body-file>
-```
-
-**After all tasks are created**, report a summary:
+**After all work items are written**, report a summary:
 
 ```
-Created N tasks:
-- XXX — <title> (P<N>, <effort>)
-- YYY — <title> (P<N>, <effort>)
+Prepared N work items:
+- <title> (P<N>, <effort>)
+- <title> (P<N>, <effort>)
 ...
 ```
 
-**Dependency tasks.** After task ids are allocated, use `ahm task dep add <dependent-id> <dependency-id>` for real blocking relationships. Do not encode dependencies as prose sections. Reference tasks by id and `ahm task show <id>`; records live outside git.
+If the user asks for GitHub issues, create one per accepted finding with the same body and labels.
 
 ## Auditing a specific focus
 
-If the user asks to audit a specific category (e.g. "just security" or "performance and tests"), run Recon, then audit only the requested categories, then proceed with Phase 3 and 4 normally. Narrow the audit depth accordingly --- fewer findings, higher bar for inclusion.
+If the user asks to audit a specific category (e.g. "just security" or "performance"), run Recon, then audit only the requested categories, then proceed with Phase 3 and 4 normally. Narrow the audit depth accordingly --- fewer findings, higher bar for inclusion.
 
 ## Branch-only audit
 

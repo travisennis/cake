@@ -24,7 +24,7 @@ jobs:
           import sys
 
           title = os.environ["PR_TITLE"]
-          pattern = r"(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(?:\([a-z][a-z0-9-]*\))?!?: \S.*"
+          pattern = r"(?:feat|fix|docs|style|refactor|perf|build|ci|chore|revert)(?:\([a-z][a-z0-9-]*\))?!?: \S.*"
           if not re.fullmatch(pattern, title):
               print(
                   f"PR title must be a Conventional Commit subject, e.g. "

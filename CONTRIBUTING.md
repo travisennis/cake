@@ -14,11 +14,9 @@ just setup
 
 `mise trust` marks the repository's `.mise.toml` as trusted; mise refuses to read an untrusted config, so it must run before `mise install`. It is a one-time step per clone location.
 
-`just setup` installs the pinned Cargo utilities used by repository recipes and the git hooks declared in `prek.toml` (`pre-commit`, `pre-push`, and `commit-msg`). It verifies every pinned version after installing and exits nonzero with the tool name and install command when one is missing or broken. Re-running it is safe: the tool and hook installs are idempotent. Run `just --list` for the authoritative command catalog.
+`just setup` installs the pinned Cargo utilities used by repository recipes and the git hooks declared in `prek.toml` (`pre-commit`, `pre-push`, and `commit-msg`). It verifies every pinned version after installing and exits nonzero with the tool name and install command when one is missing or broken. Re-running it is safe. Run `just --list` for the authoritative command catalog.
 
-`just doctor` is the read-only readiness report for the commands above. It checks the Rust toolchain and `just` versions against `rust-toolchain.toml` and `.mise.toml`, the pinned Cargo utilities through `scripts/dev-tools.sh`, the three installed hook wrappers, and the optional profiling and cross-compile capabilities. It never installs, runs a hook, mutates the checkout or configuration, or calls a provider. Exit 0 means the baseline gate, the full gate, and hooks can run; exit 1 names each required failure with a recovery; exit 2 is a usage or configuration error. `just doctor --json` emits the same report for tooling: top-level `ok` and `scope` fields plus a `checks` array whose entries report `name`, `groups`, `setup`, `required`, `status`, `severity`, `expected`, `found`, `detail`, `hint`, and `path`. A `just` newer than its `.mise.toml` pin is a warning because newer versions remain compatible; an older version fails.
-
-The cross-compile checks and the macOS Instruments probe are optional and platform-specific: a missing `x86_64-unknown-linux-gnu` target, `x86_64-linux-gnu-gcc`, or `xctrace` is reported as a warning and never fails readiness, and the Instruments probe is skipped on Linux. `just doctor` is contributor tooling; it is separate from the runtime `cake doctor` settings command.
+`just doctor` is the read-only readiness report for the commands above. It checks the Rust toolchain and `just` versions against `rust-toolchain.toml` and `.mise.toml`, the pinned Cargo utilities through `scripts/dev-tools.sh`, and the three installed hook wrappers. It never installs, runs a hook, mutates the checkout or configuration, or calls a provider. Exit 0 means the gates and hooks can run; exit 1 names each required failure with a recovery; exit 2 is a usage or configuration error.
 
 `mise install` also provides `sccache` and points `RUSTC_WRAPPER` at it, so a newly created worktree reuses already-compiled dependencies instead of rebuilding the graph from cold. Without mise, install `sccache` and export `RUSTC_WRAPPER=sccache` yourself.
 
@@ -30,21 +28,7 @@ mkdir -p ~/.agents/skills
 cp -R ~/Projects/cake-skills/skills/. ~/.agents/skills/
 ```
 
-Symlink them instead of copying (`cd ~/Projects/cake-skills && just link`) to pick up edits on the next run. `just link` skips a destination that already exists as a real directory, so remove any copied skill directories before linking. Project skills in a repository's `.agents/skills/` still take precedence. Verify with `cake debug skills`.
-
-Managed work uses ahm's local home store. Build the pinned source revision from [ADR 041](docs/adr/041-ahm-task-records-in-the-user-level-home-store.md) with Go installed:
-
-```bash
-git clone https://github.com/travisennis/ahm.git ~/Projects/ahm
-git -C ~/Projects/ahm checkout e3dcacc0ac53ba416c8a09f8facde9ed6bc24457
-mkdir -p ~/go/bin
-(cd ~/Projects/ahm && go build -o ~/go/bin/ahm ./cmd/ahm)
-export PATH="$HOME/go/bin:$PATH"
-ahm init
-ahm status
-```
-
-Run the final two commands from the Cake checkout. Initialization creates an empty local store; task records are not downloaded or committed. Local clones and worktrees share the backlog derived from `origin`; another machine needs its own records or a restored backup. `.cake/settings.toml` grants `~/.ahm` as writable so sandboxed Cake can initialize and maintain it. That grant covers other projects' stores too; [Task workflow](docs/workflow/tasks.md) describes the lifecycle and fallback. The imported backlog has the accepted missing-blocked-reason warnings recorded in the migration baseline.
+Symlink them instead of copying (`cd ~/Projects/cake-skills && just link`) to pick up edits on the next run. Project skills in a repository's `.agents/skills/` still take precedence. Verify with `cake debug skills`.
 
 Binary-size audits additionally require `cargo-bloat`:
 
@@ -58,66 +42,44 @@ Follow the [Auditing Binary Size runbook](docs/runbooks/auditing-binary-size.md)
 
 1. Inspect `git status --short` and preserve unrelated work.
 2. If the task will change repository files, work on `master` for a small or single-task change, or create a branch when the change needs isolation: `just branch <type>/<slug>`, or `just worktree <type>/<slug>` to work in a linked worktree beside other in-flight work. Read-only analysis, triage, or research that produces no repository changes can stay on the current branch.
-3. Read the implementation and its focused tests before editing.
+3. Read the implementation before editing.
 4. Make the smallest coherent change.
-5. Run a focused test or check while iterating.
-6. Format changed code and run the applicable final gate.
+5. Run `cargo check --all-targets` while iterating.
+6. Format changed code and run `just check`.
 7. Review the diff for compatibility, security, and unnecessary complexity.
-8. Integrate the change. Maintainers push `master` when it is ready: fast-forward or squash-merge a local branch into `master`, push, and delete the branch. Do not open a GitHub pull request unless the user explicitly asks for one. External contributors push a branch and open a pull request with `just pr` when it is ready for review; pass `labels="type:...,area:..."`, `body=<file>`, `title=<text>` (default: HEAD commit subject), and `task=<id>` to apply labels, use a body file, set the title, and comment the PR URL on the managed ahm task. Wait for explicit user approval before merging, enabling auto-merge, closing the PR, or deleting the remote branch.
+8. Integrate the change. Maintainers push `master` when it is ready: fast-forward or squash-merge a local branch into `master`, push, and delete the branch. Do not open a GitHub pull request unless the user explicitly asks for one. External contributors push a branch and open a pull request with `just pr` when it is ready for review.
 
-The crate has no library target. Do not use `cargo test --lib`.
+The crate has no library target.
+
+## No tests
+
+This repository has no test suite and does not accept new tests. Do not write tests, test fixtures, snapshot tests, or test-only helpers, and do not run `cargo test` or any test harness. If a change seems to need a test, verify the behavior with a manual `cake` invocation or `cake bash check` instead, and describe that verification in the handoff.
 
 ### Change size
 
-Keep a change within 800 changed lines unless it is mechanical, and within 500 when it changes complex logic. The preflight scale tiers decide how much review a change gets; this budget decides whether it lands as one change at all.
-
-Past either limit, stop extending the diff and report a staging plan instead: the smallest coherent stage to land first, based on the actual diff, its dependencies, and the affected call sites. A change that cannot be staged at all is a scope problem to raise, not a budget to raise.
+Keep a change within 800 changed lines unless it is mechanical, and within 500 when it changes complex logic. Past either limit, stop extending the diff and report a staging plan instead: the smallest coherent stage to land first, based on the actual diff, its dependencies, and the affected call sites. A change that cannot be staged at all is a scope problem to raise, not a budget to raise.
 
 ## Verification
 
-**Definition of done:** run the gate your change class routes to and report, in the handoff (or the pull request for an external contribution), which gates ran and which did not. The matrix below names the command for each class and what it actually covers, so a passing fast gate is not mistaken for a complete one.
+**Definition of done:** run the gate your change class routes to and report, in the handoff (or the pull request for an external contribution), which checks ran and which did not.
 
-### Change-class matrix
-
-  | Change class                               | Gate                                                                                                                         | What it covers                                                                                                                                                                                                                                                                                                                                                               |
-  | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | Rust source, control flow, tests           | `just check`                                                                                                                 | Toolchain pin, `cargo fmt --check`, strict Clippy, all-feature tests, import and dependency-direction lints, module/glossary lints, the per-function complexity ratchet (`just cc-check`), and the Python fixture suites (`just check-scripts`)                                                                                                                              |
-  | Per-function complexity or CRAP risk       | `just cc-check`, `just check-coverage`, `just change-risk-report` for the per-function detail                                | Cyclomatic complexity against `ci/cargo-crap-baseline.json` (unlisted functions use the target ceiling, listed grandfathers use `max(target, baseline CC)`) and the absolute CRAP gate (fail above CRAP 30, warn above 15 for CC ≤ 10). `just cc-check` is inside `just check`; the CRAP gate needs the coverage pass in `just check-coverage`                               |
-  | Coverage or change-risk sensitive          | `just check-coverage`                                                                                                        | Coverage threshold, the absolute CRAP gate, and the same CC gate, all from one instrumented run. Cleans the coverage artifacts that may affect results through `scripts/coverage-clean.sh`, then stops before evaluating the threshold if profile data survived the clean or the report spells one file under two source roots, rather than print a verdict nobody can trust |
-  | Regenerating `ci/cargo-crap-baseline.json` | `just change-risk-baseline`                                                                                                  | Cleans and guards the same artifacts through `scripts/coverage-clean.sh`, then rewrites the baseline from a fresh run, pruned to the CC grandfather set with any deliberate CRAP allowance carried forward                                                                                                                                                                   |
-  | `scripts/**` Python tooling                | `just check-scripts`                                                                                                         | The same suites CI's `changes` job runs: dependency sweep, profiling helper, binary-size baseline, change classifier, dev-tools checker, doctor, `just pr`, eval harness, session metrics, the coverage artifact guard, the CRAP gate fixture, and the documentation corpus. Stdlib only; no credentials, network, or provider calls. Also inside `just check`               |
-  | Markdown                                   | `just docs-check` for the tracked corpus; `panache format --check <files>` and `panache lint <files>` for an untracked draft | Formatting and lint over the Markdown git tracks, so an untracked scratch note is neither checked nor rewritten. The pre-push route checks only the changed living documents                                                                                                                                                                                                 |
-  | Snapshots                                  | `just snapshots`, then `cargo insta review`                                                                                  | insta snapshot acceptance                                                                                                                                                                                                                                                                                                                                                    |
-  | Dependencies                               | `just check-deps`                                                                                                            | `cargo deny` advisories, plus the license allowlist in `deny.toml` and its CI `Licenses` job                                                                                                                                                                                                                                                                                 |
-  | Linux-only `cfg` paths                     | `just clippy-linux`                                                                                                          | Clippy against `x86_64-unknown-linux-gnu`, when the target and cross compiler are installed                                                                                                                                                                                                                                                                                  |
-  | Evaluation harness fixtures                | `just eval-check`                                                                                                            | Deterministic and offline. The live `just eval` calls model providers and needs credentials and authorized spend                                                                                                                                                                                                                                                             |
-  | Rust-version pin                           | `just rust-version-check`                                                                                                    | The toolchain pin stays synchronized across its files. Also inside `just check`                                                                                                                                                                                                                                                                                              |
-
-`just check` is the fast gate and is what the pre-push route runs for code and mixed pushes. GitHub CI remains the source of truth for the platform sandbox tests and the Coverage job. `just check-full` is the complete local suite: `just check`, the Linux compatibility check, coverage and complexity gates, dependency advisories and licenses, Rust and Markdown documentation, and a release build. Run focused commands such as `cargo test <name>` before the gate.
+  | Change class                 | Command                   | What it covers                                                                                                                                                                |
+  | ---------------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | Rust source or control flow  | `just check`              | Toolchain pin, `cargo fmt --check`, strict Clippy over all targets and features, the per-function complexity ratchet, and the import, dependency-direction, and module lints  |
+  | Per-function complexity risk | `just cc-check`           | Cyclomatic complexity against `ci/complexity-baseline.json`; unlisted functions use the CC 10 target, listed grandfathers use `max(target, baseline CC)`. Inside `just check` |
+  | Markdown                     | `just docs-check`         | Formatting and lint over the Markdown git tracks                                                                                                                              |
+  | Dependencies                 | `just check-deps`         | `cargo deny` advisories, plus the license allowlist in `deny.toml`                                                                                                            |
+  | Linux-only `cfg` paths       | `just clippy-linux`       | Clippy against `x86_64-unknown-linux-gnu`, when the target and cross compiler are installed                                                                                   |
+  | Rust-version pin             | `just rust-version-check` | The toolchain pin stays synchronized across its files. Also inside `just check`                                                                                               |
 
 Additional checks:
 
 - Dependency changes: `just check-deps`; [Dependency and supply chain posture](docs/dependencies.md) is the authority for pin ownership and update review.
-- Documentation-only changes: `just pre-push-docs` covers committed Markdown, plus `git diff --check`. No automated link checker exists; relative links were audited clean on 2026-09-02, see #222.
-- Label changes: `just labels-check-file` (file validation, also CI), `just labels-check` (repo drift vs `.github/labels.yml`), `just labels` (apply), `just labels-prune` (delete unlisted labels).
+- Documentation-only changes: `just docs-check`, plus `git diff --check`.
+- Label changes: `just labels-check-file` (file validation), `just labels-check` (repo drift vs `.github/labels.yml`), `just labels` (apply), `just labels-prune` (delete unlisted labels).
 - Instruction changes (AGENTS.md, `.agents/skills/`, guardrails, runbooks): no size cap applies; [Agent-facing instructions](docs/guardrails/agent-instructions.md) is the authority for what an added instruction must justify.
-- Markdown gate scopes are intentional: the pre-commit hook checks formatting for changed Markdown and lint over the tracked corpus. The pre-push route checks both for changed living documents. `just docs-check` and CI check the tracked corpus, which is the whole corpus on a clean CI checkout. This gives formatting feedback before commit without adding a full-corpus formatting pass to every commit; the full-corpus gates remain the final check.
-- Pre-commit is deliberately cheap: Rust changes run `cargo fmt -- --check`, Markdown changes run the docs formatting and corpus checks, and every commit runs `git diff --check`. Strict Clippy belongs to `just check` (and therefore the pre-push code route) and CI, so a commit never repeats the full lint build.
-- `just pre-push-docs` measures the committed changes between the base and `HEAD` and prints that range, plus a note when worktree Markdown sits outside it, so an empty file list cannot read as a pass. Untracked Markdown becomes checkable the moment it is staged; `just docs-check` covers the tracked corpus, which is what the gates own. Neither gate looks at untracked files, and neither rewrites them.
 
-### Pre-push routing
-
-The pre-push hook routes by changed path class instead of running the full local validation suite unconditionally.
-
-- Markdown-only pushes run `just pre-push-docs`: targeted `panache format --check` and `panache lint` on the changed living documents, plus `git diff --check`.
-- Pushes touching `src/`, `tests/`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/`, `.github/workflows/`, `justfile`, `prek.toml`, `scripts/`, or `ci/` run the fast `just check` gate, which includes the complexity ratchet and the script fixture suites.
-- Mixed pushes run both.
-- Anything unclassified or unresolvable fails closed to `just check-full`.
-- `just pre-push-force` always runs `just check-full`; `just pre-push-classify` prints the classification for the current branch.
-
-[Working on branches and worktrees](docs/runbooks/parallel-worktrees.md) covers how the base is resolved and why the gate follows the checkout rather than the pushed ref.
-
-If an applicable check cannot run, report the exact reason and the narrower checks that did run. Several checks need no build, coverage pass, or network, so a blocked prerequisite rarely means no evidence at all: `just cc-check`, `just check-scripts`, `just docs-check`, and `just pre-push-classify` cover complexity, the Python tooling, Markdown, and the change classification. [Local gate prerequisites](docs/runbooks/local-gate-prerequisites.md) carries the recovery for each prerequisite (an unaccepted toolchain license, a missing tool, a missing target, a missing credential). Do not describe a failing primary branch as unrelated without investigating it.
+If an applicable check cannot run, report the exact reason and the narrower checks that did run.
 
 ## Code conventions
 
@@ -128,14 +90,13 @@ If an applicable check cannot run, report the exact reason and the narrower chec
 - Keep imports at module scope unless conditional compilation makes that impossible.
 - Use absolute `crate::` imports in production code; verified by `just lint-imports`.
 - Preserve public behavior during refactors unless the task explicitly changes it.
-- Spawn `git` through `config::git::command`, and in tests through `config::git::test_support` or the `git` helper in `tests/`. Git exports `GIT_DIR` and its siblings into hooks and everything they spawn, so a command that inherits them operates on the exporting repository rather than the directory it was given.
-- Tests that early-exit when `CAKE_SANDBOX` turns sandboxing off exist because those tests cannot run inside cake's own sandbox. They are deliberate, not dead code; change them only when the sandbox behavior they describe changes. The guard is `skip_if_sandbox_unavailable` in `src/clients/tools/bash_tests.rs`, repeated inline in that file and in `src/clients/tools/bash_issue_366_tests.rs`.
+- Spawn `git` through `config::git::command`. Git exports `GIT_DIR` and its siblings into hooks and everything they spawn, so a command that inherits them operates on the exporting repository rather than the directory it was given.
 
-Tests and snapshots should encode behavior close to its implementation. Add documentation only when the change affects a user workflow, external contract, security boundary, durable architectural invariant, or contributor workflow.
+Add documentation only when the change affects a user workflow, external contract, security boundary, durable architectural invariant, or contributor workflow.
 
 ## Module size
 
-`just lint-module-size` reports every `src/` file over 800 production lines, and every test module over 800 test lines at more than 40% of its file. It is a report, not a gate: the brace-counting heuristic in `scripts/lint-module-size.py` documents the cases it misclassifies, and promoting it to a gate needs a parser-backed implementation first. Treat the report as a direction rather than a threshold to cross --- new functionality goes in a new module, and a change to a file already over the line should not make it longer.
+`just lint-module-size` reports every `src/` file over 800 production lines. It is a report, not a gate: the brace-counting heuristic in `scripts/lint-module-size.py` documents the cases it misclassifies. Treat the report as a direction rather than a threshold to cross --- new functionality goes in a new module, and a change to a file already over the line should not make it longer.
 
 These files are already over the production threshold, which is what makes them the ones that attract unrelated changes. Add to one only when the change belongs to what the file already does:
 
@@ -143,19 +104,11 @@ These files are already over the production threshold, which is what makes them 
 
 `just lint-module-size` prints the current counts; do not copy them here, where they would drift.
 
-## Managed work
-
-Tasks, research notes, ExecPlans, and ADRs are managed records; follow the task lifecycle in [docs/workflow/tasks.md](docs/workflow/tasks.md).
-
 ## Git and commits
 
 Commit and push freely, and commit often --- uncommitted work is the fragile state. Stage the paths you changed rather than `git add -A`, so unrelated in-flight edits stay out of your change. Ask first before force-pushing (it discards history). Push `master` when the work is ready; external contributors push a branch and open a pull request.
 
 Repository changes may land directly on `master` or on a branch. A branch is useful for isolation or worktrees: names use the commit type as a prefix, such as `feat/turn-limits` or `fix/sandbox-read-only`. Maintainers integrate locally and push `master`; a branch is not a required review step. There is no remote ruleset requiring pull requests and no local branch guard. [Working on branches and worktrees](docs/runbooks/parallel-worktrees.md) covers the mechanics, including running several branches at once in linked worktrees.
-
-`ci/cargo-crap-baseline.json` is generated and committed, so parallel branches that both cross the CC target can conflict on it. A three-way merge of that file is meaningless. Take `master`'s copy and regenerate with `just change-risk-baseline`. The file is small and deterministic now, so this is rare.
-
-`src/**/snapshots/*.snap` files are generated output too, and the same reasoning applies: they are the contract for tool schemas, wire examples, prompt assembly, and session records, so a hand edit rewrites the contract without the code that owns it. Regenerate them with `just snapshots` and accept the result through `cargo insta review`, accepting only what the code change caused. A snapshot that conflicts during a merge takes `master`'s copy and is regenerated, never hand-merged.
 
 Commits use [Conventional Commits](https://www.conventionalcommits.org/):
 
@@ -165,7 +118,7 @@ fix(sandbox): preserve read-only paths
 docs: simplify contributor guidance
 ```
 
-Common types are `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, and `revert`. Keep a commit focused and ensure required hooks and checks pass before pushing.
+Common types are `feat`, `fix`, `docs`, `refactor`, `perf`, `build`, `ci`, `chore`, and `revert`. Keep a commit focused and ensure required hooks and checks pass before pushing.
 
 Scopes are optional and at most one, from the `scopes` allowlist in `cog.toml`, enforced by the commit-msg hook:
 
@@ -173,12 +126,12 @@ Scopes are optional and at most one, from the `scopes` allowlist in `cog.toml`, 
 agent  cli  config  extensions  prompts  providers  sandbox  session  tools
 ```
 
-The vocabulary names the architecture domain that owns the change; the file or tool belongs in the subject. It is coarser than the task and PR `area:*` labels, and cross-cutting changes stay unscoped. Adding a scope is a vocabulary change proposed in the change that updates the allowlist; history predates the allowlist, so `cog check` is not a gate, and amended messages must comply.
+The vocabulary names the architecture domain that owns the change; the file or tool belongs in the subject. It is coarser than the PR `area:*` labels, and cross-cutting changes stay unscoped. Adding a scope is a vocabulary change proposed in the change that updates the allowlist; history predates the allowlist, so `cog check` is not a gate, and amended messages must comply.
 
 ## Integration and pull requests
 
 Maintainers integrate locally. Commit on `master` for a small change, or use a local branch for isolation, then fast-forward or squash-merge it into `master`, push, and delete the branch. Do not open a GitHub pull request unless the user explicitly asks for one.
 
-External contributors push a branch and open a pull request when the change is ready for review: acceptance notes, verification, documentation assessment, and any ExecPlan archival must already be complete. Explain the user-visible or maintainer-visible outcome, notable design choices, compatibility or security impact, and exact verification. Link the managed task or ADR when one exists. Use `just pr` with `labels=`, `body=`, `title=`, and `task=<id>`; the recipe applies labels from `.github/labels.yml`, fills the body from commits when none is given, and records the PR URL on the managed ahm task. Run `ahm task complete <id>` before the final implementing commit; GitHub closing keywords do not complete local tasks. Do not merge, enable auto-merge, close the PR, or delete the remote branch without explicit user approval. After authorized integration, record the delivered/verified summary on the task. Update documentation only when its authority is affected.
+External contributors push a branch and open a pull request when the change is ready for review: acceptance notes, verification, and documentation assessment must already be complete. Explain the user-visible or maintainer-visible outcome, notable design choices, compatibility or security impact, and exact verification. Use `just pr` with `labels=`, `body=`, and `title=`; the recipe applies labels from `.github/labels.yml` and fills the body from commits when none is given. Do not merge, enable auto-merge, close the PR, or delete the remote branch without explicit user approval.
 
 Use a Conventional Commit subject for the pull request title too, for example `feat(session): show timing breakdown`. Cake configures GitHub to use the PR title as the default squash-commit subject, including for one-commit pull requests. The `Conventional PR Title` check reruns when a title changes; review any manually edited squash message in the merge dialog as well.

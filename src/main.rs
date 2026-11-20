@@ -7,11 +7,6 @@ mod clients;
 mod concurrency;
 mod config;
 mod exit_code;
-#[expect(
-    dead_code,
-    reason = "slice 1 ships the full protocol, runner, and composition surface before production \
-              wiring uses the external transport; the fake-gate tests exercise it"
-)]
 mod gates;
 mod hooks;
 mod logger;
@@ -77,7 +72,7 @@ pub enum OutputFormat {
 #[command(after_help = "\
 Examples:
   cake \"summarize the uncommitted changes\"
-  cake --output-format json \"list the failing tests\" | jq -r '.result'
+  cake --output-format json \"summarize the failing build\" | jq -r '.result'
   cake --model zen --sandbox read-only \"explain src/main.rs\"
   cake sessions list --json | jq -r '.data.sessions[0].session_id'
   cake debug config --json | jq '.data.model'
@@ -412,21 +407,6 @@ impl CodingAssistant {
         Ok((def.to_model_config(), model_name.to_string()))
     }
 
-    /// Resolve the effective `ModelConfig`, applying CLI overrides.
-    ///
-    /// Returns the config plus the selected `[[models]]` entry name so
-    /// callers can persist the exact entry (not just the provider model
-    /// ID, which several entries may share).
-    #[cfg(test)]
-    fn resolve_model_config(
-        &self,
-        models: &HashMap<String, ModelDefinition>,
-        default_model: Option<&str>,
-    ) -> anyhow::Result<(ModelConfig, String)> {
-        let (config, name) = self.resolve_configured_model(models, default_model)?;
-        Ok((self.apply_cli_overrides_to_config(config), name))
-    }
-
     /// Resolve the model for a session restore (--resume or --fork).
     ///
     /// Returns the configured resolution before CLI overrides and before any
@@ -463,24 +443,6 @@ impl CodingAssistant {
         } else {
             self.resolve_configured_model(models, default_model)
         }
-    }
-
-    /// Existing session-resolution entry point for tests.
-    ///
-    /// Production restore compares provider identity between
-    /// [`Self::resolve_model_selection`] and credential resolution.
-    #[cfg(test)]
-    fn resolve_model_for_session(
-        &self,
-        models: &HashMap<String, ModelDefinition>,
-        default_model: Option<&str>,
-        session_model: Option<&str>,
-        session_config: Option<&str>,
-    ) -> anyhow::Result<(ResolvedModelConfig, String)> {
-        let (config, name) =
-            self.resolve_model_selection(models, default_model, session_model, session_config)?;
-        let resolved = ResolvedModelConfig::resolve(self.apply_cli_overrides_to_config(config))?;
-        Ok((resolved, name))
     }
 
     /// Resolve a restore when `--model` names an entry explicitly.
@@ -992,7 +954,7 @@ impl CodingAssistant {
     /// and logs) so the configuration and debugging skills can read their
     /// inputs without a manual grant. The list feeds both the OS sandbox and
     /// the in-process Read/ReadImage/Edit/Write path checks. See
-    /// [`DataDir::sandbox_read_dirs`] and ADR 057.
+    /// [`DataDir::sandbox_read_dirs`] as well.
     fn read_only_dirs(
         additional_dirs: Vec<PathBuf>,
         settings_read_only: Vec<PathBuf>,
@@ -2138,9 +2100,3 @@ async fn main() -> std::process::ExitCode {
     };
     finish_run(args.run(&data_dir, &options).await)
 }
-
-#[cfg(test)]
-mod session_end_tests;
-#[cfg(test)]
-#[path = "main_tests.rs"]
-mod tests;

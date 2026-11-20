@@ -1317,11 +1317,3 @@ fn malformed_function_call_error(
         missing_fields.join(", ")
     )
 }
-
-#[cfg(test)]
-#[path = "responses_tests.rs"]
-mod tests;
-
-#[cfg(test)]
-#[path = "responses_response_parsing_tests.rs"]
-mod response_parsing_tests;

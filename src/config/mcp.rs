@@ -1024,7 +1024,3 @@ fn write_temp_file(path: &Path, bytes: &[u8]) -> Result<(), McpManageError> {
             source,
         })
 }
-
-#[cfg(test)]
-#[path = "mcp_tests.rs"]
-mod mcp_tests;

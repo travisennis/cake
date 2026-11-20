@@ -1,7 +1,6 @@
 #!/usr/bin/env sh
 set -eu
 
-exec cargo crap "$@" \
-    --exclude 'tests/**' \
-    --exclude '**/*_tests.rs' \
-    --exclude 'src/clients/tools/sandbox/linux.rs'
+# Report per-function cyclomatic complexity. The Linux sandbox module is
+# excluded because its platform-only branches inflate the report.
+exec cargo crap "$@" --exclude 'src/clients/tools/sandbox/linux.rs'

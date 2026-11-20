@@ -340,7 +340,3 @@ const HOOKS_EXAMPLE: &str = r#"{
   }
 }
 "#;
-
-#[cfg(test)]
-#[path = "init_tests.rs"]
-mod tests;

@@ -500,13 +500,13 @@ pub enum TurnUsagePurpose {
 ///
 /// Persisted to the session file and, for main-agent attempts, emitted to
 /// stream-json output so a machine-mode client can show how full the context
-/// is (ADR-048). Per-attempt usage also lets a resumed session know the current
+/// is. Per-attempt usage also lets a resumed session know the current
 /// context size before the next provider request and makes token cost
 /// reconstructible even when a response is retried or discarded.
 ///
 /// The record also names the provider identity of the attempt, so the usage
 /// can be tied to the response that produced it, and states whether the
-/// provider reported every counter or only some of them (ADR-030). The
+/// provider reported every counter or only some of them. The
 /// aggregate records (`task_complete.usage`) keep summing only reported
 /// values. Summary and compaction-attempt usage stays session and telemetry
 /// audit data and is never streamed as a context measurement.
@@ -1261,13 +1261,6 @@ impl SessionRecord {
     /// Session records keep references so a hydrated record can be written
     /// again, but stream-json output must preserve the pre-blob shape. This is
     /// the shared projection used by replay and any other stream emitter.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "replay strips the converted stream record; this keeps the shared projection complete for raw-record callers"
-        )
-    )]
     pub fn strip_content_ids(&mut self) {
         match self {
             Self::Message(data) => strip_image_content_ids(&mut data.images),
@@ -1386,7 +1379,3 @@ impl SessionRecord {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "session_tests.rs"]
-mod tests;

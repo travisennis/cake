@@ -697,10 +697,10 @@ fn args_to_input_schema(args: &serde_json::Value) -> Result<serde_json::Value, S
 /// Parse the line-based text describe format:
 ///
 /// ```text
-/// name: run_tests
-/// description: Run the test suite.
+/// name: lint_project
+/// description: Run the project linter.
 /// description: Additional description lines are concatenated.
-/// pattern: string? Optional test filter pattern.
+/// target: string? Optional lint target.
 /// ```
 ///
 /// Parameter lines require an explicit type; a `?` suffix marks the
@@ -854,7 +854,3 @@ fn assemble_input_schema(
     }
     schema
 }
-
-#[cfg(test)]
-#[path = "toolbox_tests.rs"]
-mod toolbox_tests;

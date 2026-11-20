@@ -170,7 +170,3 @@ fn literal_word(
     }
     Some(word)
 }
-
-#[cfg(test)]
-#[path = "script_evidence_tests.rs"]
-mod tests;

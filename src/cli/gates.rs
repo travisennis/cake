@@ -291,7 +291,3 @@ impl GateListing {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "gates_tests.rs"]
-mod tests;

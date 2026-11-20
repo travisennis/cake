@@ -5,7 +5,7 @@ description: Run a focused review-readiness pass on a nearly finished change bef
 
 # Preflight
 
-Use this skill after a change is functionally correct and before commit or handoff. The PR, commit text, task notes, and final response should describe already-preflighted code.
+Use this skill after a change is functionally correct and before commit or handoff. The PR, commit text, and final response should describe already-preflighted code.
 
 ## Goals
 
@@ -26,12 +26,12 @@ Pick an effort level from that target. Only if the resolved target is empty is p
 
 Include untracked new files from `git status --short` (or `git ls-files --others --exclude-standard`) when they are part of the target. A split into new files can look deceptively small in diff statistics until those files are staged.
 
-  | Change size                                                                                                           | Required context                                                           | Review passes     | Compliance note |
-  | --------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- | ----------------- | --------------- |
-  | **XS** (docs/skill/config only, ≤2 files)                                                                             | Root AGENTS.md if relevant                                                 | One combined pass | One line        |
-  | **S** (single module, ≤~50 LOC, no public API)                                                                        | Root AGENTS.md, nearest nested AGENTS.md                                   | One combined pass | One line        |
-  | **M** (multi-file, ≤~200 LOC, no cross-module)                                                                        | + active task file, ExecPlan if one exists                                 | Pass 1 + Pass 2   | Short block     |
-  | **L/XL** (cross-module, public API, agent loop, persistence, concurrency, external integrations, security boundaries) | + durable contract/security/architecture docs and ADRs in the changed area | All three passes  | Full block      |
+  | Change size                                                                                                           | Required context                                                  | Review passes     | Compliance note |
+  | --------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- | ----------------- | --------------- |
+  | **XS** (docs/skill/config only, ≤2 files)                                                                             | Root AGENTS.md if relevant                                        | One combined pass | One line        |
+  | **S** (single module, ≤~50 LOC, no public API)                                                                        | Root AGENTS.md, nearest nested AGENTS.md                          | One combined pass | One line        |
+  | **M** (multi-file, ≤~200 LOC, no cross-module)                                                                        | + relevant docs for the changed surface                           | Pass 1 + Pass 2   | Short block     |
+  | **L/XL** (cross-module, public API, agent loop, persistence, concurrency, external integrations, security boundaries) | + durable contract/security/architecture docs in the changed area | All three passes  | Full block      |
 
 Only read context items that are relevant to the changed surface. Discover them with targeted commands, e.g. `rg --files -g AGENTS.md`, `rg --files docs`, `git diff -- <paths>`.
 
@@ -41,10 +41,7 @@ Required context items, in priority order:
 
 - repo root `AGENTS.md`
 - nested `AGENTS.md` files for the changed areas
-- `ahm task show <id>` for the task when the work came from an ahm task (see `docs/workflow/tasks.md`)
-- the relevant active exec plan when one exists for the current work (see `docs/exec-plans/active/`)
-- `docs/workflow/exec-plans.md` for L/XL changes
-- any durable user, contract, security, architecture, or ADR document directly relevant to the changed area
+- any durable user, contract, security, or architecture document directly relevant to the changed area
 - the changed files and enough nearby context to review them
 
 ## Review passes
@@ -56,12 +53,12 @@ Treat each pass as a clean read with its own focus. Do not blur findings across 
 - Are we following `AGENTS.md`, nested `AGENTS.md`, and the relevant durable documentation?
 - Did we drift from documented repo patterns or ownership boundaries?
 - If the changed surface is user-visible CLI/API/config/file-format/workflow behavior, did we update the affected docs in the same change or record why the behavior is intentionally undocumented?
-- If the work came from a task or ExecPlan, does the implementation match its acceptance criteria and recorded decisions?
-- Did we update the task, ExecPlan, authoritative documentation, or ADR notes when the change discovered something durable?
+- Does the implementation match what the request asked for, with verifiable acceptance evidence?
+- Did we update the authoritative documentation when the change discovered something durable?
 
 ### Pass 2: Correctness and source of truth
 
-This pass is about project-native correctness at the changed surface. Before reviewing, infer the project's language, framework, runtime, data modeling style, and validation tools from the changed files plus nearby manifests and scripts. Prefer explicit repo instructions in `AGENTS.md`, package manifests, lockfiles, CI config, `Makefile`, `justfile`, and existing tests over generic language advice.
+This pass is about project-native correctness at the changed surface. Before reviewing, infer the project's language, framework, runtime, data modeling style, and validation tools from the changed files plus nearby manifests and scripts. Prefer explicit repo instructions in `AGENTS.md`, package manifests, lockfiles, CI config, `Makefile`, and `justfile` over generic language advice.
 
 Focus questions:
 
@@ -70,7 +67,7 @@ Focus questions:
 - Are fallible boundaries explicit about failure, with useful context and without swallowing parse, validation, network, filesystem, process, persistence, auth, or external-service errors?
 - Are concurrency, async, transaction, lifecycle, and resource boundaries consistent with nearby code and the runtime in use?
 - Are CLI/API/UI/database/config/external-integration boundaries validated at the edge and then represented with project-owned shapes downstream?
-- Could an existing compiler, type checker, linter, schema validator, migration check, test helper, or narrower data model catch a mistake earlier than this implementation currently does?
+- Could an existing compiler, type checker, linter, schema validator, migration check, or narrower data model catch a mistake earlier than this implementation currently does?
 
 ### Pass 3: Overengineering and simplification
 
@@ -85,8 +82,8 @@ Ground each pass in narrow local evidence. Use the smallest check that fits the 
 
 - `git diff --stat` and `git diff -- <paths>` to keep review anchored
 - formatters when formatting is affected, chosen from repo tooling (`gofmt`, `prettier`, `ruff format`, language-native formatters, or a documented script)
-- focused tests in the changed area using the repo's normal runner (`go test`, `pytest`, `npm test`, `cargo test`, `bundle exec`, `make`, `just`, or the relevant framework command)
-- type checks, linters, schema checks, migrations, generated-code checks, or build steps when public types, shared code, config, API contracts, database shape, or dependency behavior changed
+- type checks, schema checks, migrations, generated-code checks, or build steps when public types, shared code, config, API contracts, database shape, or dependency behavior changed
+- do not run tests: this repository has no test suite
 - the repo's final validation command after code/config/dependency changes are complete, when one is documented in `AGENTS.md`, CI config, `Makefile`, `justfile`, package scripts, or project docs
 
 For docs-only or skill-only edits, verify rendered Markdown and links by inspection or `rg --files`; full CI is not required.
@@ -135,10 +132,7 @@ Make the chosen context auditable. Length scales with change size.
 
 - Root AGENTS.md: read
 - Nested AGENTS.md: <paths or "none under changed paths">
-- Task context: <task id> / not applicable because <reason>
-- ExecPlan: <plan id> / not applicable because <reason>
 - Durable docs: <docs> / not applicable because <reason>
-- ADRs: <adrs> / not applicable because <reason>
 - Documentation impact: <docs checked/updated, or intentionally none because ...>
 - Changed files and diff: reviewed via `git diff --stat` and targeted diffs
 - Validation: <commands run>
@@ -154,7 +148,7 @@ Do not write blanket "no durable docs to check" claims unless you actually looke
 4. Synthesize findings into the balanced report.
 5. Apply worthwhile feedback that is clearly in scope.
 6. Rerun the narrowest affected validation, then the repo's documented final validation command when the finished work changed code, config, or dependencies.
-7. Update task notes, ExecPlan notes, commit text, and PR/final response to describe the post-preflight state.
+7. Update the commit text and PR/final response to describe the post-preflight state.
 
 ## Stop rules
 
@@ -162,5 +156,5 @@ Do not write blanket "no durable docs to check" claims unless you actually looke
 - Do not churn stable code outside the changed area just to make it prettier.
 - If a cleanup is subjective and not clearly better, leave it alone.
 - Do not blindly apply every finding from every pass.
-- Do not run broad or slow checks repeatedly when a focused test already covers the current pass; save the repo's broad validation command for final validation.
+- Do not run broad or slow checks repeatedly when a narrow build or lint already covers the current pass; save the repo's broad validation command for final validation.
 - Do not escalate the scale beyond what the diff justifies just to feel thorough.

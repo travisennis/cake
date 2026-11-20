@@ -29,10 +29,8 @@ Do not escalate the scale beyond what the diff justifies.
 Read only what is relevant to the changed surface:
 
 1. Repo root `AGENTS.md`, then nested `AGENTS.md` files under changed paths.
-2. The task the work came from (`ahm task show <id>`), for acceptance criteria.
-3. The active ExecPlan when one exists (see `docs/exec-plans/active/`).
-4. Durable contract, security, architecture, and ADR documents relevant to the changed area.
-5. The changed files and enough nearby context to review them.
+2. Durable contract, security, and architecture documents relevant to the changed area.
+3. The changed files and enough nearby context to review them.
 
 ## Review passes
 
@@ -42,17 +40,17 @@ Treat each pass as a clean read with its own focus. Do not blur findings across 
 
 - Does the change follow `AGENTS.md`, nested `AGENTS.md`, and durable docs? Did it drift from documented repo patterns or ownership boundaries?
 - If the surface is user-visible (CLI/API/config/file format/workflow), did the change update the affected docs in the same change, or is the new behavior intentionally undocumented?
-- If the work came from a task or ExecPlan, does the implementation match its acceptance criteria and recorded decisions?
-- Is the diff narrow: no mixed churn, snapshot regeneration, unrelated cleanup, or manually resolved `ci/cargo-crap-baseline.json` conflicts? Conventional Commits scope from the `cog.toml` allowlist?
+- Does the implementation do what the request asked, with no unrelated scope?
+- Is the diff narrow: no mixed churn, unrelated cleanup, or a hand-merged `ci/complexity-baseline.json`? Conventional Commits scope from the `cog.toml` allowlist?
 
 ### Pass 2: Correctness and source of truth
 
-- Does the code do what the change claims, with right semantics, defaults, precedence, and edge cases? Trust the authority for the surface (code, snapshots, docs), not prose.
+- Does the code do what the change claims, with right semantics, defaults, precedence, and edge cases? Trust the authority for the surface (code and docs), not prose.
 - Are canonical domain models, schemas, identifiers, and state machines preserved, or did the change stringify, parse, duplicate, or reshape data instead of carrying the project-owned representation?
 - Are fallible boundaries explicit about failure, with useful context, without swallowing parse, validation, network, filesystem, process, persistence, auth, or external-service errors?
 - Are concurrency, async, transaction, lifecycle, and resource boundaries consistent with nearby code and the runtime?
 - Are CLI/API/UI/database/config/external-integration boundaries validated at the edge, then represented with project-owned shapes downstream?
-- Could an existing compiler, linter, schema validator, test helper, or narrower data model catch a mistake earlier than this implementation does?
+- Could an existing compiler, linter, schema validator, or narrower data model catch a mistake earlier than this implementation does?
 - Compatibility surfaces: which one does the change touch (CLI shape and exit codes, machine-readable JSON, tool and sandbox semantics, session records, hook and toolbox protocols, settings precedence, prompt construction), and what could break?
 
 ### Pass 3: Overengineering and simplification
@@ -63,7 +61,7 @@ Treat each pass as a clean read with its own focus. Do not blur findings across 
 
 ## Grounding evidence
 
-Use the smallest check that fits the pass: `git diff -- <paths>` and inspection of changed files. Your sandbox is read-only, so do not run checks that write (for example, `cargo test` writes under `target/`). Name the narrowest validation the author must run, and flag any broad checks you could not run in the compliance note.
+Use the smallest check that fits the pass: `git diff -- <paths>` and inspection of changed files. Your sandbox is read-only, so do not run checks that write (for example, `cargo build` writes under `target/`). Name the narrowest validation the author must run, and flag any broad checks you could not run in the compliance note.
 
 ## Synthesis
 
@@ -79,7 +77,7 @@ End with a single-line verdict: APPROVE, APPROVE WITH COMMENTS, or REQUEST CHANG
 
 ## Compliance note
 
-Make the review auditable. List: which context you read (AGENTS.md files, task, ExecPlan, durable docs, ADRs), how you reviewed the diff, and which validation you ran or recommended. Do not write blanket "no durable docs to check" claims unless you actually looked for a relevant authority and can explain why the changed area has no user, contract, security, architecture, or decision surface.
+Make the review auditable. List: which context you read (AGENTS.md files, durable docs), how you reviewed the diff, and which validation you ran or recommended. Do not write blanket "no durable docs to check" claims unless you actually looked for a relevant authority and can explain why the changed area has no user, contract, security, architecture, or decision surface.
 
 ## Stop rules
 

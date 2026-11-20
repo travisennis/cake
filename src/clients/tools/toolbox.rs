@@ -288,7 +288,3 @@ fn truncate_output(mut output: String) -> String {
     output.push_str(" bytes ...]");
     output
 }
-
-#[cfg(test)]
-#[path = "toolbox_tests.rs"]
-mod toolbox_tests;

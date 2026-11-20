@@ -32,12 +32,6 @@ Carry a change from a branch to `master`, or run several changes at once in link
 
 Change a runner label or a workflow job name without silently moving platform coverage or renaming a check.
 
-### Local Gate Prerequisites
-
-[Local Gate Prerequisites](local-gate-prerequisites.md)
-
-Diagnose a local gate that cannot run because of the machine rather than the change, and report what remains unchecked.
-
 ## Skill Pointer Stub
 
 When a procedure moves from `.agents/skills/<name>/SKILL.md` into this directory, retain the catalog entry as a pointer stub:

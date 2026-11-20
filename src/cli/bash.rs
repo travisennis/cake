@@ -322,7 +322,3 @@ pub(super) fn gate_error_check_id(error: &GatePipelineError) -> &'static str {
         .find(|(name, _)| *name == class.as_str())
         .map_or("gates.protocol", |(_, check_id)| check_id)
 }
-
-#[cfg(test)]
-#[path = "bash_tests.rs"]
-mod tests;

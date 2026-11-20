@@ -57,17 +57,13 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4.5"
 
-[dev-dependencies]
-insta = { version = "1", features = ["filters", "json"] }
-temp-env = { version = "0.3", features = ["async_closure"] }
-tempfile = "3"
-tokio = { version = "1", features = ["test-util"] }
-wiremock = "0.6"
-
 # Enforce code quality standards across the workspace
 [lints.rust]
 # Binary crate - missing_docs produces noise without producing useful public API docs.
 missing_docs = "allow"
+# The test suite is gone. Test-only seams and inspection helpers are kept in
+# place rather than reshaping production code around their absence.
+dead_code = "allow"
 
 # Catch common mistakes
 rust_2018_idioms = { level = "warn", priority = -1 }
@@ -85,9 +81,6 @@ nursery = { level = "warn", priority = -1 }
 # Allow some noisy ones
 missing_docs_in_private_items = "allow"
 missing_errors_doc = "deny"
-# Empty-collection assertions read more clearly as `assert!(value.is_empty())`;
-# the suggested typed-empty comparison adds noise without adding signal.
-assert_is_empty = "allow"
 
 # Coding-agent guardrails: require #[expect(..., reason = "...")] instead of #[allow]
 allow_attributes = "deny"

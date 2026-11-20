@@ -6,45 +6,29 @@ set -euo pipefail
 # Enforces the complexity targets in docs/guardrails/complexity-targets.md:
 #   - A function not listed in the baseline may not exceed the CC target.
 #   - A function listed in the baseline (a grandfather) may not exceed the
-#     greater of the CC target and the CC it had when the baseline was generated
-#     (ratchet; reductions are tracked in the per-function reduction tasks, see
-#     the guardrails doc). The committed baseline lists only the grandfathers,
-#     because for a function at or below the target both ceilings are the target.
-#
-# Cyclomatic complexity is coverage-independent, so this check runs without a
-# coverage pass (`just cc-check`). scripts/check-coverage.sh reuses the lcov
-# file it already produced and runs the same check through this script.
+#     greater of the CC target and the CC it had when it was recorded.
+#     The committed baseline lists only the grandfathers, because for a
+#     function at or below the target both ceilings are the target.
 #
 # Usage:
-#   scripts/check-cc.sh [--lcov lcov.info] [--baseline ci/cargo-crap-baseline.json]
-#                       [--target 10]
+#   scripts/check-cc.sh [--baseline ci/complexity-baseline.json] [--target 10]
 
 usage() {
     cat <<'EOF'
-Usage: scripts/check-cc.sh [--lcov FILE] [--baseline FILE] [--target N]
+Usage: scripts/check-cc.sh [--baseline FILE] [--target N]
 
 Runs the per-function cyclomatic-complexity gate.
-  --lcov FILE      LCOV coverage file (optional; CC is coverage-independent)
   --baseline FILE  JSON baseline with per-function cyclomatic values
-                   (default: ci/cargo-crap-baseline.json)
+                   (default: ci/complexity-baseline.json)
   --target N       CC ceiling for functions absent from the baseline (default: 10)
 EOF
 }
 
-lcov=""
-baseline="ci/cargo-crap-baseline.json"
+baseline="ci/complexity-baseline.json"
 target=10
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --lcov)
-            if [ "$#" -lt 2 ]; then
-                echo "ERROR: --lcov requires a value" >&2
-                exit 2
-            fi
-            lcov="$2"
-            shift 2
-            ;;
         --baseline)
             if [ "$#" -lt 2 ]; then
                 echo "ERROR: --baseline requires a value" >&2
@@ -81,18 +65,14 @@ if ! command -v cargo-crap >/dev/null 2>&1; then
 fi
 
 if [ ! -f "$baseline" ]; then
-    echo "ERROR: baseline not found: $baseline (regenerate with 'just change-risk-baseline')" >&2
+    echo "ERROR: baseline not found: $baseline" >&2
     exit 1
 fi
 
 report="$(mktemp)"
 trap 'rm -f "$report"' EXIT
 
-if [ -n "$lcov" ]; then
-    scripts/cargo-crap.sh --lcov "$lcov" --format json > "$report"
-else
-    scripts/cargo-crap.sh --format json > "$report"
-fi
+scripts/cargo-crap.sh --format json > "$report"
 
 python3 - "$report" "$baseline" "$target" <<'PY'
 import json
@@ -138,8 +118,8 @@ print(f"CC gate: {total} functions checked, {grandfathered} grandfathered, {fail
 if failed:
     print(
         "Functions over the allowed CC must be reduced to their allowed ceiling, "
-        "or the baseline must be deliberately regenerated (just change-risk-baseline) "
-        "and the change reviewed against the complexity guardrails."
+        "or the baseline entry must be raised deliberately and reviewed against "
+        "the complexity guardrails."
     )
     sys.exit(1)
 

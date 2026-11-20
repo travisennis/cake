@@ -310,10 +310,6 @@ impl Skill {
     ///
     /// This reads from disk at activation time, not during discovery. The
     /// caller is responsible for any per-session caching or deduplication.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "public API kept for external consumers")
-    )]
     pub fn load_body(&self) -> Result<String, std::io::Error> {
         let content = std::fs::read_to_string(&self.location)?;
 
@@ -495,13 +491,6 @@ impl SkillCatalog {
     ///
     /// Budgets are advisory Unicode-scalar counts. The token estimate is
     /// ceil(characters / 4), not a provider tokenizer or a context guarantee.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "kept as the compatibility reference for catalog budget semantics"
-        )
-    )]
     pub fn size_report(&self, catalog_budget: usize, description_budget: usize) -> String {
         use std::fmt::Write;
 
@@ -780,8 +769,8 @@ pub fn discover_skills_with_paths(
 /// Discover skills from explicit directories.
 ///
 /// `user_skills_dir` is the user-level skills directory, or `None` when the
-/// caller has none. Tests pass an explicit directory so discovery results and
-/// coverage never depend on the executing machine's real home directory.
+/// caller has none. An explicit directory keeps discovery independent of the
+/// executing machine's real home directory.
 fn discover_skills_inner(
     working_dir: &Path,
     configured_skill_dirs: &[PathBuf],
@@ -1023,7 +1012,3 @@ impl SkillConfig {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "skills_tests.rs"]
-mod tests;

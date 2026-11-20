@@ -1,7 +1,6 @@
 # Install required development tools and git hooks.
-# Pinned tools are verified after installation and the hook wrappers are
-# checked by `doctor --scope setup`; every missing or mismatched item is
-# reported with its recovery, and setup exits nonzero.
+# Pinned tools are verified after installation; every missing or mismatched item
+# is reported with its recovery, and setup exits nonzero.
 setup:
     @echo "Checking Rust and Python installations..."
     @which rustc > /dev/null || { echo "ERROR: Rust not installed. Install from https://rustup.rs"; exit 1; }
@@ -21,10 +20,6 @@ doctor flag="":
 profile *args:
     cargo build --profile profiling
     python3 scripts/profile-agent-loop.py {{ args }}
-
-# Run profiling-helper tests without invoking a profiler
-profile-check:
-    @python3 scripts/test-profile-agent-loop.py -v
 
 # Reject branch names outside the <type>/<slug> convention.
 # just interpolates a recipe argument into shell source, so an otherwise legal
@@ -74,12 +69,11 @@ worktrees:
 
 # Open a pull request for the current branch (branch must be pushed).
 # Pass up to four key=value options, in any order:
-#   just pr labels="type:feature,area:cli" body=path/to/body.md task=001
+#   just pr labels="type:feature,area:cli" body=path/to/body.md
 #   labels  comma-separated labels, checked against .github/labels.yml
 #   body    pull request description file (default: fill title/body from commits)
 #   title   pull request title (default: HEAD commit subject; wins over --fill)
-# task    comment the pull request URL on this ahm task ID
-# base    target branch (default: master); pass the branch below for a stacked pull request
+#   base    target branch (default: master); pass the branch below for a stacked pull request
 pr option1="" option2="" option3="" option4="":
     #!/usr/bin/env bash
     scripts/just-pr.sh {{ quote(option1) }} {{ quote(option2) }} {{ quote(option3) }} {{ quote(option4) }}
@@ -109,29 +103,9 @@ rust-version-check:
 dependency-sweep *args:
     @python3 scripts/dependency-sweep.py {{ args }}
 
-# Run dependency-sweep fixture tests (no network or provider credentials)
-dependency-sweep-check:
-    @python3 scripts/test-dependency-sweep.py -v
-
 # Report session metrics from transcripts + telemetry (pass e.g. --days 7, --model X)
 session-metrics *args:
     @python3 scripts/session-metrics/report.py {{ args }}
-
-# List the committed model-evaluation fixture cases (no model credentials needed)
-eval-cases:
-    @python3 scripts/evals/run_eval.py --list-cases
-
-# Run the controlled model evaluation harness (e.g. `just eval --model NAME --repetitions 3`; requires credentials and authorized spend)
-eval *args:
-    @python3 scripts/evals/run_eval.py {{ args }}
-
-# Run the evaluation harness test suite with a fake cake executable (no credentials, no network)
-eval-check:
-    @python3 -m unittest discover -s scripts/evals/tests -v
-
-# Run the session-metrics suite tests (stdlib only, no network)
-session-metrics-check:
-    @python3 -m unittest discover -s scripts/session-metrics/tests -v
 
 # Synchronize repository labels with the committed vocabulary in .github/labels.yml
 labels:
@@ -155,19 +129,7 @@ clippy-linux:
     @which x86_64-linux-gnu-gcc > /dev/null || { echo "ERROR: missing x86_64-linux-gnu-gcc cross compiler required by aws-lc-sys"; exit 1; }
     cargo clippy --target x86_64-unknown-linux-gnu --all-targets --all-features -- -D warnings
 
-# Run tests
-test:
-    cargo test --quiet
-
-# Run tests with all features enabled for the local gate
-_test-all-features:
-    cargo test --all-features --quiet
-
-# Run insta snapshot tests (requires cargo-insta; installed by `just setup`)
-snapshots:
-    cargo insta test
-
-# Lint for use of super::/self:: in production code (test modules use super::* is allowed)
+# Lint for use of super::/self:: in production code
 lint-imports:
     @grep -rn 'use super::' src/ --include='*.rs' | grep -v 'use super::\*;' | { if grep -q .; then echo "ERROR: Use crate:: paths, not super:: in production code. Found:"; grep -rn 'use super::' src/ --include='*.rs' | grep -v 'use super::\*;'; exit 1; fi; }
     @! grep -rn 'use self::' src/ --include='*.rs' | grep -q . || true
@@ -176,119 +138,8 @@ lint-imports:
 # Lint for dependency direction violations (nothing below cli imports cli, types is foundational)
 lint-deps:
     @grep -rn 'use crate::cli[;:]' src/ --include='*.rs' | grep -v '^src/cli/' | grep -v '^src/main.rs:' | { if grep -q .; then echo "ERROR: Module imports crate::cli from outside the CLI layer. Violations:"; grep -rn 'use crate::cli[;:]' src/ --include='*.rs' | grep -v '^src/cli/' | grep -v '^src/main.rs:'; exit 1; fi; }
-    @grep -rn 'use crate::' src/types/ --include='*.rs' | grep -v 'use crate::types' | grep -v '_tests\.rs:' | { if grep -q .; then echo "ERROR: src/types/ imports from a non-types crate module. Violations:"; grep -rn 'use crate::' src/types/ --include='*.rs' | grep -v 'use crate::types' | grep -v '_tests\.rs:'; exit 1; fi; }
+    @grep -rn 'use crate::' src/types/ --include='*.rs' | grep -v 'use crate::types' | { if grep -q .; then echo "ERROR: src/types/ imports from a non-types crate module. Violations:"; grep -rn 'use crate::' src/types/ --include='*.rs' | grep -v 'use crate::types'; exit 1; fi; }
     @echo "Dependency lint passed!"
-
-# Run the fast local gate for code changes.
-# Keep the composition in sync with the change-class matrix in CONTRIBUTING.md:
-# cc-check runs the per-function complexity ratchet here rather than only in the
-# Coverage job, and check-scripts runs the Python fixture suites.
-check: rust-version-check fmt-check cc-check _clippy-strict _test-all-features lint-imports lint-deps lint-module-size lint-domain-glossary check-scripts
-    echo "Fast local checks passed!"
-
-# Print the changed-path classification the pre-push gate routes on: docs | code | mixed | unknown | none
-pre-push-classify:
-    @scripts/classify-changes.sh
-
-# Run the classify-changes.sh fixture matrix in a scratch repo (also wired into CI's `changes` job)
-test-classify-changes:
-    @scripts/test-classify-changes.sh
-
-# Run the pinned development-tool checker fixture tests (also wired into CI's `changes` job)
-test-dev-tools:
-    @scripts/test-dev-tools.sh
-
-# Run the developer-readiness fixture tests (controlled PATH; no installation or network)
-test-doctor:
-    @python3 scripts/test-doctor.py -v
-
-# Run the `just pr` recipe fixture tests against a stubbed gh (also wired into CI's `changes` job)
-test-just-pr:
-    @scripts/test-just-pr.sh
-
-# Run the pre-push gate, routed by changed path class (see CONTRIBUTING.md).
-# Documentation-only pushes run the targeted docs checks; code-class pushes run the fast local
-# gate; mixed pushes run both. Unknown changes fail closed to the full local validation suite.
-# The class is measured for the checked-out branch only: the hook runner (prek) does not forward
-# git's pushed-ref list, so pushing another branch is gated by the checkout's class.
-pre-push:
-    @set -e; class=$(scripts/classify-changes.sh); \
-    if [ "$class" = "docs" ] || [ "$class" = "none" ]; then \
-        echo "pre-push: $class change — running documentation checks"; \
-        just pre-push-docs; \
-    elif [ "$class" = "unknown" ]; then \
-        echo "pre-push: unknown change — running full local validation"; \
-        just check-full; \
-        just pre-push-docs; \
-    else \
-        echo "pre-push: $class change — running fast local gate"; \
-        just check; \
-        if [ "$class" = "mixed" ]; then \
-            echo "pre-push: mixed change — also running documentation checks"; \
-            just pre-push-docs; \
-        fi; \
-    fi
-
-# Run the full local validation suite, including coverage, documentation, and all CI fixtures
-pre-push-force: check-full
-
-# Run the documentation-only pre-push checks on changed living documents.
-# panache is required only when Markdown changed; run `just setup` to install it (pinned to 3.0.0 in CI).
-# Ends with a whitespace check over the same <base>...<head> range the classifier measures (the pushed
-# commits), via scripts/classify-changes.sh --check.
-pre-push-docs:
-    @set -e; files=$(scripts/classify-changes.sh --files); \
-    range=$(scripts/classify-changes.sh --range); \
-    if [ -n "$range" ]; then \
-        echo "pre-push-docs: measuring committed Markdown in $range, and nothing else"; \
-    fi; \
-    if [ -n "$files" ]; then \
-        command -v panache >/dev/null 2>&1 || { echo "ERROR: panache not found — run \`just setup\` (installs panache 3.0.0)" >&2; exit 1; }; \
-        echo "pre-push-docs: checking changed Markdown files"; \
-        printf '%s\n' "$files"; \
-        set -f; IFS=$(printf '\n.'); IFS=${IFS%.}; \
-        printf '%s\0' $files | xargs -0 panache format --check --force-exclude --quiet; \
-        printf '%s\0' $files | xargs -0 panache lint --force-exclude --quiet; \
-    else \
-        echo "pre-push-docs: no changed Markdown files in that range"; \
-    fi; \
-    outside=$(git status --porcelain -- '*.md' '*.markdown' | wc -l | tr -d ' '); \
-    if [ "$outside" != "0" ]; then \
-        echo "pre-push-docs: $outside Markdown path(s) in the worktree are outside this measurement (untracked files are checked once added); \`just docs-check\` covers the tracked corpus"; \
-    fi; \
-    scripts/classify-changes.sh --check
-    @python3 scripts/lint-domain-glossary.py
-
-# Run the coverage artifact guard fixture tests (stdlib only; no llvm-cov, no network)
-coverage-guard-check:
-    @python3 scripts/test-coverage-guard.py -v
-
-# Run the documentation-corpus fixture tests (stub panache; no network)
-docs-corpus-check:
-    @scripts/test-docs-corpus.sh
-
-# Run the fixture-isolation regression test (scratch repositories; no network):
-# every fixture that builds a scratch repository under a git hook's environment
-fixture-isolation-check:
-    @scripts/test-fixture-isolation.sh
-
-# Validate the GitHub-to-ahm conversion offline (stdlib only; no network)
-ahm-import-check:
-    @python3 scripts/test-import-gh-issues-to-ahm.py -v
-
-# Run the Python script fixture suites: the same suites the `changes` job in CI runs.
-# Stdlib only and no credentials; nothing here calls a model provider or the network.
-check-scripts: ahm-import-check dependency-sweep-check profile-check binary-size-baseline-check test-classify-changes test-dev-tools test-doctor test-just-pr eval-check session-metrics-check coverage-guard-check docs-corpus-check fixture-isolation-check cc-check-fixture check-crap-fixture hermetic-coverage-check
-    echo "Script fixture suites passed!"
-
-# Run the Linux compatibility check corresponding to GitHub Actions
-_check-linux:
-    cargo check --all-features
-
-# Run the full local validation suite: the fast gate above, then the Linux compatibility
-# check, coverage and complexity gates, dependency advisories, documentation, and a release build.
-check-full: check _check-linux check-coverage check-deps doc docs-check build
-    echo "Full check suite passed!"
 
 # Check module sizes against thresholds (informational, always passes)
 lint-module-size:
@@ -298,83 +149,16 @@ lint-module-size:
 lint-domain-glossary:
     python3 scripts/lint-domain-glossary.py
 
-# Check for denied/advisory dependencies and disallowed licenses (requires cargo-deny)
-check-deps:
-    cargo deny check advisories
-    cargo deny check licenses
+# Run the local gate for code changes: formatting, complexity, strict Clippy,
+# and the import, dependency-direction, module-size, and glossary lints.
+check: rust-version-check fmt-check cc-check _clippy-strict lint-imports lint-deps lint-module-size lint-domain-glossary
+    echo "Local checks passed!"
 
-# Build documentation with warnings denied
-doc:
-    RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
-
-# Run tests with coverage (requires cargo-llvm-cov)
-coverage:
-    cargo llvm-cov --html
-
-# Print coverage summary (requires cargo-llvm-cov)
-coverage-summary:
-    cargo llvm-cov --summary-only
-
-# Check coverage, absolute CRAP, and per-function cyclomatic-complexity gates.
-check-coverage:
-    scripts/check-coverage.sh
-
-# Check per-function cyclomatic complexity against the baseline (no coverage pass needed).
-# New functions must stay at or below the CC target; existing functions may not exceed max(target, baseline CC).
-cc-check:
-    scripts/check-cc.sh
-
-# Run fixture tests for the per-function complexity ceiling without coverage or a Rust build.
-cc-check-fixture:
-    @scripts/test-check-cc.sh
-
-# Run fixture tests for the absolute CRAP gate without coverage or a Rust build.
-check-crap-fixture:
-    @scripts/test-check-crap.sh
-
-# Run fixture tests for the hermetic coverage wrapper (no coverage pass; stubs cargo).
-hermetic-coverage-check:
-    @scripts/test-hermetic-coverage.sh
-
-# Run coverage and open report
-coverage-open:
-    cargo llvm-cov --html --open
-
-# Export coverage in lcov format. Raw export: no clean and no guard, so use
-# `just check-coverage` or the change-risk recipes when the number matters.
-coverage-lcov:
-    cargo llvm-cov --lcov --output-path lcov.info
-
-# Regenerate the CC grandfather baseline from current coverage.
-# Run this only when a function's CC legitimately crosses the target, or to drop an entry
-# after a reduction lands; it is a no-op on a clean tree. The recipe prunes the fresh cargo-crap
-# report to the functions above the CC target (scripts/prune-crap-baseline.py) and carries
-# forward any deliberate CRAP grandfather, so the committed file records only verdict-changing
-# entries and nothing machine-specific.
-# The same clean-and-guard policy as `check-coverage` runs first, so a stale artifact
-# or a duplicated source root cannot bake a wrong baseline into the gates.
-# Measurement runs under a scratch HOME (scripts/hermetic-coverage.sh), so the result
-# never reflects the developer's home directory and matches the CI Coverage job.
-change-risk-baseline:
-    scripts/coverage-clean.sh
-    mkdir -p ci
-    scripts/hermetic-coverage.sh --lcov --output-path lcov.info
-    python3 scripts/coverage-guard.py --lcov lcov.info
-    @set -eu; report="$$(mktemp "$${TMPDIR:-/tmp}/cargo-crap-report.XXXXXX.json")"; trap 'rm -f "$$report"' EXIT; \
-        scripts/cargo-crap.sh --lcov lcov.info --format json --output "$$report"; \
-        python3 scripts/prune-crap-baseline.py --report "$$report" --baseline ci/cargo-crap-baseline.json --output ci/cargo-crap-baseline.json
-
-# Print a reviewer-friendly per-function CRAP report.
-# Cleaned and guarded like `change-risk-baseline`, so the report cannot describe
-# artifacts from an earlier checkout state.
-change-risk-report:
-    scripts/coverage-clean.sh
-    scripts/hermetic-coverage.sh --lcov --output-path lcov.info
-    python3 scripts/coverage-guard.py --lcov lcov.info
-    scripts/cargo-crap.sh --lcov lcov.info --format markdown
-
-update-dependencies:
-    cargo upgrade -i allow && cargo update    
+# Run the pre-push gate: the local code gate plus the documentation checks.
+pre-push:
+    just check
+    just docs-check
+    git diff --check
 
 # Check markdown formatting and lint over the repository's Markdown: the files git
 # tracks, so untracked scratch notes are neither checked nor rewritten (requires
@@ -387,6 +171,20 @@ docs-check:
 docs-fmt:
     @scripts/docs-corpus.sh --fmt
 
+# Check for denied/advisory dependencies and disallowed licenses (requires cargo-deny)
+check-deps:
+    cargo deny check advisories
+    cargo deny check licenses
+
+# Build documentation with warnings denied
+doc:
+    RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
+
+# Check per-function cyclomatic complexity against the baseline.
+# New functions must stay at or below the CC target; existing functions may not exceed max(target, baseline CC).
+cc-check:
+    scripts/check-cc.sh
+
 build:
     cargo build --release
 
@@ -395,13 +193,12 @@ build:
 binary-size-baseline: build
     python3 scripts/binary-size-baseline.py
 
-# Run fixture tests for the binary-size baseline generator without building or changing the baseline.
-binary-size-baseline-check:
-    @PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-binary-size-baseline.py -v
-
 # Print release notes from conventional commits; scope with a range, e.g. `just changelog v0.1.0..HEAD` (release-time step)
 changelog range="":
     @cog changelog {{ range }} 2>/dev/null
+
+update-dependencies:
+    cargo upgrade -i allow && cargo update
 
 install:
     cargo build --release

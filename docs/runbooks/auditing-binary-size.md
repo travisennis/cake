@@ -78,19 +78,13 @@ just binary-size-baseline
 
 The baseline is target-specific. The first entry records the native `aarch64-apple-darwin` build used for local analysis; do not compare it with the x86_64 or Linux release artifacts. The generator updates only the selected target record, so additional target baselines can be added from their matching release environments without replacing this measurement.
 
-The generator's fixture tests run without a release build or baseline change:
-
-```bash
-just binary-size-baseline-check
-```
-
 The target's Rust standard library and linker must be installed in the matching build environment. For example, a macOS host needs `rustup target add x86_64-unknown-linux-gnu` and an `x86_64-linux-gnu-gcc` cross-linker before the Linux example can run. For a cross-built target, pass its artifact explicitly:
 
 ```bash
 cargo build --release --target x86_64-unknown-linux-gnu
 python3 scripts/binary-size-baseline.py \
-  --target x86_64-unknown-linux-gnu \
-  --artifact target/x86_64-unknown-linux-gnu/release/cake
+ --target x86_64-unknown-linux-gnu \
+ --artifact target/x86_64-unknown-linux-gnu/release/cake
 ```
 
 The baseline records the shipped file size, not the larger `target/bsize` analysis artifact and not the estimated shipped size in a bsize report. Review an intentional change with:

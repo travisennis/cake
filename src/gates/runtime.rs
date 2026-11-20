@@ -223,7 +223,3 @@ fn descriptor(name: &str, model: &ModelConfig) -> Result<ModelDescriptor, GateFa
     serde_json::from_value(value)
         .map_err(|error| GateFailure::config(format!("invalid model descriptor: {error}")))
 }
-
-#[cfg(all(test, unix))]
-#[path = "runtime_tests.rs"]
-mod tests;

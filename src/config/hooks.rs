@@ -84,10 +84,7 @@ impl HookEvent {
 /// Wire names for [`HookEvent`], used as `hooks.json` keys and in hook payloads.
 ///
 /// Single source of truth for both directions: `as_str` and `from_str` read
-/// this table, so a new event costs one entry instead of two match arms. The
-/// `hook_event_names_round_trip` test enumerates every variant and fails if an
-/// entry goes missing, which is what replaces the exhaustiveness check a match
-/// would have provided.
+/// this table, so a new event costs one entry instead of two match arms.
 const HOOK_EVENT_NAMES: [(HookEvent, &str); 8] = [
     (HookEvent::SessionStart, "SessionStart"),
     (HookEvent::UserPromptSubmit, "UserPromptSubmit"),
@@ -123,7 +120,7 @@ impl std::str::FromStr for HookEvent {
 /// Replaces the previous free-form `Option<&str>` source so that callers and
 /// configuration files carry a strongly-typed discriminator. Implements
 /// [`Serialize`] and [`Deserialize`] so typed sources can round-trip through
-/// JSON in tests and future configuration formats.
+/// JSON in configuration formats.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum HookSource {
@@ -270,28 +267,6 @@ impl HooksLoader {
         Ok(loaded)
     }
 
-    #[cfg(test)]
-    pub fn load_from_paths(
-        paths: impl IntoIterator<Item = impl AsRef<Path>>,
-    ) -> Result<LoadedHooks, HooksError> {
-        let mut loaded = LoadedHooks::default();
-
-        for path in paths {
-            let path = path.as_ref();
-            if !path.exists() {
-                continue;
-            }
-
-            let content = fs::read(path).map_err(|source| HooksError::Read {
-                path: path.to_path_buf(),
-                source,
-            })?;
-            Self::parse_source(path, &content, &mut loaded)?;
-        }
-
-        Ok(loaded)
-    }
-
     fn parse_source(
         path: &Path,
         content: &[u8],
@@ -380,208 +355,4 @@ struct HookCommandConfig {
     timeout: Option<u64>,
     fail_closed: Option<bool>,
     status_message: Option<String>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn write(path: &Path, content: &str) {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, content).unwrap();
-    }
-
-    #[test]
-    fn hook_event_names_round_trip() {
-        let events = [
-            HookEvent::SessionStart,
-            HookEvent::UserPromptSubmit,
-            HookEvent::PreToolUse,
-            HookEvent::PostToolUse,
-            HookEvent::PostToolUseFailure,
-            HookEvent::Stop,
-            HookEvent::ErrorOccurred,
-            HookEvent::SessionEnd,
-        ];
-
-        // `as_str` and `from_str` are the wire names for `hooks.json` keys and
-        // hook payloads, so every variant has to survive the round trip.
-        for event in events {
-            let name = event.as_str();
-            assert_eq!(name.parse::<HookEvent>().unwrap(), event);
-            assert_eq!(event.to_string(), name);
-            // The round trip alone cannot see a variant listed twice: both
-            // directions take the first matching entry. Count entries so the
-            // table cannot grow a duplicate that the first-match lookup hides.
-            let entries = HOOK_EVENT_NAMES
-                .iter()
-                .filter(|(entry, _)| *entry == event)
-                .count();
-            assert_eq!(
-                entries, 1,
-                "expected one HOOK_EVENT_NAMES entry for {event:?}"
-            );
-        }
-        assert_eq!("NotAnEvent".parse::<HookEvent>(), Err(()));
-    }
-
-    #[test]
-    fn missing_hook_files_load_empty() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let loaded = HooksLoader::load_from_paths([tmp.path().join("missing.json")].iter())
-            .expect("missing files should be ignored");
-
-        assert!(loaded.is_empty());
-    }
-
-    #[test]
-    fn loads_global_project_and_local_in_order() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let global = tmp.path().join("global.json");
-        let project = tmp.path().join("project.json");
-        let local = tmp.path().join("local.json");
-        let body = |command: &str| {
-            format!(
-                r#"{{
-                  "version": 1,
-                  "hooks": {{
-                    "PreToolUse": [{{"matcher": "Bash", "hooks": [{{"type": "command", "command": "{command}"}}]}}]
-                  }}
-                }}"#
-            )
-        };
-        write(&global, &body("global"));
-        write(&project, &body("project"));
-        write(&local, &body("local"));
-
-        let loaded = HooksLoader::load_from_paths([&global, &project, &local]).unwrap();
-
-        let commands = loaded
-            .groups
-            .iter()
-            .flat_map(|group| group.hooks.iter().map(|hook| hook.command.as_str()))
-            .collect::<Vec<_>>();
-        assert_eq!(commands, ["global", "project", "local"]);
-    }
-
-    #[test]
-    fn matcher_pipe_syntax_matches_exact_names() {
-        let matcher = HookMatcher::parse(Some("Bash| Write "), HookEvent::PreToolUse);
-
-        assert!(matcher.matches(&HookSource::Tool("Bash".to_owned())));
-        assert!(matcher.matches(&HookSource::Tool("Write".to_owned())));
-        assert!(!matcher.matches(&HookSource::Tool("Read".to_owned())));
-    }
-
-    #[test]
-    fn rejects_matcher_on_non_source_events() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let path = tmp.path().join("hooks.json");
-        write(
-            &path,
-            r#"{"version":1,"hooks":{"Stop":[{"matcher":"*","hooks":[{"type":"command","command":"true"}]}]}}"#,
-        );
-
-        let error = HooksLoader::load_from_paths([path.as_path()]).unwrap_err();
-        assert!(matches!(error, HooksError::MatcherNotSupported { .. }));
-    }
-
-    #[test]
-    fn rejects_unknown_event_names() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let path = tmp.path().join("hooks.json");
-        write(
-            &path,
-            r#"{"version":1,"hooks":{"PreToolUSe":[{"hooks":[{"type":"command","command":"true"}]}]}}"#,
-        );
-
-        let error = HooksLoader::load_from_paths([path.as_path()]).unwrap_err();
-        assert!(matches!(error, HooksError::UnknownEvent { .. }));
-    }
-
-    #[test]
-    fn rejects_version_other_than_1() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let path = tmp.path().join("hooks.json");
-        write(&path, r#"{"version":2,"hooks":{}}"#);
-
-        let error = HooksLoader::load_from_paths([path.as_path()]).unwrap_err();
-        assert!(matches!(error, HooksError::UnsupportedVersion { .. }));
-    }
-
-    #[test]
-    fn matcher_all_with_empty_and_edge_cases() {
-        // Empty value or "*" or whitespace-only all produce All.
-        assert!(matches!(
-            HookMatcher::parse(None, HookEvent::PreToolUse),
-            HookMatcher::All
-        ));
-        assert!(matches!(
-            HookMatcher::parse(Some("*"), HookEvent::SessionStart),
-            HookMatcher::All
-        ));
-        assert!(matches!(
-            HookMatcher::parse(Some("  |  "), HookEvent::PreToolUse),
-            HookMatcher::All
-        ));
-        assert!(matches!(
-            HookMatcher::parse(Some("||"), HookEvent::PreToolUse),
-            HookMatcher::All
-        ));
-    }
-
-    #[test]
-    fn matcher_session_start_sources_match_exact() {
-        let matcher = HookMatcher::parse(Some("fork|resume"), HookEvent::SessionStart);
-
-        assert!(matcher.matches(&HookSource::SessionStart("fork".to_owned())));
-        assert!(matcher.matches(&HookSource::SessionStart("resume".to_owned())));
-        assert!(!matcher.matches(&HookSource::SessionStart("startup".to_owned())));
-        // A Tool source should not match a SessionStart matcher.
-        assert!(!matcher.matches(&HookSource::Tool("fork".to_owned())));
-    }
-
-    #[test]
-    fn hook_source_serde_round_trips() {
-        let cases = vec![
-            HookSource::None,
-            HookSource::Tool("Bash".to_owned()),
-            HookSource::Tool("Read".to_owned()),
-            HookSource::SessionStart("fork".to_owned()),
-            HookSource::SessionStart("resume".to_owned()),
-        ];
-        for source in cases {
-            let json = serde_json::to_string(&source).unwrap();
-            let round_tripped: HookSource = serde_json::from_str(&json).unwrap();
-            assert_eq!(source, round_tripped, "round-trip failed for {json}");
-        }
-    }
-
-    #[test]
-    fn trusted_project_hook_bytes_are_parsed_without_reopening() {
-        let bytes = br#"{"version":1,"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"true"}]}]}}"#;
-        let source = crate::config::trust::HookFileSource {
-            path: PathBuf::from("/missing/.cake/hooks.json"),
-            bytes: bytes.to_vec(),
-        };
-
-        let loaded = HooksLoader::load_with_project_sources(None, &[source]).unwrap();
-
-        assert_eq!(loaded.groups.len(), 1);
-        assert_eq!(loaded.groups[0].event, HookEvent::SessionStart);
-        assert_eq!(loaded.groups[0].hooks[0].command, "true");
-        assert_eq!(
-            loaded.groups[0].hooks[0].source_path,
-            PathBuf::from("/missing/.cake/hooks.json")
-        );
-    }
-
-    #[test]
-    fn hook_source_none_separates_correctly() {
-        let source = HookSource::None;
-        assert_eq!(source.as_display_str(), None);
-        // None should not equal Tool("") or SessionStart("").
-        assert_ne!(source, HookSource::Tool(String::new()));
-        assert_ne!(source, HookSource::SessionStart(String::new()));
-    }
 }

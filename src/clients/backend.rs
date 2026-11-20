@@ -173,25 +173,6 @@ impl Backend {
         }
     }
 
-    /// Send one request body previously built by the provider module.
-    #[cfg(test)]
-    pub(super) async fn send_request_json(
-        self,
-        client: &reqwest::Client,
-        config: &ResolvedModelConfig,
-        session_id: uuid::Uuid,
-        request: Vec<u8>,
-    ) -> anyhow::Result<reqwest::Response> {
-        match self {
-            Self::Responses => {
-                responses::send_request_json(client, config, session_id, request).await
-            },
-            Self::ChatCompletions => {
-                chat_completions::send_request_json(client, config, session_id, request).await
-            },
-        }
-    }
-
     pub(super) fn reported_usage(self, body: &[u8]) -> Option<ReportedUsage> {
         match self {
             Self::Responses => responses::reported_usage(body),

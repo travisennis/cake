@@ -20,7 +20,7 @@ Model definitions are global-only. A project settings file may select a global `
 
 ## Project trust
 
-Project `.cake/` configuration has three trust classes (ADR 053):
+Project `.cake/` configuration has three trust classes:
 
 - **Low-authority** settings load without a trust record: `default_model` and profile `default_model` naming a global model, profile selection and non-authority profile overlays, `[tools].enabled` when it only narrows, `[limits]`, `[images]`, `[compaction]`, project `AGENTS.md`, and skills under the default project roots. These can change behavior or cost but cannot add filesystem authority, execute code, read arbitrary host files, or select a new provider endpoint.
 - **Authority-bearing** settings require an explicit trust record: `directories`, `[sandbox].read_only` and `[sandbox].writable`, `[tools.bash].gates`, every `[gates.<name>]` table, the legacy `[tools.bash.judge]` table, `system_prompt`, `skills.path`, `.cake/hooks.json`, `.cake/hooks.local.json`, `.cake/mcp.json`, and every file under `.cake/tools/`. The same keys inside a project profile overlay also require trust.
@@ -29,10 +29,10 @@ Project `.cake/` configuration has three trust classes (ADR 053):
 The trust record is a versioned SHA-256 manifest of the project `.cake/` tree stored at `<config>/cake/trust/<project-key>.json`. It is owner-only (`0600`, parent `0700`), keyed to the canonical project root, and revalidated on every invocation. A changed, added, removed, or executable-bit-changed file invalidates it, so any authority-bearing `.cake/` edit requires `cake trust` again. A new worktree has a different canonical root and starts untrusted. Generated `.cake/worktrees/` directories are not configuration and are excluded from the manifest.
 
 ```text
-cake trust                  # review and trust the current snapshot
-cake trust --status         # report state without writing; --json for the diagnostic document
-cake trust --check          # exit 3 unless the snapshot is trusted
-cake trust --revoke         # remove the record for the current root
+cake trust # review and trust the current snapshot
+cake trust --status # report state without writing; --json for the diagnostic document
+cake trust --check # exit 3 unless the snapshot is trusted
+cake trust --revoke # remove the record for the current root
 ```
 
 One-run modes never write a record:
@@ -63,7 +63,7 @@ Inspect what a run in the current directory would resolve without starting one:
 ```bash
 cake debug config
 cake debug config --json | jq '.data.model'
-cake --profile review debug config --sandbox read-only --add-dir ../shared
+cake --profile review debug config --sandbox read-only --add-dir../shared
 cake debug config --skills debugging-cake --tools Read
 ```
 
@@ -116,7 +116,7 @@ reasoning_effort = "high"
 A project `.cake/settings.toml` may select a global entry and overlay low-authority behavior. A project `[[models]]` entry is rejected, even after trust:
 
 ```toml
-# .cake/settings.toml
+#.cake/settings.toml
 default_model = "openrouter"
 
 [profiles.review]
@@ -203,7 +203,7 @@ The optional `[limits]` section bounds the agent loop and tool resource use. A l
 
 ```toml
 [limits]
-max_turns = "unlimited"  # explicit opt-out; overrides a global cap
+max_turns = "unlimited" # explicit opt-out; overrides a global cap
 ```
 
 `0`, negative values, and any other string are rejected at load time. Project `[limits]` values override global values per key, including back to `"unlimited"`. A selected profile may also define `[profiles.NAME.limits]`; profile values override the merged top-level values per key, with project profile values taking precedence over global profile values.
@@ -212,7 +212,7 @@ max_turns = "unlimited"  # explicit opt-out; overrides a global cap
 [profiles.review.limits]
 max_turns = 10
 read_max_output_bytes = "unlimited"
-edit_max_file_bytes = 2097152  # 2 MiB for this profile
+edit_max_file_bytes = 2097152 # 2 MiB for this profile
 ```
 
 An absent key inherits the lower-precedence value. An explicit `"unlimited"` removes that value's cap.
@@ -223,8 +223,8 @@ The agent-loop keys are off by default: an uncapped loop is deliberate, and no l
 
 ```toml
 [limits]
-max_turns = 10        # stop after 10 agent-loop turns
-max_tool_calls = 50   # stop after 50 executed tool calls
+max_turns = 10 # stop after 10 agent-loop turns
+max_tool_calls = 50 # stop after 50 executed tool calls
 ```
 
 - `max_turns`: maximum agent-loop turns. When the loop reaches the cap and would otherwise continue, Cake stops with a `limit_exceeded` outcome and surfaces the last assistant message, if any, as the partial result.
@@ -238,18 +238,18 @@ Tool limits have built-in defaults. Byte caps accept `"unlimited"`; Bash session
 
 ```toml
 [limits]
-bash_output_max_bytes = 50000   # Bash inline output cap (bytes; default 50000)
-bash_read_cap = 100000          # Legacy key; parsed but no longer limits Bash sessions
+bash_output_max_bytes = 50000 # Bash inline output cap (bytes; default 50000)
+bash_read_cap = 100000 # Legacy key; parsed but no longer limits Bash sessions
 bash_session_output_max_bytes = 1048576 # Unread output kept per session
-bash_session_max = 16                    # Concurrent running commands
-bash_session_max_seconds = 3600          # Hard wall clock per command
-bash_session_exited_ttl_seconds = 600    # Retention after exit
-read_default_end_line = 500     # Read default window (lines; default 500)
-read_max_output_bytes = 100000  # Read output cap (bytes; default 100000)
-edit_max_file_bytes = 16777216  # Edit input-file cap (bytes; default 16 MiB)
-read_max_line_bytes = 10000     # Read per-line cap (bytes; default 10000)
+bash_session_max = 16 # Concurrent running commands
+bash_session_max_seconds = 3600 # Hard wall clock per command
+bash_session_exited_ttl_seconds = 600 # Retention after exit
+read_default_end_line = 500 # Read default window (lines; default 500)
+read_max_output_bytes = 100000 # Read output cap (bytes; default 100000)
+edit_max_file_bytes = 16777216 # Edit input-file cap (bytes; default 16 MiB)
+read_max_line_bytes = 10000 # Read per-line cap (bytes; default 10000)
 read_image_max_bytes = 33554432 # ReadImage source cap (bytes; default 32 MiB)
-hook_output_limit = 65536       # Hook stdout/stderr cap per hook (bytes; default 65536)
+hook_output_limit = 65536 # Hook stdout/stderr cap per hook (bytes; default 65536)
 ```
 
 - `bash_output_max_bytes`: maximum bytes of Bash or BashSession output returned inline. Output exceeding the cap is written to a secure temp file; completed Bash results include a head+tail preview, while yielded Bash and BashSession results include a head preview. `"unlimited"` disables the spill.
@@ -273,9 +273,9 @@ The optional `[images]` section bounds the images one provider request carries. 
 
 ```toml
 [images]
-max_images = 8          # images per request (default 8)
-max_bytes = 16777216    # encoded image bytes per request (default 16 MiB)
-max_pixels = 24000000   # decoded pixels per request (default 24 MP)
+max_images = 8 # images per request (default 8)
+max_bytes = 16777216 # encoded image bytes per request (default 16 MiB)
+max_pixels = 24000000 # decoded pixels per request (default 24 MP)
 ```
 
 Each key is a positive integer. `0`, negative values, and `"unlimited"` are rejected at load time; there is no way to disable a bound. Project `[images]` values override global values per key, and a selected profile may define `[profiles.NAME.images]`; profile values override the merged top-level values per key, with project profile values taking precedence over global profile values.
@@ -298,14 +298,14 @@ The optional `[compaction]` section controls automatic pre-request compaction. I
 
 ```toml
 [compaction]
-enabled = false          # opt in to automatic pre-request compaction
-threshold_percent = 80   # fallback trigger as a percent of context_window
-trigger_tokens = 350000  # optional absolute trigger; must be below context_window
-keep_recent_tokens = 20000  # retained-tail token target
-summary_tokens = 4096    # generated summary token target
-summary_timeout_secs = 180  # total summary budget; one timed-out attempt retries
-model = "cheap-model"    # optional [[models]] entry for checkpoint summaries
-profile = "review"       # optional profile whose default_model selects the summary model
+enabled = false # opt in to automatic pre-request compaction
+threshold_percent = 80 # fallback trigger as a percent of context_window
+trigger_tokens = 350000 # optional absolute trigger; must be below context_window
+keep_recent_tokens = 20000 # retained-tail token target
+summary_tokens = 4096 # generated summary token target
+summary_timeout_secs = 180 # total summary budget; one timed-out attempt retries
+model = "cheap-model" # optional [[models]] entry for checkpoint summaries
+profile = "review" # optional profile whose default_model selects the summary model
 reasoning_effort = "low" # optional summary-call effort override
 ```
 
@@ -378,7 +378,7 @@ The external gate owns its rubric, prompt, provider calls, retries, verdict voca
 
 ## Gates
 
-Status: this section is the `[gates]` configuration contract from [ADR 049](adr/049-external-policy-gates-with-the-cake-gate-1-protocol.md), as revised by [ADR 051](adr/051-external-judge-extraction-with-offline-acceptance.md). The keys are active; Cake contains no in-process judge. An unrecognized or malformed gate table is an input error (exit `3`), never a silent fallback; `--no-gate` and `CAKE_GATE=off` skip only post-parse structural validation, not TOML or unknown-key errors.
+Status: this section is the `[gates]` configuration contract from, as revised by. The keys are active; Cake contains no in-process judge. An unrecognized or malformed gate table is an input error (exit `3`), never a silent fallback; `--no-gate` and `CAKE_GATE=off` skip only post-parse structural validation, not TOML or unknown-key errors.
 
 Gates are external policy executables composed in order for an action. The only action in this release is the Bash pre-tool check, `bash.exec`. The [Gate protocol](integrations.md#gate-protocol) is the wire contract; this section owns configuration, defaults, and precedence.
 
@@ -459,8 +459,8 @@ The `[sandbox]` section grants the Bash sandbox and the in-process `Read`/`ReadI
 
 ```toml
 [sandbox]
-read_only = ["~/.local/bin/claude"]   # read + execute
-writable = ["~/.claude", "~/.cache/claude"]  # read + write + execute
+read_only = ["~/.local/bin/claude"] # read + execute
+writable = ["~/.claude", "~/.cache/claude"] # read + write + execute
 ```
 
 `read_only` entries may be files or directories and grant read plus execute access (enough to run a single binary such as `~/.local/bin/claude` without opening its whole directory). `writable` entries grant read, write, and execute access to directories. Both keys accept absolute paths, relative paths, and `~` expansion, and merge as a union across global settings, trusted project settings, and the selected profile; the merged list is deduplicated and sorted, so resolved grants are stable across runs. Project `directories`, `[sandbox].read_only`, and `[sandbox].writable` require trust.
@@ -487,7 +487,7 @@ Inspect the resolved grants without starting a run or creating a missing configu
 ```bash
 cake debug grants
 cake debug grants --json | jq '.data.read_write[]'
-cake debug grants --sandbox read-only --add-dir ../shared
+cake debug grants --sandbox read-only --add-dir../shared
 cake --profile review debug grants --skills debugging-cake
 ```
 
@@ -573,22 +573,22 @@ Files are appended in that order and must declare `"version": 1`. Missing files 
 
 ```json
 {
-  "version": 1,
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "./.cake/hooks/check-tool.sh",
-            "timeout": 5,
-            "fail_closed": true
-          }
-        ]
-      }
-    ]
-  }
+ "version": 1,
+ "hooks": {
+ "PreToolUse": [
+ {
+ "matcher": "Bash|Write",
+ "hooks": [
+ {
+ "type": "command",
+ "command": "./.cake/hooks/check-tool.sh",
+ "timeout": 5,
+ "fail_closed": true
+ }
+ ]
+ }
+ ]
+ }
 }
 ```
 
@@ -612,14 +612,14 @@ Cake is a Model Context Protocol client over stdio. Server definitions use the e
 
 ```json
 {
-  "mcpServers": {
-    "safari-mcp": {
-      "command": "/usr/bin/safaridriver",
-      "args": ["--mcp"],
-      "description": "Safari browser automation",
-      "exposure": "deferred"
-    }
-  }
+ "mcpServers": {
+ "safari-mcp": {
+ "command": "/usr/bin/safaridriver",
+ "args": ["--mcp"],
+ "description": "Safari browser automation",
+ "exposure": "deferred"
+ }
+ }
 }
 ```
 
@@ -644,7 +644,7 @@ Manage the user-owned global file from the CLI:
 ```text
 cake mcp add safari-mcp -- /usr/bin/safaridriver --mcp
 cake mcp add fixture --description "Fixture tools" --exposure direct \
-  --env FAKE_MCP_ERA=modern --timeout-secs 30 -- python3 server.py
+ --env FAKE_MCP_ERA=modern --timeout-secs 30 -- python3 server.py
 cake mcp list
 cake mcp get safari-mcp --json
 cake mcp remove safari-mcp
@@ -661,9 +661,9 @@ Discovered tools are registered as `mcp__<server>__<tool>`; characters a provide
 Supported protocol eras are legacy `initialize` (`2025-11-25`) and modern per-request metadata (`2026-07-28`), selected with the `server/discover` probe. Resources, prompts, sampling, elicitation, roots, tasks, extensions, HTTP transports, and OAuth are not implemented.
 
 ```text
-cake debug mcp                  # connect and list servers and tools
-cake debug mcp --json           # diagnostic document
-cake debug mcp --mcp-config ./mcp.json
+cake debug mcp # connect and list servers and tools
+cake debug mcp --json # diagnostic document
+cake debug mcp --mcp-config./mcp.json
 ```
 
 `cake debug mcp` reports a `hidden` server without connecting, and reports `description` and `exposure` for every entry. `cake debug tools` lists the configured MCP sources and their exposure without connecting either; see [Tool inventory](#tool-inventory).
@@ -712,11 +712,3 @@ The report covers every session under the resolved sessions directory. It shows 
 The `.blobs` directory is created lazily when a session first stores an externalized payload, such as an image or a tool output of at least 16 KiB. It is under the sessions root, so it needs no separate setting or sandbox grant. A reference-bearing session copied without its blob directory is incomplete and fails closed when a referenced image or output is needed.
 
 Set `RUST_LOG=cake=debug` or `RUST_LOG=cake=trace` for verbose file logging. Normal command output is unchanged.
-
-## Related decisions
-
-- [ADR 002](adr/002-agent-skills.md), the skills system.
-- [ADR 003](adr/003-settings-profiles.md), settings profiles.
-- [ADR 049](adr/049-external-policy-gates-with-the-cake-gate-1-protocol.md), external policy gates and the `cake-gate/1` protocol.
-- [ADR 055](adr/055-use-a-dual-era-stdio-mcp-client-configured-by-mcp-json.md), the stdio MCP client and `mcp.json` configuration.
-- [ADR 062](adr/062-bound-request-images-by-count-pixels-and-bytes.md), per-request image budgets and the source-read cap.

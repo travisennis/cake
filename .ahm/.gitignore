@@ -1,3 +1,0 @@
-# Managed by ahm. Machine-local state stays local-only; config.json remains
-# committed, and the task records live in the user-level store.
-*.tmp

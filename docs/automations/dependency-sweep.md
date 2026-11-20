@@ -107,9 +107,9 @@ For a Rust toolchain update, change `rust-toolchain.toml` first, update its `.mi
 
 ## Pull requests and issues
 
-Known safe work produces a normal reviewable pull request. The body must include the report, exact upstream compare links, the reason the cooldown passed or the security evidence, the files changed, and the checks run. Use a conventional title, the required `type:*` and `area:*` labels from `.github/labels.yml`, and the ahm task id when the work belongs to a managed task. Do not merge or automerge the pull request.
+Known safe work produces a normal reviewable pull request. The body must include the report, exact upstream compare links, the reason the cooldown passed or the security evidence, the files changed, and the checks run. Use a conventional title and the required `type:*` and `area:*` labels from `.github/labels.yml`. Do not merge or automerge the pull request.
 
-Ambiguous or high-risk work produces an issue or remains stopped for manual review. Use GitHub intake and include the report, failed or missing evidence, affected domain, and a concrete next decision. An operator converts an accepted report into an ahm task with its issue URL as `external_ref`, following [Task workflow](../workflow/tasks.md). CI never mutates the local store. Automation-authored issue and pull request comments must start with the exact prefix `Cake automation note:`. Treat that prefix as automation state, not as maintainer guidance. Human feedback remains an ordinary issue or pull request comment without that prefix.
+Ambiguous or high-risk work produces an issue or remains stopped for manual review. Use GitHub intake and include the report, failed or missing evidence, affected domain, and a concrete next decision. Automation-authored issue and pull request comments must start with the exact prefix `Cake automation note:`. Treat that prefix as automation state, not as maintainer guidance. Human feedback remains an ordinary issue or pull request comment without that prefix.
 
 ## Existing scheduled checks
 
@@ -144,6 +144,6 @@ just check
 just check-deps
 ```
 
-Use `just check-full` when the change needs complete local validation, including coverage, all CI fixtures, documentation, and a release build.
+Use `just check`, `just docs-check`, and `just build` for complete local validation.
 
-`just check` is the fast local gate. If a check cannot run, record the exact reason and the narrower checks that did run. GitHub CI remains authoritative for platform tests and the coverage and complexity gates. The report and fixture suite require no provider credentials or network access; only the live Rust channel acquisition requires network access. The `changes` job in `.github/workflows/ci.yml` runs the fixture suite, and maintainers can run it locally with `just check-full`.
+`just check` is the local gate. If a check cannot run, record the exact reason and the narrower checks that did run. GitHub CI remains authoritative for the platform build and lint checks. The report requires no provider credentials or network access; only the live Rust channel acquisition requires network access.

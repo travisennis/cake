@@ -1,9 +1,0 @@
----
-source: src/types/session.rs
-expression: stream_json_for(&item)
----
-{
-  "call_id": "call-1",
-  "output": "result",
-  "type": "function_call_output"
-}

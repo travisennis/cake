@@ -199,7 +199,7 @@ pub struct TypeSafeSettingsOverlay {
 /// `Shadow` observes beside the judge and never changes a decision. `Cascade`
 /// makes the observation the first approval stage: a clean observation at or
 /// above the reviewed cutoff approves the command without a judge call, and
-/// every other outcome falls back to the judge (ADR 034). The cutoff itself is
+/// every other outcome falls back to the judge. The cutoff itself is
 /// compiled, so no mode value can lower it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -232,8 +232,7 @@ impl Default for TypeSafeSettings {
 /// Resolved LLM judge settings for Bash command safety.
 ///
 /// Produced by [`SettingsLoader`] after merging global, project, and profile
-/// settings with defaults applied. The allowlist and emergency bypass landed in
-/// `Milestone 4` of the LLM-judge `ExecPlan`.
+/// settings with defaults applied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JudgeSettings {
     /// Judge model override: the `name` of a `[[models]]` entry (the
@@ -1879,69 +1878,6 @@ impl SettingsLoader {
         Ok(acc.into_loaded())
     }
 
-    /// Test-only convenience loader that applies the project snapshot as if it
-    /// were trusted for one run.
-    ///
-    /// Production code uses [`Self::load_with_project_config`]. Tests that
-    /// exercise the trust boundary call that entry point instead.
-    #[cfg(test)]
-    pub fn load(project_dir: Option<&Path>) -> Result<LoadedSettings, SettingsError> {
-        Self::load_test_only(project_dir, None, false)
-    }
-
-    /// Test-only convenience loader with a profile.
-    #[cfg(test)]
-    pub fn load_with_profile(
-        project_dir: Option<&Path>,
-        profile: Option<&str>,
-    ) -> Result<LoadedSettings, SettingsError> {
-        Self::load_test_only(project_dir, profile, false)
-    }
-
-    /// Test-only convenience loader with a gate bypass.
-    #[cfg(test)]
-    pub fn load_with_profile_and_gate_bypass(
-        project_dir: Option<&Path>,
-        profile: Option<&str>,
-        no_gate: bool,
-    ) -> Result<LoadedSettings, SettingsError> {
-        Self::load_test_only(project_dir, profile, no_gate)
-    }
-
-    #[cfg(test)]
-    fn load_test_only(
-        project_dir: Option<&Path>,
-        profile: Option<&str>,
-        no_gate: bool,
-    ) -> Result<LoadedSettings, SettingsError> {
-        let config_dir = crate::config::config_dir();
-        let mut acc = SettingsAccumulator::default();
-        Self::merge_global_source(&mut acc, &config_dir)?;
-        if let Some(project_dir) = project_dir {
-            let snapshot = ProjectConfigSnapshot::load(
-                project_dir,
-                &config_dir,
-                ProjectConfigMode::EnforceOneRun,
-            )
-            .map_err(|error| match error {
-                ConfigLoadError::Settings(error) => error,
-                ConfigLoadError::Trust(error) => {
-                    SettingsError::IoError(std::io::Error::other(error.to_string()))
-                },
-            })?;
-            let trust = snapshot.evaluate().map_err(|error| {
-                SettingsError::IoError(std::io::Error::other(error.to_string()))
-            })?;
-            Self::merge_project_source(
-                &mut acc,
-                &snapshot,
-                ProjectConfigMode::EnforceOneRun,
-                &trust,
-            )?;
-        }
-        Self::finish_loaded(acc, profile, no_gate)
-    }
-
     fn merge_source(
         source: &SettingsSource,
         acc: &mut SettingsAccumulator,
@@ -2811,7 +2747,3 @@ fn expand_home_str(path: &str) -> String {
         .to_string_lossy()
         .into_owned()
 }
-
-#[cfg(test)]
-#[path = "settings_tests.rs"]
-mod tests;

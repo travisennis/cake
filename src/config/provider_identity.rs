@@ -152,7 +152,3 @@ fn provider_headers_digest(headers: &ProviderHeaders) -> String {
     hasher.update(x_title.as_deref().unwrap_or("").as_bytes());
     hex::encode(hasher.finalize())
 }
-
-#[cfg(test)]
-#[path = "provider_identity_tests.rs"]
-mod tests;

@@ -8,26 +8,29 @@ Users depend on CLI shape and exit behavior, machine-readable output, tool and s
 
 ## Operating loop
 
-1. Run `ahm prime` for managed work, then classify the change, pick the route below, and load only that route's documents.
+1. Classify the change, pick the route below, and load only that route's documents.
 2. Decide whether the task edits repository files. Read-only audits, research, recommendations, and backlog inspection stay on the current branch with no branch, commit, GitHub, or pull-request side effects unless requested. If edits are needed, work on `master` for a small or single-task change; use `just branch <type>/<slug>`, or `just worktree <type>/<slug>` beside another agent, when the change needs isolation.
-3. Read the smallest relevant code and tests. [ARCHITECTURE.md](ARCHITECTURE.md) names the code authority for each surface.
-4. Keep the diff narrow: no mixing behavior changes, dependency updates, formatting, snapshot regeneration, or unrelated cleanup. Churn hides the change a reviewer needs to see.
-5. Run checks proportionate to the risk, per [CONTRIBUTING.md](CONTRIBUTING.md), and preflight before handoff.
-6. Track implementation or requested managed records in an ahm task per [docs/workflow/tasks.md](docs/workflow/tasks.md): start with `ahm task start <id>` and complete with `ahm task complete <id>` before the final implementing commit. Read-only reports stay in the response unless persistence is requested.
-7. Integrate locally and push `master` when edits are complete; then hand off. Do not open a GitHub pull request unless the user explicitly asks for one; external contributors use a branch and pull request instead. For a pull request, do not merge, auto-merge, close the PR, or delete the remote branch without explicit user approval.
+3. Read the smallest relevant code. [ARCHITECTURE.md](ARCHITECTURE.md) names the code authority for each surface.
+4. Keep the diff narrow: no mixing behavior changes, dependency updates, formatting, or unrelated cleanup.
+5. Build, format, and lint what you changed. There is no test suite; do not reintroduce one.
+6. Integrate locally and push `master` when edits are complete; then hand off. Do not open a GitHub pull request unless the user explicitly asks for one; external contributors use a branch and pull request instead. For a pull request, do not merge, auto-merge, close the PR, or delete the remote branch without explicit user approval.
 
-Implementation work follows the ExecPlan thresholds in [docs/workflow/tasks.md](docs/workflow/tasks.md); read-only audits, recommendations, and small documentation or skill edits do not require one unless requested.
+## Verification: no tests
+
+This repository does not write, keep, or run tests. Do not create test files, test modules, test fixtures, snapshot tests, or test-only helpers. Do not run `cargo test`, `cargo nextest`, coverage, or any test harness. If you encounter a test while working in a file, delete it rather than updating it.
+
+Verify a change by building and linting:
+
+- `cargo check --all-targets`
+- `just check` (format check, complexity gate, strict Clippy, and the import, dependency-direction, module-size, and glossary lints)
+- `just build` for a release build when behavior changed
+- `just docs-check` for Markdown changes
+
+Report the exact commands you ran and anything you could not run, and why.
 
 ## Workflow routing
 
-Load the matching route. Each document named is its surface's authority and links the decisions behind it.
-
-### Managed work: tasks, ExecPlans, ADRs, research
-
-Choosing, preparing, and closing work; execution plans; research evidence; architecture decisions.
-
-- [Task workflow](docs/workflow/tasks.md), for the task lifecycle.
-- [ExecPlan workflow](docs/workflow/exec-plans.md), [ADR README](docs/adr/README.md), and [Research workflow](docs/workflow/research.md), for authoring each record.
+Load the matching route. Each document named is its surface's authority.
 
 ### CLI, output formats, and exit behavior
 
@@ -41,9 +44,7 @@ Flags, defaults, `--help`, exit codes, stdout and stderr, completion JSON, strea
 Tool schemas, execution semantics, per-path scheduling, and the errors a model sees.
 
 - [ARCHITECTURE.md](ARCHITECTURE.md), for the agent and tool boundary.
-- `src/clients/tools/`, its `*-description.txt` files, and its snapshots, which are the authority for schemas and model-visible text.
-
-No prose document owns tool schemas. The code, descriptions, and snapshots are the contract; add focused tests.
+- `src/clients/tools/` and its `*-description.txt` files, which are the authority for schemas and model-visible text.
 
 ### Sandbox, filesystem access, and trusted extensions
 
@@ -61,7 +62,7 @@ Backends, wire formats, retries, headers, interrupts, and agent-loop control flo
 
 - [ARCHITECTURE.md](ARCHITECTURE.md), for the conversation and backend boundary.
 - Use the `debugging-cake` skill for agent-loop failure triage.
-- `src/clients/` and its snapshots, which are the authority for wire examples.
+- `src/clients/`, which is the authority for wire examples.
 
 ### Settings, profiles, skills, and prompt construction
 
@@ -76,7 +77,7 @@ Session JSONL, record semantics, resume, and telemetry sidecars.
 
 - [Integration contracts](docs/integrations.md), for layout and record semantics.
 - Use the `analyzing-cake-sessions` skill for reviewing a session.
-- `src/types/session.rs` and its snapshots, which are the authority for serialized records.
+- `src/types/session.rs`, which is the authority for serialized records.
 
 ### Documentation and agent instructions
 
@@ -86,20 +87,20 @@ Prose changes, whether they document a surface or change how an agent behaves.
 - [CONTRIBUTING.md](CONTRIBUTING.md), for the documentation checks.
 - The route for the surface, when the document states a contract or invariant.
 
-Documentation-only changes may skip the Rust gate and must say so in the handoff. A change touching any code, configuration, fixture, or snapshot is not documentation-only, whatever its prose ratio.
+A change touching code, configuration, or a fixture is not documentation-only, whatever its prose ratio.
 
 ### Dependencies, build, verification, and release
 
 `Cargo.toml`, `Cargo.lock`, the `justfile`, CI, toolchain, and release work.
 
-- [CONTRIBUTING.md](CONTRIBUTING.md), the command catalog and verification policy.
+- [CONTRIBUTING.md](CONTRIBUTING.md), the command catalog.
 - [Dependency posture](docs/dependencies.md), [Automation conventions](docs/automations/README.md), [Branches and worktrees](docs/runbooks/parallel-worktrees.md), and [CI runner images](docs/runbooks/ci-runner-images.md).
 
 A workflow job name identifies the check in the GitHub UI and in `gh` output; keep it stable unless the change intends to rename the check.
 
-### Code quality, complexity, and coverage
+### Code quality and complexity
 
-Complexity targets, CRAP scores, coverage, and the coverage-first refactoring workflow. Relevant when writing or modifying functions.
+Complexity targets, the cyclomatic-complexity ratchet, and the module-size report. Relevant when writing or modifying functions.
 
 - [Code complexity targets](docs/guardrails/complexity-targets.md), the authority; `just cc-check` is the gate.
 
@@ -108,9 +109,8 @@ Complexity targets, CRAP scores, coverage, and the coverage-first refactoring wo
 - Commit and push freely on `master` or a feature branch for authorized implementation work; commit often. Stage specific paths, never `git add -A`. Ask before force-pushing.
 - A task that uses a branch gets one branch, cut from an up-to-date `master`.
 - Preserve unrelated user changes; never clean or revert them.
-- Never resolve a merge conflict in `ci/cargo-crap-baseline.json` by hand. Take `master`'s copy, then regenerate it with `just change-risk-baseline`.
 - Use Conventional Commits, scoped only from the `cog.toml` allowlist; verified by the commit-msg hook. See [CONTRIBUTING.md](CONTRIBUTING.md) for scope selection.
-- Future work and unresolved questions belong in ahm tasks, not durable docs.
+- Future work and unresolved questions belong in the response or the issue tracker, not in new durable records.
 
 ## Integration and pull requests
 
@@ -126,26 +126,11 @@ When you finish a user request, give a concise handoff that helps the user decid
 
 Include:
 
-1. **What changed**
-   - State the concrete files, behavior, commands, docs, or tests changed.
-   - Don't narrate every implementation detail unless it affects future work.
-
-2. **What was verified**
-   - List the exact checks run, such as `cargo test foo`, `cargo fmt`, `just check`, browser verification, etc.
-   - If a relevant check was skipped or failed, say exactly why.
-
-3. **What remains**
-   - Name any known risks, incomplete work, skipped cleanup, failing tests, TODOs, or assumptions.
-   - If nothing remains, say that plainly.
-
-4. **Next actions**
-   - Give only actionable next steps.
-   - Separate required next steps from optional follow-ups.
-   - Don't invent extra work just to sound thorough.
-
-5. **Worktree state, when files have been edited or a commit has been made**
-   - If files were edited, mention remaining uncommitted or untracked files when useful.
-   - If a commit was requested, include the commit hash and whether the worktree is clean.
+1. **What changed** --- the concrete files, behavior, commands, or docs changed. Don't narrate implementation detail unless it affects future work.
+2. **What was verified** --- the exact build, lint, and docs commands run. If a relevant check was skipped or failed, say exactly why.
+3. **What remains** --- known risks, incomplete work, skipped cleanup, TODOs, or assumptions. If nothing remains, say so plainly.
+4. **Next actions** --- only actionable next steps, separated into required and optional. Don't invent work to sound thorough.
+5. **Worktree state** --- remaining uncommitted or untracked files when useful; a requested commit's hash and whether the worktree is clean.
 
 Style rules:
 

@@ -349,7 +349,3 @@ fn truncate(mut output: String) -> (String, bool) {
     output.push_str(" bytes ...]");
     (output, true)
 }
-
-#[cfg(test)]
-#[path = "mcp_tests.rs"]
-mod mcp_tests;

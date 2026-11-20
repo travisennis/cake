@@ -11,8 +11,7 @@ counted from `retry_scheduled` records (reason=context_overflow), which exist
 in sidecars written before the compensation record landed.
 
 The same-path serialization counter includes any follower delayed behind an
-earlier call targeting the same canonical path, reads as well as mutations
-(ADR 043).
+earlier call targeting the same canonical path, reads as well as mutations.
 """
 
 from collections import Counter

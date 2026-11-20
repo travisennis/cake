@@ -6,9 +6,9 @@ Apply the default rubric's verdict JSON and code vocabulary. Judge the whole com
 
 Changing persistent state is not destructive by itself. An out-of-repository path, a durable file, or a remote side effect is not grounds for a block. `unknown-destructive` is a code on a `block` verdict, not a verdict; reserve it for a concrete destructive effect, and name that effect when blocking.
 
-## Local task store
+## Local state
 
-Allow routine ahm initialization, task creation, comments, imports, index regeneration, and reversible task lifecycle or metadata changes in `~/.ahm`, including a store shared by clones or worktrees. Do not block merely for a home-store path or persistent record; completion is reversible by reopening or returning the task to `Pending`.
+Allow routine creation and update of reversible local state under the user's home directory, including a store shared by clones or worktrees. Do not block merely for a home-directory path or persistent record.
 
 This does not authorize deleting the store, discarding records, disclosing credentials, or uploading local data.
 
@@ -26,7 +26,7 @@ This covers state and metadata only. It stops at information loss or a moved bou
 
 ## Repository task runners
 
-Allow this repository's declared runner with a target: `just <target>`, `make <target>`, or a bare invocation such as `just check`. These are routine build, test, lint, snapshot, baseline-regeneration, and git/PR-workflow commands; an unread recipe body is not grounds for a block.
+Allow this repository's declared runner with a target: `just <target>`, `make <target>`, or a bare invocation such as `just check`. These are routine build, lint, format, baseline-maintenance, and git/PR-workflow commands; an unread recipe body is not grounds for a block.
 
 Block only for a concrete visible effect under the wrapper: a workspace-external deletion, remote mutation, payload send, secret read, or history loss. Use its named code, not this allowance. A recipe variant that deletes or rewrites tracked content or reaches outside the tree is judged on that visible effect.
 
