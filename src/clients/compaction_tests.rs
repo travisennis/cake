@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::io::Cursor;
+use std::time::Duration;
 
 use base64::Engine as _;
 use image::{DynamicImage, ImageFormat, Rgb, RgbImage};
@@ -965,13 +966,63 @@ async fn summarize_single_request_records_usage_and_validates_the_checkpoint() {
     let prepared = prepared(prepare(input(&source, 1, Some(1), Some(10_000), &[])).unwrap());
     let mut caller = FakeCaller::new(vec![FakeResponse::ok("A concise checkpoint summary.")]);
 
-    let checkpoint = summarize(*prepared, &mut caller).await.unwrap();
+    let checkpoint = summarize(*prepared, &mut caller, DEFAULT_SUMMARY_TIMEOUT)
+        .await
+        .unwrap();
     assert_eq!(caller.calls.len(), 1);
     assert_eq!(checkpoint.summary, "A concise checkpoint summary.");
     assert_eq!(checkpoint.summary_usage.unwrap().input_tokens, 100);
     assert!(checkpoint.summary_time_ms.is_some());
     assert_eq!(checkpoint.checkpoint_version, CHECKPOINT_VERSION);
     assert!(checkpoint.to_record_bytes().unwrap().len() <= MAX_CHECKPOINT_RECORD_BYTES);
+}
+
+fn single_batch_prepared() -> PreparedCompaction {
+    let mut source = vec![message(Role::System, "system"), user("current request")];
+    for index in 0..4 {
+        source.push(call(&format!("call-{index}")));
+        source.push(output(&format!("call-{index}"), &"q".repeat(4_000)));
+        source.push(assistant(&format!("answer {index}")));
+    }
+    *prepared(prepare(input(&source, 1, Some(1), Some(10_000), &[])).unwrap())
+}
+
+#[tokio::test]
+async fn summarize_retries_one_timed_out_attempt_within_the_operation_budget() {
+    tokio::time::pause();
+    let mut caller = FakeCaller::new(vec![FakeResponse::ok("summary after a stall")])
+        .with_delays([Duration::from_secs(60)]);
+
+    let checkpoint = summarize(
+        single_batch_prepared(),
+        &mut caller,
+        Duration::from_secs(100),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(caller.attempts, 2);
+    assert_eq!(caller.calls.len(), 1);
+    assert_eq!(checkpoint.summary, "summary after a stall");
+}
+
+#[tokio::test]
+async fn summarize_fails_when_both_attempts_exhaust_the_deadline() {
+    tokio::time::pause();
+    let mut caller = FakeCaller::new(vec![FakeResponse::ok("never returned")])
+        .with_delays([Duration::from_secs(60), Duration::from_secs(200)]);
+
+    let error = summarize(
+        single_batch_prepared(),
+        &mut caller,
+        Duration::from_secs(100),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(caller.attempts, 2);
+    assert!(caller.calls.is_empty());
+    assert!(error.to_string().contains("after 2 attempts"), "{error}");
 }
 
 #[tokio::test]
@@ -990,7 +1041,9 @@ async fn summarize_batches_oldest_exchanges_and_carries_the_summary() {
         FakeResponse::ok("third summary"),
     ]);
 
-    let checkpoint = summarize(*prepared, &mut caller).await.unwrap();
+    let checkpoint = summarize(*prepared, &mut caller, DEFAULT_SUMMARY_TIMEOUT)
+        .await
+        .unwrap();
     assert!(caller.calls.len() > 1);
     assert!(caller.calls[1].1.contains("[summary so far]"));
     assert_eq!(checkpoint.summary, "third summary");
@@ -1012,18 +1065,34 @@ async fn summarize_rejects_tool_calls_refusals_empty_text_and_over_budget() {
     };
 
     let mut tool_caller = FakeCaller::new(vec![FakeResponse::tool_call()]);
-    assert!(summarize(*prepared(), &mut tool_caller).await.is_err());
+    assert!(
+        summarize(*prepared(), &mut tool_caller, DEFAULT_SUMMARY_TIMEOUT)
+            .await
+            .is_err()
+    );
 
     let mut refusal = FakeCaller::new(vec![FakeResponse::termination(
         TerminationClassification::Failed,
     )]);
-    assert!(summarize(*prepared(), &mut refusal).await.is_err());
+    assert!(
+        summarize(*prepared(), &mut refusal, DEFAULT_SUMMARY_TIMEOUT)
+            .await
+            .is_err()
+    );
 
     let mut empty = FakeCaller::new(vec![FakeResponse::ok("   ")]);
-    assert!(summarize(*prepared(), &mut empty).await.is_err());
+    assert!(
+        summarize(*prepared(), &mut empty, DEFAULT_SUMMARY_TIMEOUT)
+            .await
+            .is_err()
+    );
 
     let mut oversized = FakeCaller::new(vec![FakeResponse::ok(&"w".repeat(80_000))]);
-    assert!(summarize(*prepared(), &mut oversized).await.is_err());
+    assert!(
+        summarize(*prepared(), &mut oversized, DEFAULT_SUMMARY_TIMEOUT)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -1040,12 +1109,20 @@ async fn summarize_checks_backend_support_before_any_call() {
 
     let mut unsupported = FakeCaller::new(vec![FakeResponse::ok("summary")]);
     unsupported.supports = false;
-    assert!(summarize(*prepared(), &mut unsupported).await.is_err());
+    assert!(
+        summarize(*prepared(), &mut unsupported, DEFAULT_SUMMARY_TIMEOUT)
+            .await
+            .is_err()
+    );
     assert!(unsupported.calls.is_empty());
 
     let mut invalid = FakeCaller::new(vec![FakeResponse::ok("summary")]);
     invalid.valid = false;
-    assert!(summarize(*prepared(), &mut invalid).await.is_err());
+    assert!(
+        summarize(*prepared(), &mut invalid, DEFAULT_SUMMARY_TIMEOUT)
+            .await
+            .is_err()
+    );
     assert!(invalid.calls.is_empty());
 }
 
@@ -1117,7 +1194,11 @@ async fn summarize_rejects_a_failed_batch() {
     let prepared = prepared(prepare(input(&source, 1, Some(1), Some(100_000), &[])).unwrap());
     let mut caller = FakeCaller::new(vec![FakeResponse::ok("first"), FakeResponse::failure()]);
 
-    assert!(summarize(*prepared, &mut caller).await.is_err());
+    assert!(
+        summarize(*prepared, &mut caller, DEFAULT_SUMMARY_TIMEOUT)
+            .await
+            .is_err()
+    );
     assert!(caller.calls.len() > 1);
 }
 
@@ -1564,6 +1645,8 @@ impl FakeResponse {
 struct FakeCaller {
     responses: VecDeque<FakeResponse>,
     calls: Vec<(u32, String)>,
+    delays: VecDeque<Duration>,
+    attempts: usize,
     supports: bool,
     valid: bool,
 }
@@ -1573,9 +1656,17 @@ impl FakeCaller {
         Self {
             responses: responses.into(),
             calls: Vec::new(),
+            delays: VecDeque::new(),
+            attempts: 0,
             supports: true,
             valid: true,
         }
+    }
+
+    /// Stall the first `delays` calls before they produce a response.
+    fn with_delays(mut self, delays: impl IntoIterator<Item = Duration>) -> Self {
+        self.delays = delays.into_iter().collect();
+        self
     }
 }
 
@@ -1597,7 +1688,14 @@ impl SummaryCaller for FakeCaller {
         &mut self,
         request: SummaryCallRequest<'_>,
     ) -> impl std::future::Future<Output = anyhow::Result<SummaryTurn>> + Send {
-        std::future::ready(self.respond(&request))
+        self.attempts += 1;
+        let delay = self.delays.pop_front();
+        async move {
+            if let Some(delay) = delay {
+                tokio::time::sleep(delay).await;
+            }
+            self.respond(&request)
+        }
     }
 }
 

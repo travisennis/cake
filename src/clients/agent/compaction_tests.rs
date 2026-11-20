@@ -68,6 +68,7 @@ fn enabled_policy() -> CompactionPolicy {
         trigger_tokens: None,
         retained_tokens: 20_000,
         summary_tokens: 4_096,
+        summary_timeout_secs: 180,
     }
 }
 
@@ -422,7 +423,7 @@ async fn disabled_policy_with_a_healthy_writer_is_a_no_op() {
 
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert!(!agent.conversation.has_checkpoint());
-    assert!(!invocation.failed);
+    assert!(!invocation.failed());
 }
 
 #[tokio::test]
@@ -469,11 +470,11 @@ async fn terminal_writer_failure_between_summary_batches_stops_spending() {
         })
         .expect("failed end record");
     assert_eq!(end.status, CompactionStatus::Failed);
-    assert!(invocation.failed);
+    assert!(invocation.failed());
 }
 
 #[tokio::test]
-async fn summary_failure_emits_failed_end_and_suppresses_later_attempts() {
+async fn summary_failure_waits_for_growth_before_retrying() {
     let mock_server = MockServer::start().await;
     mount_summary_failure(&mock_server).await;
     let sink = RecordSink::default();
@@ -491,7 +492,7 @@ async fn summary_failure_emits_failed_end_and_suppresses_later_attempts() {
         .await
         .unwrap();
 
-    assert!(invocation.failed);
+    assert!(invocation.failed());
     assert!(!agent.conversation.has_checkpoint());
     assert_eq!(sink.kinds(), vec!["compaction_start", "compaction_end"]);
     let end = sink
@@ -525,6 +526,78 @@ async fn summary_failure_emits_failed_end_and_suppresses_later_attempts() {
             .expect("received requests")
             .len(),
         requests_after_failure
+    );
+}
+
+#[tokio::test]
+async fn failed_summary_retries_once_the_projection_grows() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(400).set_body_string("summary rejected"))
+        .up_to_n_times(1)
+        .mount(&mock_server)
+        .await;
+    mount_summary(&mock_server).await;
+    let sink = RecordSink::default();
+    let mut agent = test_agent(&mock_server.uri())
+        .with_history(long_history())
+        .unwrap()
+        .with_compaction_policy(enabled_policy())
+        .unwrap()
+        .with_persist_callback(sink.callback());
+    let mut invocation = invocation_for(&agent);
+
+    agent
+        .maybe_compact_before_request(TurnMode::Normal, &mut invocation)
+        .await
+        .unwrap();
+
+    assert!(invocation.failed());
+    assert!(!agent.conversation.has_checkpoint());
+    let requests_after_failure = mock_server
+        .received_requests()
+        .await
+        .expect("received requests")
+        .len();
+
+    // A little new content stays below the growth margin and makes no attempt.
+    agent
+        .conversation
+        .push_user_message("not enough growth".to_string(), None);
+    agent
+        .maybe_compact_before_request(TurnMode::Normal, &mut invocation)
+        .await
+        .unwrap();
+    assert!(invocation.failed());
+    assert_eq!(
+        mock_server
+            .received_requests()
+            .await
+            .expect("received requests")
+            .len(),
+        requests_after_failure
+    );
+
+    // More than a tenth of the trigger lets the retry run, and the summary
+    // succeeds on the next request.
+    agent
+        .conversation
+        .push_user_message("y".repeat(40_000), None);
+    agent
+        .maybe_compact_before_request(TurnMode::Normal, &mut invocation)
+        .await
+        .unwrap();
+
+    assert!(!invocation.failed());
+    assert!(agent.conversation.has_checkpoint());
+    assert!(
+        mock_server
+            .received_requests()
+            .await
+            .expect("received requests")
+            .len()
+            > requests_after_failure
     );
 }
 
@@ -656,7 +729,7 @@ async fn no_fit_at_trigger_emits_skip_and_suppresses_later_attempts() {
         .await
         .unwrap();
 
-    assert!(invocation.failed);
+    assert!(invocation.failed());
     assert!(!agent.conversation.has_checkpoint());
     assert_eq!(sink.kinds(), vec!["compaction_end"]);
     assert!(
@@ -717,7 +790,7 @@ async fn no_fit_at_trigger_emits_skip_and_suppresses_later_attempts() {
         requests_after_skip
     );
     assert_eq!(progress.lock().unwrap().len(), 1);
-    assert!(invocation.failed);
+    assert!(invocation.failed());
     assert!(!agent.conversation.has_checkpoint());
 }
 

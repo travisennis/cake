@@ -286,6 +286,7 @@ struct CompactionSnapshot {
     trigger_tokens: Option<u64>,
     keep_recent_tokens: u64,
     summary_tokens: u64,
+    summary_timeout_secs: u64,
     summarizer_model: Option<String>,
     summarizer_profile: Option<String>,
     summarizer_reasoning_effort: Option<String>,
@@ -301,6 +302,7 @@ impl From<&LoadedSettings> for CompactionSnapshot {
             trigger_tokens: policy.trigger_tokens,
             keep_recent_tokens: policy.retained_tokens,
             summary_tokens: policy.summary_tokens,
+            summary_timeout_secs: policy.summary_timeout_secs,
             summarizer_model: summarizer.model.clone(),
             summarizer_profile: summarizer.profile.clone(),
             summarizer_reasoning_effort: summarizer
@@ -1161,12 +1163,13 @@ impl ConfigReport {
         let compaction = &self.settings.compaction;
         _ = writeln!(
             output,
-            "  compaction: enabled={}, threshold_percent={}, trigger_tokens={}, keep_recent_tokens={}, summary_tokens={}",
+            "  compaction: enabled={}, threshold_percent={}, trigger_tokens={}, keep_recent_tokens={}, summary_tokens={}, summary_timeout_secs={}",
             compaction.enabled,
             compaction.threshold_percent,
             option_label(compaction.trigger_tokens, "unset"),
             compaction.keep_recent_tokens,
             compaction.summary_tokens,
+            compaction.summary_timeout_secs,
         );
         _ = writeln!(
             output,

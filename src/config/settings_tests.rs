@@ -2530,10 +2530,12 @@ fn compaction_settings_resolve_defaults_and_values() {
     assert_eq!(DEFAULT_THRESHOLD_PERCENT, 80);
     assert_eq!(DEFAULT_RETAINED_TOKENS, 20_000);
     assert_eq!(DEFAULT_SUMMARY_TOKENS, 4_096);
+    assert_eq!(DEFAULT_SUMMARY_TIMEOUT_SECS, 180);
+    assert_eq!(overlay.resolve().summary_timeout_secs, 180);
     assert_eq!(overlay.resolve().trigger_tokens, None);
 
     let overlay: CompactionSettingsOverlay = toml::from_str(
-        "enabled = true\nthreshold_percent = 70\ntrigger_tokens = 350000\nkeep_recent_tokens = 12000\nsummary_tokens = 2048\n",
+        "enabled = true\nthreshold_percent = 70\ntrigger_tokens = 350000\nkeep_recent_tokens = 12000\nsummary_tokens = 2048\nsummary_timeout_secs = 45\n",
     )
     .unwrap();
     let policy = overlay.resolve();
@@ -2542,11 +2544,17 @@ fn compaction_settings_resolve_defaults_and_values() {
     assert_eq!(policy.trigger_tokens, Some(350_000));
     assert_eq!(policy.retained_tokens, 12_000);
     assert_eq!(policy.summary_tokens, 2_048);
+    assert_eq!(policy.summary_timeout_secs, 45);
 }
 
 #[test]
 fn compaction_settings_reject_non_positive_budgets() {
-    for key in ["trigger_tokens", "keep_recent_tokens", "summary_tokens"] {
+    for key in [
+        "trigger_tokens",
+        "keep_recent_tokens",
+        "summary_tokens",
+        "summary_timeout_secs",
+    ] {
         for invalid in ["0", "-1", "\"unlimited\""] {
             assert!(
                 toml::from_str::<CompactionSettingsOverlay>(&format!("{key} = {invalid}")).is_err(),

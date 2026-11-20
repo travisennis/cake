@@ -6,7 +6,8 @@
 //! pure: it gates on the trigger, selects whole exchanges, applies pins, and
 //! returns a typed no-op, no-fit, or prepared candidate without making a
 //! provider call. [`summarize`] drives a [`SummaryCaller`] through at most four
-//! bounded requests and validates every result before it can become a
+//! logical requests, each with at most two bounded attempts sharing one
+//! configurable deadline, and validates every result before it can become a
 //! checkpoint.
 //!
 //! Automatic pre-request compaction calls [`measure`], [`prepare`], and
@@ -54,8 +55,15 @@ pub const MAX_SUMMARY_PROMPT_BYTES: usize = 1024 * 1024;
 /// Maximum logical summary requests in one compaction operation.
 pub const MAX_SUMMARY_REQUESTS: u32 = 4;
 
-/// Maximum wall time spent in summary calls, including retries.
-pub const MAX_SUMMARY_TIME: Duration = Duration::from_secs(180);
+/// Attempts allowed per logical summary request, including the first.
+///
+/// Each attempt is bounded by its share of the operation's remaining budget so
+/// one stalled provider request cannot consume it all.
+pub const SUMMARY_ATTEMPTS_PER_BATCH: u32 = 2;
+
+/// Default wall time spent in summary calls, including retries.
+pub const DEFAULT_SUMMARY_TIMEOUT: Duration =
+    Duration::from_secs(crate::config::settings::DEFAULT_SUMMARY_TIMEOUT_SECS);
 
 /// Hard upper bound on the summary generation cap.
 pub const MAX_SUMMARY_OUTPUT_TOKENS: u32 = 16_384;
@@ -2026,11 +2034,14 @@ const fn add_summary_usage(total: &mut SummaryUsage, usage: Usage) {
 /// Returns an error when the backend does not preserve a generation cap, a
 /// summary request fails, a response is unusable, the summary exceeds its
 /// target, the batch count exceeds four, the deadline is exceeded, or the
-/// final checkpoint cannot fit its ceiling.
+/// final checkpoint cannot fit its ceiling. A timed-out request is retried once
+/// within the same total budget.
 pub async fn summarize<C: SummaryCaller>(
     prepared: PreparedCompaction,
     caller: &mut C,
+    timeout: Duration,
 ) -> anyhow::Result<CompactionData> {
+    anyhow::ensure!(!timeout.is_zero(), "the summary deadline must be positive");
     anyhow::ensure!(
         caller.supports_generation_cap(),
         "the configured backend does not support a bounded summary generation cap"
@@ -2064,26 +2075,16 @@ pub async fn summarize<C: SummaryCaller>(
             limits.allows(&prompt),
             "summary step {step} exceeds the prompt limits"
         );
-        let elapsed = started.elapsed();
-        anyhow::ensure!(
-            elapsed < MAX_SUMMARY_TIME,
-            "summary exceeded the {} second deadline before step {step}",
-            MAX_SUMMARY_TIME.as_secs()
-        );
-        let remaining = MAX_SUMMARY_TIME.saturating_sub(elapsed);
-        let turn = tokio::time::timeout(
-            remaining,
-            caller.call(SummaryCallRequest {
-                step,
-                checkpoint_id: &prepared.checkpoint_id,
-                history: &prompt,
-                max_output_tokens: generation_cap,
-            }),
+        let turn = summarize_batch(
+            caller,
+            &prepared,
+            step,
+            &prompt,
+            generation_cap,
+            started,
+            timeout,
         )
-        .await
-        .map_err(|error| {
-            anyhow::anyhow!("summary step {step} exceeded the remaining deadline: {error}")
-        })??;
+        .await?;
 
         for attempt in &turn.attempts {
             saw_usage = true;
@@ -2122,6 +2123,60 @@ pub async fn summarize<C: SummaryCaller>(
     // The serialized summary reservation was measured before generation; the
     // final record above is the authoritative post-generation check.
     Ok(checkpoint)
+}
+
+/// Call one logical summary request, retrying a timed-out attempt once.
+///
+/// The first attempt may use at most half of the operation's remaining budget,
+/// so a stalled provider request still leaves room for the retry. A provider
+/// error returned by the caller is not retried here; the transport already owns
+/// those retries.
+async fn summarize_batch<C: SummaryCaller>(
+    caller: &mut C,
+    prepared: &PreparedCompaction,
+    step: u32,
+    prompt: &[ConversationItem],
+    generation_cap: u32,
+    started: Instant,
+    timeout: Duration,
+) -> anyhow::Result<SummaryTurn> {
+    let mut attempt = 1_u32;
+    loop {
+        let elapsed = started.elapsed();
+        anyhow::ensure!(
+            elapsed < timeout,
+            "summary exceeded the {} second deadline before step {step}",
+            timeout.as_secs()
+        );
+        let budget = timeout.saturating_sub(elapsed) / (SUMMARY_ATTEMPTS_PER_BATCH + 1 - attempt);
+        match tokio::time::timeout(
+            budget,
+            caller.call(SummaryCallRequest {
+                step,
+                checkpoint_id: &prepared.checkpoint_id,
+                history: prompt,
+                max_output_tokens: generation_cap,
+            }),
+        )
+        .await
+        {
+            Ok(result) => return result,
+            Err(_) if attempt < SUMMARY_ATTEMPTS_PER_BATCH => {
+                tracing::warn!(
+                    target: "cake",
+                    step,
+                    attempt,
+                    budget_ms = u64::try_from(budget.as_millis()).unwrap_or(u64::MAX),
+                    "Summary attempt exhausted its share of the deadline; retrying"
+                );
+                attempt += 1;
+            },
+            Err(error) => anyhow::bail!(
+                "summary step {step} exceeded the remaining deadline after \
+                 {SUMMARY_ATTEMPTS_PER_BATCH} attempts: {error}"
+            ),
+        }
+    }
 }
 
 /// Validate that the resolved backend can serve a bounded summary request.

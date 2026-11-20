@@ -12,8 +12,8 @@ use uuid::Uuid;
 
 use crate::clients::agent_state::PreparationSource;
 use crate::clients::compaction::{
-    self, AgentSummaryCaller, FixedRequest, Preparation, PreparationInput, PreparationMeasure,
-    PrepareOutcome, PreparedCompaction, SUMMARY_INSTRUCTION_VERSION,
+    self, AgentSummaryCaller, DEFAULT_SUMMARY_TIMEOUT, FixedRequest, Preparation, PreparationInput,
+    PreparationMeasure, PrepareOutcome, PreparedCompaction, SUMMARY_INSTRUCTION_VERSION,
 };
 use crate::types::compaction::{
     CompactionEndData, CompactionStartData, CompactionStatus, CompactionTrigger, ModelIdentity,
@@ -29,10 +29,11 @@ use crate::clients::agent::{Agent, record_turn_usage};
 /// Reset by every [`Agent::send`]. `current_user_raw` keeps the raw index of
 /// the real user input, and `invocation_start` is the first raw record of this
 /// invocation; the preparation source converts both into explicit source-index
-/// pins on every request.
+/// pins on every request. `retry_at_tokens` records the projection size that
+/// makes another attempt eligible after a failed or skipped one.
 #[derive(Debug)]
 pub(super) struct InvocationCompactionState {
-    pub(super) failed: bool,
+    pub(super) retry_at_tokens: Option<u64>,
     pub(super) current_user_raw: usize,
     pub(super) invocation_start: usize,
     pub(super) task_id: String,
@@ -45,22 +46,33 @@ impl InvocationCompactionState {
         task_id: String,
     ) -> Self {
         Self {
-            failed: false,
+            retry_at_tokens: None,
             current_user_raw,
             invocation_start,
             task_id,
         }
     }
+
+    /// Whether an earlier attempt failed or was skipped and no retry is due yet.
+    #[cfg(test)]
+    pub(super) const fn failed(&self) -> bool {
+        self.retry_at_tokens.is_some()
+    }
 }
+
+/// Fraction of the trigger the projection must grow by after a failure before
+/// another automatic attempt may run.
+const RETRY_GROWTH_DIVISOR: u64 = 10;
 
 impl Agent {
     /// Check and, when needed, compact before the next provider request.
     ///
     /// A configured but disabled policy still checks writer health, then
     /// returns without records. No configured policy returns before any writer
-    /// query. One proactive failure for this invocation suppresses later
-    /// attempts, but every later request still measures the projection and
-    /// fails before sending an over-window request.
+    /// query. After a failed or skipped attempt, another automatic attempt runs
+    /// only once the projection has grown by at least a tenth of the trigger
+    /// and still reaches it; every request in between is measured and fails
+    /// before sending when the projection is over the window.
     ///
     /// # Errors
     ///
@@ -82,9 +94,18 @@ impl Agent {
             return Ok(());
         }
 
-        if invocation.failed {
+        if let Some(retry_at) = invocation.retry_at_tokens {
             let measure = self.measure_for_request(turn_mode, invocation)?;
-            return self.continue_after_failed_attempt(measure, invocation);
+            if !measure.trigger_reached || measure.before_tokens < retry_at {
+                return self.continue_after_failed_attempt(measure, invocation);
+            }
+            invocation.retry_at_tokens = None;
+            tracing::info!(
+                target: "cake",
+                before_tokens = measure.before_tokens,
+                retry_at,
+                "Context compaction retrying after an earlier failed or skipped attempt"
+            );
         }
 
         let checkpoint_id = Uuid::new_v4().to_string();
@@ -242,12 +263,28 @@ impl Agent {
         Ok(())
     }
 
+    /// The projection size that makes another attempt eligible after a failed
+    /// or skipped attempt at `before_tokens`.
+    ///
+    /// A retry waits until the projection grows by at least a tenth of the
+    /// trigger, so one transient failure does not repeat on every later turn.
+    /// Without a trigger the projection never reaches the trigger again, so no
+    /// retry is eligible and the fallback margin is unreachable in practice.
+    fn compaction_retry_at(&self, before_tokens: u64) -> u64 {
+        let trigger = self
+            .resolved_compaction_policy
+            .and_then(|policy| policy.trigger_tokens)
+            .unwrap_or(before_tokens);
+        before_tokens.saturating_add((trigger / RETRY_GROWTH_DIVISOR).max(1))
+    }
+
     fn over_window(&self, estimated_before_tokens: u64) -> bool {
         self.context_window()
             .is_some_and(|window| estimated_before_tokens >= u64::from(window))
     }
 
-    /// Record a no-op or no-fit lifecycle end and suppress later attempts.
+    /// Record a no-op or no-fit lifecycle end and require growth before another
+    /// attempt.
     fn record_compaction_skip(
         &mut self,
         checkpoint_id: &str,
@@ -256,7 +293,7 @@ impl Agent {
         measure: PreparationMeasure,
         reason: &str,
     ) -> anyhow::Result<()> {
-        invocation.failed = true;
+        invocation.retry_at_tokens = Some(self.compaction_retry_at(measure.before_tokens));
         let reason = bounded_compaction_reason(reason);
         self.stream_record(StreamRecord::CompactionEnd(CompactionEndData {
             session_id: self.session_id.to_string(),
@@ -408,7 +445,10 @@ impl Agent {
             &mut telemetry,
             &mut settle,
         )?;
-        compaction::summarize(prepared, &mut caller).await
+        let timeout = self
+            .resolved_compaction_policy
+            .map_or(DEFAULT_SUMMARY_TIMEOUT, |policy| policy.summary_timeout);
+        compaction::summarize(prepared, &mut caller, timeout).await
     }
 
     /// Emit a failed end record, which is best-effort only when the writer is
@@ -428,7 +468,7 @@ impl Agent {
         retired_count: usize,
         retained_count: usize,
     ) -> anyhow::Result<()> {
-        invocation.failed = true;
+        invocation.retry_at_tokens = Some(self.compaction_retry_at(before_tokens));
         let end = StreamRecord::CompactionEnd(CompactionEndData {
             session_id: self.session_id.to_string(),
             task_id: self.task_id.to_string(),

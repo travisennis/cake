@@ -308,6 +308,7 @@ const DEFAULT_SETTINGS: &str = r#"# Cake project settings, created by `cake init
 # trigger_tokens = 350000  # absolute trigger; must be below context_window
 # keep_recent_tokens = 20000 # retained-tail token target
 # summary_tokens = 4096    # generated summary token target
+# summary_timeout_secs = 180 # total summary budget; a timed-out attempt retries once
 # model = "cheap-model"    # [[models]] entry used for checkpoint summaries
 # profile = "review"       # profile whose default_model selects the summary model
 # reasoning_effort = "low" # summary-call effort override

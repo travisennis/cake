@@ -168,6 +168,7 @@ async fn absolute_trigger_targets_three_quarters_of_its_line() {
         trigger_tokens: Some(4_000),
         retained_tokens: 1_000,
         summary_tokens: 512,
+        summary_timeout_secs: 180,
     };
     let (mut agent, persisted) =
         recording_read_agent(&server, 10_000, policy, provider.checkpoint_counter());
@@ -245,6 +246,7 @@ async fn ten_percent_window_retires_past_the_retained_target() {
         trigger_tokens: None,
         retained_tokens: 20_000,
         summary_tokens: 512,
+        summary_timeout_secs: 180,
     };
     let (mut agent, persisted) =
         recording_read_agent(&server, 100_000, policy, provider.checkpoint_counter());

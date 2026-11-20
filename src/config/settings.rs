@@ -1,6 +1,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -869,6 +870,9 @@ pub struct CompactionSettingsOverlay {
     /// Token target for the generated summary text.
     #[serde(default)]
     pub summary_tokens: Option<PositiveLimit>,
+    /// Total wall-clock budget for one summary operation, including retries.
+    #[serde(default)]
+    pub summary_timeout_secs: Option<PositiveLimit>,
     /// `[[models]]` entry name used for checkpoint summaries.
     #[serde(default)]
     pub model: Option<String>,
@@ -888,8 +892,9 @@ impl CompactionSettingsOverlay {
     /// `enabled` becomes [`CompactionPolicy::enabled`], `threshold_percent`
     /// becomes the fallback trigger percentage, `trigger_tokens` becomes the
     /// absolute trigger and its post-compaction target, `keep_recent_tokens`
-    /// becomes the retained-tail target, and `summary_tokens` becomes the
-    /// summary-text target. The summarizer keys resolve separately through
+    /// becomes the retained-tail target, `summary_tokens` becomes the
+    /// summary-text target, and `summary_timeout_secs` becomes the total
+    /// summary deadline. The summarizer keys resolve separately through
     /// [`Self::resolve_summarizer`].
     #[must_use]
     pub const fn resolve(&self) -> CompactionPolicy {
@@ -905,6 +910,10 @@ impl CompactionSettingsOverlay {
             trigger_tokens: Self::optional_tokens(self.trigger_tokens),
             retained_tokens: Self::tokens_or(self.keep_recent_tokens, DEFAULT_RETAINED_TOKENS),
             summary_tokens: Self::tokens_or(self.summary_tokens, DEFAULT_SUMMARY_TOKENS),
+            summary_timeout_secs: match self.summary_timeout_secs {
+                Some(timeout) => timeout.value() as u64,
+                None => DEFAULT_SUMMARY_TIMEOUT_SECS,
+            },
         }
     }
 
@@ -959,6 +968,9 @@ pub const DEFAULT_RETAINED_TOKENS: u64 = 20_000;
 /// Default summary-text token target.
 pub const DEFAULT_SUMMARY_TOKENS: u64 = 4_096;
 
+/// Default total wall-clock budget for one summary operation.
+pub const DEFAULT_SUMMARY_TIMEOUT_SECS: u64 = 180;
+
 /// A configured compaction policy before window clamping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompactionPolicy {
@@ -972,6 +984,8 @@ pub struct CompactionPolicy {
     pub retained_tokens: u64,
     /// Token target for the generated summary text.
     pub summary_tokens: u64,
+    /// Total wall-clock budget for one summary operation, in seconds.
+    pub summary_timeout_secs: u64,
 }
 
 impl Default for CompactionPolicy {
@@ -982,6 +996,7 @@ impl Default for CompactionPolicy {
             trigger_tokens: None,
             retained_tokens: DEFAULT_RETAINED_TOKENS,
             summary_tokens: DEFAULT_SUMMARY_TOKENS,
+            summary_timeout_secs: DEFAULT_SUMMARY_TIMEOUT_SECS,
         }
     }
 }
@@ -1012,6 +1027,10 @@ impl CompactionPolicy {
         anyhow::ensure!(
             self.summary_tokens > 0,
             "compaction summary target must be positive"
+        );
+        anyhow::ensure!(
+            self.summary_timeout_secs > 0,
+            "compaction summary_timeout_secs must be positive"
         );
         anyhow::ensure!(
             self.trigger_tokens.is_none_or(|trigger| trigger > 0),
@@ -1069,6 +1088,7 @@ impl CompactionPolicy {
             threshold_percent: self.threshold_percent,
             retained_tokens,
             summary_tokens,
+            summary_timeout: Duration::from_secs(self.summary_timeout_secs),
             trigger_tokens,
             target_tokens,
         })
@@ -1086,6 +1106,8 @@ pub struct ResolvedCompactionPolicy {
     pub retained_tokens: u64,
     /// Token target for the generated summary text.
     pub summary_tokens: u64,
+    /// Total wall-clock budget for one summary operation, including retries.
+    pub summary_timeout: Duration,
     /// Effective trigger line, when the policy or window supplies one.
     pub trigger_tokens: Option<u64>,
     /// Post-compaction input target.
@@ -2204,6 +2226,9 @@ impl SettingsLoader {
         }
         if compaction.summary_tokens.is_some() {
             acc.compaction.summary_tokens = compaction.summary_tokens;
+        }
+        if compaction.summary_timeout_secs.is_some() {
+            acc.compaction.summary_timeout_secs = compaction.summary_timeout_secs;
         }
         if compaction.model.is_some() {
             acc.compaction.model = compaction.model;

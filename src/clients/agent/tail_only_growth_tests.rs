@@ -254,6 +254,7 @@ fn compaction_policy() -> crate::config::settings::CompactionPolicy {
         trigger_tokens: None,
         retained_tokens: 1_000,
         summary_tokens: 512,
+        summary_timeout_secs: 180,
     }
 }
 
@@ -266,6 +267,7 @@ fn image_compaction_policy() -> crate::config::settings::CompactionPolicy {
         trigger_tokens: None,
         retained_tokens: 20_000,
         summary_tokens: 512,
+        summary_timeout_secs: 180,
     }
 }
 
@@ -1566,15 +1568,15 @@ async fn failed_summary_sends_the_same_image_blocks_once() {
 }
 
 /// A failed summary does not abort while the raw projection still fits, so the
-/// next turn adds more content. When that growth crosses the context window,
-/// the suppressed invocation must stop before another provider request instead
-/// of retrying compaction or spending on another summary.
+/// next turn adds more content. Once that growth passes the retry margin, the
+/// invocation retries compaction once; when the retry fails with the
+/// projection over the window, it must stop before another provider request.
 #[expect(
     clippy::too_many_lines,
-    reason = "the end-to-end stop covers the failed lifecycle, both growth turns, refusal of a second summary, and the over-window error together"
+    reason = "the end-to-end stop covers both failed lifecycles, the growth-gated retry, both growth turns, and the over-window error together"
 )]
 #[tokio::test]
-async fn summary_failure_then_growth_stops_before_an_over_window_request() {
+async fn summary_failure_then_growth_retries_once_and_stops_before_an_over_window_request() {
     let server = MockServer::start().await;
     let fixture_dir = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
     let line = "alpha ".repeat(40);
@@ -1609,7 +1611,10 @@ async fn summary_failure_then_growth_stops_before_an_over_window_request() {
                     &second_path,
                 )),
             ],
-            vec![ResponseTemplate::new(400).set_body_string("summary rejected")],
+            vec![
+                ResponseTemplate::new(400).set_body_string("summary rejected"),
+                ResponseTemplate::new(400).set_body_string("summary rejected"),
+            ],
         )
         .await;
 
@@ -1654,11 +1659,19 @@ async fn summary_failure_then_growth_stops_before_an_over_window_request() {
     assert_eq!(checkpoints.load(Ordering::SeqCst), 0);
 
     let recorded = provider.recorded();
-    assert_eq!(recorded.len(), 3, "main, failed summary, main");
+    assert_eq!(
+        recorded.len(),
+        4,
+        "main, failed summary, main, failed retry summary"
+    );
     let main: Vec<_> = recorded.iter().filter(|request| !request.summary).collect();
     let summaries: Vec<_> = recorded.iter().filter(|request| request.summary).collect();
     assert_eq!(main.len(), 2, "the loop continued below the window");
-    assert_eq!(summaries.len(), 1, "a failed summary is never retried");
+    assert_eq!(
+        summaries.len(),
+        2,
+        "growth past the retry margin permits one retry"
+    );
     assert_tail_only_growth(&recorded, "input");
 
     let first_main = main[0].body.to_string();
@@ -1675,6 +1688,11 @@ async fn summary_failure_then_growth_stops_before_an_over_window_request() {
             .to_string()
             .contains("FIRST_GROWTH_SENTINEL"),
         "the failed summary receives the retired growth"
+    );
+    let retry_summary = summaries[1].body.to_string();
+    assert!(
+        retry_summary.contains("FIRST_GROWTH_SENTINEL"),
+        "the retry summarizes the same retired growth"
     );
 
     let records = persisted.lock().unwrap().clone();
@@ -1695,13 +1713,16 @@ async fn summary_failure_then_growth_stops_before_an_over_window_request() {
         .iter()
         .filter(|record| matches!(record, SessionRecord::CompactionStart(_)))
         .count();
-    assert_eq!(starts, 1, "one attempt starts, and none is retried");
-    assert_eq!(ends.len(), 1, "one failed attempt, no repeated lifecycle");
-    assert_eq!(
-        ends[0].status,
-        crate::types::compaction::CompactionStatus::Failed
-    );
-    assert_eq!(ends[0].reason.as_deref(), Some("summary generation failed"));
+    assert_eq!(starts, 2, "the growth-gated retry starts one more attempt");
+    assert_eq!(ends.len(), 2, "each attempt reports one failed lifecycle");
+    for end in &ends {
+        assert_eq!(
+            end.status,
+            crate::types::compaction::CompactionStatus::Failed
+        );
+        assert_eq!(end.reason.as_deref(), Some("summary generation failed"));
+        assert!(end.estimated_after_tokens.is_some());
+    }
     let failed_before = ends[0]
         .estimated_before_tokens
         .expect("a failed end carries the before estimate");
@@ -1709,7 +1730,17 @@ async fn summary_failure_then_growth_stops_before_an_over_window_request() {
         failed_before < 10_000,
         "the first attempt failed below the window, so the loop could continue: {failed_before}"
     );
-    assert!(ends[0].estimated_after_tokens.is_some());
+    let retry_before = ends[1]
+        .estimated_before_tokens
+        .expect("a failed end carries the before estimate");
+    assert!(
+        retry_before >= 10_000,
+        "the retry reached the window, so the loop stopped: {retry_before}"
+    );
+    assert!(
+        retry_before > failed_before,
+        "the retry ran only after the projection grew: {failed_before} -> {retry_before}"
+    );
 
     let outputs: Vec<_> = records
         .iter()
@@ -1730,8 +1761,8 @@ async fn summary_failure_then_growth_stops_before_an_over_window_request() {
     let messages = progress.lock().unwrap().clone();
     assert_eq!(
         messages.len(),
-        2,
-        "no later compaction attempt reports progress"
+        4,
+        "both compaction attempts report start and failure"
     );
     assert!(
         messages[0].starts_with("Compacting context:"),
@@ -1739,6 +1770,14 @@ async fn summary_failure_then_growth_stops_before_an_over_window_request() {
     );
     assert_eq!(
         messages[1],
+        "Context compaction failed: summary generation failed"
+    );
+    assert!(
+        messages[2].starts_with("Compacting context:"),
+        "{messages:?}"
+    );
+    assert_eq!(
+        messages[3],
         "Context compaction failed: summary generation failed"
     );
 }

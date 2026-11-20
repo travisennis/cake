@@ -285,6 +285,7 @@ threshold_percent = 80   # fallback trigger as a percent of context_window
 trigger_tokens = 350000  # optional absolute trigger; must be below context_window
 keep_recent_tokens = 20000  # retained-tail token target
 summary_tokens = 4096    # generated summary token target
+summary_timeout_secs = 180  # total summary budget; one timed-out attempt retries
 model = "cheap-model"    # optional [[models]] entry for checkpoint summaries
 profile = "review"       # optional profile whose default_model selects the summary model
 reasoning_effort = "low" # optional summary-call effort override
@@ -301,11 +302,13 @@ The conversation model's `context_window` keeps its input-token meaning here: it
 
 `keep_recent_tokens` is the target for the retained tail and is clamped to `floor(context_window / 4)`. `summary_tokens` is the target for the generated summary text and is clamped to `floor(context_window / 16)`. Both configured values must be positive, and a window that clamps an effective target to zero is rejected. Estimates are heuristics, not provider measurements; the session records whether they came from measured usage or content classes.
 
+`summary_timeout_secs` is the total wall-clock budget for one summary operation and defaults to 180 seconds; it must be positive. Each logical summary request may use at most half of the budget still remaining, so a request that stalls leaves room for one retry. A second timeout fails the operation with the deadline error. Provider errors returned by the transport are not retried here.
+
 By default the summary call reuses the conversation's resolved model, provider, credentials, and reasoning effort. `model` names a `[[models]]` entry for summaries instead. `profile` names a profile, and only that profile's effective `default_model` participates: its skills, tools, sandbox, directories, and compaction budgets do not apply to summary calls. An explicit `model` wins over the profile's `default_model`, and either falls back to the conversation model when absent. `reasoning_effort` overrides the selected model's declared effort; with no model or profile it overrides the conversation effort instead. With none of the three keys, behavior is unchanged. Unknown `model` or `profile` names fail at settings load. The summary call still sends no tools, task hooks, or output schema, and only `max_output_tokens` changes from the selected configuration.
 
 Project `[compaction]` values override global values per key, and a selected profile may define `[profiles.NAME.compaction]`; profile values override the merged top-level values per key, with project profile values taking precedence over global profile values. All keys are optional, so a section overrides only what it sets. The summarizer keys follow the same per-key precedence.
 
-Automatic checks run immediately before each logical provider request, after tool results and context-affecting hook additions have settled. After a failed summary or a no-fit result, Cake makes no further automatic attempt in that invocation, including after new content arrives; every later request is still measured, and an over-window request fails before it is sent. A new invocation starts with a fresh attempt budget.
+Automatic checks run immediately before each logical provider request, after tool results and context-affecting hook additions have settled. After a failed summary, a no-fit result, or another skipped attempt, Cake makes another automatic attempt only once the projected request has grown by at least a tenth of the trigger and still reaches the trigger. Every request in between is still measured, and an over-window request fails before it is sent. This keeps one transient failure from permanently disabling compaction in a long invocation without repeating a doomed attempt on every turn. A new invocation starts with a fresh attempt budget.
 
 Creating a checkpoint requires the selected summarizer backend to preserve a bounded summary generation cap. Chat Completions and ordinary Responses satisfy this; the Codex Responses backend strips `max_output_tokens`, so enabling automatic compaction with a Codex summarizer fails before the run. Restoring an existing checkpoint remains supported there.
 
