@@ -9,7 +9,7 @@ use crate::clients::agent_state::RecordProvenance;
 use crate::clients::backend::FinalOutputConstraint;
 use crate::clients::compaction::{FixedRequest, MeasuredInput, fixed_request_tokens};
 use crate::clients::image_budget::prune_request_with_plan;
-use crate::clients::retry::{RequestOverrides, RetryReason, RetryStatus};
+use crate::clients::retry::{RequestOverrides, RetryReason, RetryStatus, context_failure_code};
 use crate::clients::termination::{
     self, ContextPressure, IntendedLimits, TerminationVerdict, TurnEvidence,
 };
@@ -56,9 +56,10 @@ struct TurnContext<'a> {
 
 /// The invocation's single context-pressure recovery allowance.
 ///
-/// Shared by every pressure verdict in one `Agent::send` invocation, and later
-/// by an HTTP input overflow (034h). Compaction is not wired yet, so consuming
-/// the guard ends the invocation instead of retrying the identical request.
+/// Shared by every pressure verdict in one `Agent::send` invocation, including
+/// an HTTP input overflow and an in-band Responses context failure. The guard
+/// is consumed before recovery preparation, so a second pressure verdict ends
+/// the invocation instead of compacting again.
 #[derive(Debug, Default)]
 struct PressureRecoveryGuard {
     spent: bool,
@@ -233,45 +234,23 @@ impl Agent {
                 .await?;
 
             let provider_turn_start = self.conversation.history().len();
+            let (turn, verdict) = self
+                .complete_turn_with_pressure_recovery(
+                    turn_mode,
+                    &mut pressure_guard,
+                    &mut compaction,
+                )
+                .await?;
             let TurnResult {
                 items,
-                usage,
-                termination,
                 consumed_sources,
                 ..
-            } = self.complete_turn_with_image_recovery(turn_mode).await?;
-
-            // Classify before persisting or streaming the turn's items and
-            // before dispatching any returned tools, so a discarded response
-            // leaves no trace beyond the usage its attempt already settled.
-            let verdict = termination::classify(
-                self.intended_limits(),
-                TurnEvidence::Response {
-                    termination: termination.as_ref(),
-                    usage,
-                },
-            );
-            if let Some(pressure) = verdict.pressure {
-                // One pressure recovery per invocation, shared with the HTTP
-                // input-overflow path (034h). Nothing can spend it yet, so the
-                // guard ends the invocation rather than retrying the identical
-                // request; it never also gets a semantic continuation.
-                let recovery_available = pressure_guard.consume();
-                tracing::info!(
-                    target: "cake",
-                    recovery_available,
-                    pressure = ?pressure,
-                    measured_input = verdict.measured_input,
-                    context_window = verdict.context_window,
-                    "Discarding a response classified as context pressure"
-                );
-                return Err(context_pressure_error(self.session_id, pressure).into());
-            }
+            } = turn;
 
             // The provider accepted this response, so every image the request
-            // emitted reached it. A discarded response returned above and
-            // marks nothing; an image-recovery retry replaces the plan, so a
-            // rejected attempt cannot consume pixels.
+            // emitted reached it. A discarded response never reaches this
+            // point; an image-recovery retry replaces the plan, so a rejected
+            // attempt cannot consume pixels.
             self.conversation.mark_images_consumed(&consumed_sources);
 
             let function_calls = self.process_completed_turn(items, turn_mode)?;
@@ -287,6 +266,97 @@ impl Agent {
                 return Ok(document);
             }
         }
+    }
+
+    /// Complete one provider turn, recovering once from classified pressure.
+    ///
+    /// Returns the first response that is not context pressure together with
+    /// its classifier verdict. A discarded response is never persisted,
+    /// streamed, or dispatched. When pressure cannot be recovered, the error is
+    /// the neutral [`CutOffError`] naming the session.
+    async fn complete_turn_with_pressure_recovery(
+        &mut self,
+        turn_mode: TurnMode,
+        guard: &mut PressureRecoveryGuard,
+        compaction: &mut super::compaction::InvocationCompactionState,
+    ) -> anyhow::Result<(TurnResult, TerminationVerdict)> {
+        loop {
+            let turn = match self.complete_turn_with_image_recovery(turn_mode).await {
+                Ok(turn) => turn,
+                Err(error) => {
+                    let Some(pressure) = pressure_from_error(&error) else {
+                        return Err(error);
+                    };
+                    self.recover_from_context_pressure(pressure, guard, turn_mode, compaction)
+                        .await?;
+                    continue;
+                },
+            };
+
+            // Classify before persisting or streaming the turn's items and
+            // before dispatching any returned tools, so a discarded response
+            // leaves no trace beyond the usage its attempt already settled.
+            let verdict = termination::classify(
+                self.intended_limits(),
+                TurnEvidence::Response {
+                    termination: turn.termination.as_ref(),
+                    usage: turn.usage,
+                },
+            );
+            if let Some(pressure) = verdict.pressure {
+                // The discarded response never also receives a semantic
+                // continuation. One recovery per invocation is shared by the
+                // HTTP overflow and in-band Responses failure paths.
+                tracing::info!(
+                    target: "cake",
+                    pressure = ?pressure,
+                    measured_input = verdict.measured_input,
+                    context_window = verdict.context_window,
+                    "Discarding a response classified as context pressure"
+                );
+                self.recover_from_context_pressure(pressure, guard, turn_mode, compaction)
+                    .await?;
+                continue;
+            }
+            return Ok((turn, verdict));
+        }
+    }
+
+    /// Consume the invocation's recovery allowance and compact before retrying.
+    ///
+    /// A spent guard or a recovery that commits no checkpoint returns the
+    /// neutral context-pressure error. On success the caller retries the
+    /// intended turn with the same mode, output constraint, correction
+    /// counters, and tool policy.
+    async fn recover_from_context_pressure(
+        &mut self,
+        pressure: ContextPressure,
+        guard: &mut PressureRecoveryGuard,
+        turn_mode: TurnMode,
+        compaction: &mut super::compaction::InvocationCompactionState,
+    ) -> anyhow::Result<()> {
+        if !guard.consume() {
+            tracing::info!(
+                target: "cake",
+                pressure = ?pressure,
+                "Context-pressure recovery was already used in this invocation"
+            );
+            return Err(context_pressure_error(self.session_id, pressure).into());
+        }
+        tracing::info!(
+            target: "cake",
+            pressure = ?pressure,
+            "Attempting one context-pressure recovery"
+        );
+        if !self.compact_after_pressure(turn_mode, compaction).await? {
+            return Err(context_pressure_error(self.session_id, pressure).into());
+        }
+        tracing::info!(
+            target: "cake",
+            pressure = ?pressure,
+            "Context checkpoint committed; retrying the intended turn once"
+        );
+        Ok(())
     }
 
     /// The limits the current request was intended to honor.
@@ -1498,7 +1568,7 @@ fn cut_off_error(
 /// It states the evidence the classifier established and the remedy, never a
 /// truncation cause. Resuming is not the remedy: the resumed request re-sends
 /// the same over-window input, so it would be discarded again. The session ID
-/// stays for inspection and for the recovery owner (034h).
+/// stays for inspection.
 fn context_pressure_error(session_id: uuid::Uuid, pressure: ContextPressure) -> CutOffError {
     let detail = match pressure {
         ContextPressure::MeasuredInput {
@@ -1519,8 +1589,37 @@ fn context_pressure_error(session_id: uuid::Uuid, pressure: ContextPressure) -> 
              ({context_limit} tokens). Start a new session; resuming this session \
              re-sends the same input."
         ),
+        ContextPressure::ProviderContextFailure { code } => format!(
+            "The model's response was discarded because the provider reported a \
+             context-length failure ({code}). Start a new session; resuming this \
+             session re-sends the same input."
+        ),
     };
     CutOffError::new(format!("{detail} Session: {session_id}."))
+}
+
+/// Extract a typed context-pressure verdict from a terminal provider error.
+///
+/// HTTP failures carry the shared parser's verdict in `ApiError`; in-band
+/// Responses failures carry a bounded code that must be recognized before the
+/// error is treated as recoverable pressure.
+fn pressure_from_error(error: &anyhow::Error) -> Option<ContextPressure> {
+    if let Some(api_error) = error.downcast_ref::<crate::exit_code::ApiError>()
+        && let Some(overflow) = api_error.input_overflow
+    {
+        return Some(ContextPressure::ProviderInputOverflow {
+            input_tokens: overflow.input_tokens,
+            context_limit: overflow.context_limit,
+        });
+    }
+
+    let failed = error.downcast_ref::<crate::clients::responses::ResponsesStreamFailed>()?;
+    let metadata = failed.metadata();
+    let code = context_failure_code(
+        metadata.error_code.as_deref(),
+        metadata.error_type.as_deref(),
+    )?;
+    Some(ContextPressure::ProviderContextFailure { code })
 }
 
 /// The sentence offering an explicit continuation of the session.
@@ -2167,5 +2266,89 @@ mod helper_tests {
                 .detail
                 .ends_with(&format!("Session: {session_id}."))
         );
+
+        let in_band = context_pressure_error(
+            session_id,
+            ContextPressure::ProviderContextFailure {
+                code: "input_too_long",
+            },
+        );
+        assert!(
+            in_band
+                .detail
+                .contains("context-length failure (input_too_long)"),
+            "{}",
+            in_band.detail
+        );
+        assert!(in_band.detail.ends_with(&format!("Session: {session_id}.")));
+    }
+
+    #[test]
+    fn pressure_from_error_reads_http_and_in_band_failures() {
+        let overflow = crate::exit_code::ApiError {
+            status: 400,
+            body: "request too large".to_string(),
+            input_overflow: Some(crate::clients::retry::InputOverflow {
+                input_tokens: 16_380,
+                requested_tokens: 4_096,
+                context_limit: 16_384,
+            }),
+            body_read_failure: None,
+        };
+        let pressure = pressure_from_error(&anyhow::Error::new(overflow))
+            .expect("an HTTP overflow is context pressure");
+        assert!(matches!(
+            pressure,
+            ContextPressure::ProviderInputOverflow {
+                input_tokens: 16_380,
+                context_limit: 16_384
+            }
+        ));
+
+        let in_band = crate::clients::responses::ResponsesStreamFailed {
+            metadata: crate::session_telemetry::ResponsesFailedMetadata {
+                error_code: Some("context_length_exceeded".to_string()),
+                error_type: Some("invalid_request_error".to_string()),
+                ..Default::default()
+            },
+            reported_usage: None,
+        };
+        let pressure = pressure_from_error(&anyhow::Error::new(in_band))
+            .expect("a recognized in-band code is context pressure");
+        assert!(matches!(
+            pressure,
+            ContextPressure::ProviderContextFailure {
+                code: "context_length_exceeded"
+            }
+        ));
+
+        let unrecognized_code = crate::clients::responses::ResponsesStreamFailed {
+            metadata: crate::session_telemetry::ResponsesFailedMetadata {
+                error_code: Some("rate_limit_exceeded".to_string()),
+                error_type: Some("context_length_exceeded".to_string()),
+                ..Default::default()
+            },
+            reported_usage: None,
+        };
+        assert!(
+            pressure_from_error(&anyhow::Error::new(unrecognized_code)).is_none(),
+            "a present but unrecognized code overrides the legacy error_type"
+        );
+
+        let unrecognized_type = crate::clients::responses::ResponsesStreamFailed {
+            metadata: crate::session_telemetry::ResponsesFailedMetadata {
+                error_type: Some("context_length_exceeded".to_string()),
+                ..Default::default()
+            },
+            reported_usage: None,
+        };
+        let pressure = pressure_from_error(&anyhow::Error::new(unrecognized_type))
+            .expect("error_type remains a compatibility fallback");
+        assert!(matches!(
+            pressure,
+            ContextPressure::ProviderContextFailure {
+                code: "context_length_exceeded"
+            }
+        ));
     }
 }

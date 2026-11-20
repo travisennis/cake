@@ -304,6 +304,20 @@ pub fn should_disable_connection_reuse(error: &Error) -> bool {
     transport_retry_detail(error).is_some()
 }
 
+/// Recognize a Responses failure code that proves the provider rejected the
+/// request's context length.
+///
+/// `code` is authoritative when present; `error_type` is a compatibility
+/// fallback only when `code` is absent. A present but unrecognized code never
+/// falls through to `error_type`, matching [`classify_response_failed`].
+pub fn context_failure_code(code: Option<&str>, error_type: Option<&str>) -> Option<&'static str> {
+    match code.or(error_type)? {
+        "context_length_exceeded" => Some("context_length_exceeded"),
+        "input_too_long" => Some("input_too_long"),
+        _ => None,
+    }
+}
+
 /// Whether a provider failure status can carry the typed input-overflow form.
 ///
 /// Providers return the form on `400` only. Sharing the gate keeps a quota,
@@ -1301,6 +1315,28 @@ mod tests {
             ),
             RetryDecision::Retry { .. }
         ));
+    }
+
+    #[test]
+    fn context_failure_code_uses_code_before_type() {
+        assert_eq!(
+            context_failure_code(Some("context_length_exceeded"), None),
+            Some("context_length_exceeded")
+        );
+        assert_eq!(
+            context_failure_code(Some("input_too_long"), Some("server_error")),
+            Some("input_too_long")
+        );
+        assert_eq!(
+            context_failure_code(Some("rate_limit_exceeded"), Some("input_too_long")),
+            None,
+            "a present but unrecognized code overrides the legacy type"
+        );
+        assert_eq!(
+            context_failure_code(None, Some("context_length_exceeded")),
+            Some("context_length_exceeded")
+        );
+        assert_eq!(context_failure_code(None, None), None);
     }
 
     #[test]

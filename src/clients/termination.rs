@@ -102,6 +102,9 @@ pub enum ContextPressure {
         input_tokens: u32,
         context_limit: u32,
     },
+    /// A Responses `response.failed` event carried a provider code that proves
+    /// the request did not fit the model's context length.
+    ProviderContextFailure { code: &'static str },
     /// A successful response reported complete main-request input usage above
     /// the configured window.
     MeasuredInput {

@@ -8,6 +8,7 @@ use super::*;
 use crate::clients::agent_runner::AgentRunner;
 use crate::clients::backend::Backend;
 use crate::clients::compaction::MeasuredInput;
+use crate::config::OutputSchema;
 use crate::config::model::{ApiType, ModelConfig, ReasoningEffort, ResolvedModelConfig};
 use crate::config::settings::CompactionPolicy;
 use crate::types::compaction::HISTORICAL_SUMMARY_MARKER;
@@ -61,6 +62,31 @@ fn test_agent_with_window(base_url: &str, context_window: u32) -> Agent {
         .with_tools(crate::clients::tools::ToolRegistry::empty())
 }
 
+fn responses_agent_with_window(base_url: &str, context_window: u32) -> Agent {
+    let mut config = test_config(base_url);
+    config.model_config.api_type = ApiType::Responses;
+    config.model_config.context_window = Some(context_window);
+    Agent::new(config, &[(Role::System, "test system prompt".to_string())])
+        .with_session_id(uuid::uuid!(SESSION_ID))
+        .with_task_id(uuid::uuid!(TASK_ID))
+        .with_tools(crate::clients::tools::ToolRegistry::empty())
+}
+
+fn test_schema() -> Arc<OutputSchema> {
+    let raw = serde_json::json!({
+        "type": "object",
+        "properties": {"summary": {"type": "string"}},
+        "required": ["summary"],
+        "additionalProperties": false
+    });
+    let validator = jsonschema::draft202012::new(&raw).unwrap();
+    Arc::new(OutputSchema {
+        name: "final_output".to_string(),
+        raw,
+        validator,
+    })
+}
+
 fn enabled_policy() -> CompactionPolicy {
     CompactionPolicy {
         enabled: true,
@@ -69,6 +95,15 @@ fn enabled_policy() -> CompactionPolicy {
         retained_tokens: 20_000,
         summary_tokens: 4_096,
         summary_timeout_secs: 180,
+    }
+}
+
+/// Keep the proactive trigger out of the way so a test exercises only the
+/// reactive overflow path.
+fn reactive_only_policy() -> CompactionPolicy {
+    CompactionPolicy {
+        threshold_percent: 80,
+        ..enabled_policy()
     }
 }
 
@@ -183,6 +218,146 @@ async fn mount_summary_failure(mock_server: &MockServer) {
         .mount(mock_server)
         .await;
 }
+
+/// Mount a main-agent response queue on the Chat Completions endpoint.
+///
+/// The summary server is separate in these tests, so every request here is a
+/// logical main-agent attempt, including the one retry after pressure recovery.
+async fn mount_chat_sequence(mock_server: &MockServer, responses: Vec<serde_json::Value>) {
+    let responses = Arc::new(responses);
+    let next = Arc::new(AtomicUsize::new(0));
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(move |_request: &wiremock::Request| {
+            let index = next.fetch_add(1, Ordering::SeqCst);
+            let body = responses
+                .get(index)
+                .unwrap_or_else(|| panic!("main provider received unexpected request {index}"));
+            ResponseTemplate::new(200).set_body_json(body.clone())
+        })
+        .mount(mock_server)
+        .await;
+}
+
+fn over_window_chat_response(input_tokens: u64) -> serde_json::Value {
+    serde_json::json!({
+        "id": "chatcmpl-over-window",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": "partial answer",
+                "tool_calls": [{
+                    "id": "call-over-window",
+                    "type": "function",
+                    "function": {"name": "Read", "arguments": "{\"path\":\"/tmp/x\"}"}
+                }]
+            },
+            "finish_reason": "length"
+        }],
+        "usage": {
+            "prompt_tokens": input_tokens,
+            "completion_tokens": 5,
+            "total_tokens": input_tokens + 5
+        }
+    })
+}
+
+fn chat_message_response(text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": "chatcmpl-final",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": text},
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15
+        }
+    })
+}
+
+/// Mount a main-agent response queue on the Responses endpoint.
+async fn mount_responses_sequence(mock_server: &MockServer, responses: Vec<serde_json::Value>) {
+    let responses = Arc::new(responses);
+    let next = Arc::new(AtomicUsize::new(0));
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(move |_request: &wiremock::Request| {
+            let index = next.fetch_add(1, Ordering::SeqCst);
+            let body = responses
+                .get(index)
+                .unwrap_or_else(|| panic!("main provider received unexpected request {index}"));
+            ResponseTemplate::new(200).set_body_json(body.clone())
+        })
+        .mount(mock_server)
+        .await;
+}
+
+/// Mount prepared Responses replies so one script can mix JSON envelopes with
+/// SSE streams, as the in-band `response.failed` path requires.
+async fn mount_responses_template_sequence(
+    mock_server: &MockServer,
+    responses: Vec<ResponseTemplate>,
+) {
+    let responses = Arc::new(responses);
+    let next = Arc::new(AtomicUsize::new(0));
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(move |_request: &wiremock::Request| {
+            let index = next.fetch_add(1, Ordering::SeqCst);
+            responses
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| panic!("main provider received unexpected request {index}"))
+        })
+        .mount(mock_server)
+        .await;
+}
+
+fn responses_message_response(text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": "resp-final",
+        "status": "completed",
+        "output": [{
+            "type": "message",
+            "id": "msg-final",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": text}]
+        }],
+        "usage": {
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "total_tokens": 15
+        }
+    })
+}
+
+fn over_window_responses_response(input_tokens: u64) -> serde_json::Value {
+    serde_json::json!({
+        "id": "resp-over-window",
+        "status": "incomplete",
+        "incomplete_details": {"reason": "max_output_tokens"},
+        "output": [{
+            "type": "message",
+            "id": "msg-partial",
+            "status": "incomplete",
+            "content": [{"type": "output_text", "text": "partial answer"}]
+        }],
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": 5,
+            "total_tokens": input_tokens + 5
+        }
+    })
+}
+
+/// A context window large enough that the long fixture history stays below the
+/// proactive trigger, while the provider fixture reports a genuine overflow.
+const RECOVERY_WINDOW: u32 = 1_000_000;
+const OVER_WINDOW_INPUT: u64 = 1_500_000;
 
 fn invocation_for(agent: &Agent) -> InvocationCompactionState {
     let current = agent.conversation.history().len().saturating_sub(1);
@@ -792,6 +967,371 @@ async fn no_fit_at_trigger_emits_skip_and_suppresses_later_attempts() {
     assert_eq!(progress.lock().unwrap().len(), 1);
     assert!(invocation.failed());
     assert!(!agent.conversation.has_checkpoint());
+}
+
+#[tokio::test]
+async fn pressure_recovery_commits_one_overflow_checkpoint_and_retries_once() {
+    let main_server = MockServer::start().await;
+    let summary_server = MockServer::start().await;
+    mount_summary(&summary_server).await;
+    mount_chat_sequence(
+        &main_server,
+        vec![
+            over_window_chat_response(OVER_WINDOW_INPUT),
+            chat_message_response("finished"),
+        ],
+    )
+    .await;
+    let sink = RecordSink::default();
+    let summary_config = test_config(&summary_server.uri());
+    let mut agent = test_agent_with_window(&main_server.uri(), RECOVERY_WINDOW)
+        .with_history(long_history_with(20))
+        .unwrap()
+        .with_compaction(reactive_only_policy(), Some(summary_config))
+        .unwrap()
+        .with_persist_callback(sink.callback());
+
+    let result = agent.send("finish now".to_string()).await.unwrap();
+
+    assert_eq!(result, "finished");
+    assert_eq!(
+        main_server
+            .received_requests()
+            .await
+            .expect("main requests")
+            .len(),
+        2,
+        "the discarded request gets exactly one logical retry"
+    );
+    assert_eq!(
+        summary_server
+            .received_requests()
+            .await
+            .expect("summary requests")
+            .len(),
+        1,
+        "one reactive checkpoint means one summary call"
+    );
+    assert_eq!(
+        sink.kinds(),
+        vec!["compaction_start", "compaction", "compaction_end"]
+    );
+    let checkpoint = sink.checkpoint().expect("reactive checkpoint");
+    assert_eq!(checkpoint.trigger, CompactionTrigger::Overflow);
+    assert!(agent.conversation.has_checkpoint());
+    assert_eq!(
+        agent.tool_call_count, 0,
+        "the discarded tool call must not run"
+    );
+    assert!(
+        !agent.history().iter().any(|item| matches!(
+            item,
+            ConversationItem::FunctionCall { call_id, .. } if call_id == "call-over-window"
+        )),
+        "the discarded response must not persist its function call"
+    );
+    assert!(
+        agent.total_usage().input_tokens >= OVER_WINDOW_INPUT,
+        "the discarded attempt's reported usage is retained"
+    );
+}
+
+#[tokio::test]
+async fn in_band_responses_context_failure_recovers_once() {
+    let main_server = MockServer::start().await;
+    let summary_server = MockServer::start().await;
+    mount_summary(&summary_server).await;
+    let failed = ResponseTemplate::new(200)
+        .insert_header("Content-Type", "text/event-stream")
+        .set_body_string(
+            "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp-overflow\",\"status\":\"failed\",\"error\":{\"message\":\"input too long\",\"type\":\"invalid_request_error\",\"code\":\"context_length_exceeded\"},\"usage\":{\"input_tokens\":1500000,\"output_tokens\":0,\"total_tokens\":1500000}}}\n\n",
+        );
+    mount_responses_template_sequence(
+        &main_server,
+        vec![
+            failed,
+            ResponseTemplate::new(200).set_body_json(responses_message_response("recovered")),
+        ],
+    )
+    .await;
+    let sink = RecordSink::default();
+    let summary_config = test_config(&summary_server.uri());
+    let mut agent = responses_agent_with_window(&main_server.uri(), RECOVERY_WINDOW)
+        .with_history(long_history_with(20))
+        .unwrap()
+        .with_compaction(reactive_only_policy(), Some(summary_config))
+        .unwrap()
+        .with_persist_callback(sink.callback());
+
+    let result = agent.send("finish now".to_string()).await.unwrap();
+
+    assert_eq!(result, "recovered");
+    assert_eq!(
+        main_server
+            .received_requests()
+            .await
+            .expect("main requests")
+            .len(),
+        2,
+        "the in-band failure is retried once after recovery"
+    );
+    assert_eq!(
+        summary_server
+            .received_requests()
+            .await
+            .expect("summary requests")
+            .len(),
+        1,
+        "one in-band pressure verdict means one summary call"
+    );
+    assert_eq!(
+        sink.checkpoint().expect("reactive checkpoint").trigger,
+        CompactionTrigger::Overflow
+    );
+    assert!(
+        agent.total_usage().input_tokens >= OVER_WINDOW_INPUT,
+        "the failed stream's reported usage is retained"
+    );
+}
+
+#[tokio::test]
+async fn pressure_recovery_when_nothing_can_fit_ends_neutrally() {
+    let main_server = MockServer::start().await;
+    let summary_server = MockServer::start().await;
+    mount_summary(&summary_server).await;
+    mount_chat_sequence(
+        &main_server,
+        vec![over_window_chat_response(OVER_WINDOW_INPUT)],
+    )
+    .await;
+    let sink = RecordSink::default();
+    let summary_config = test_config(&summary_server.uri());
+    let system = "large pinned context ".repeat(20_000);
+    let mut agent = test_agent_with_system(&main_server.uri(), &system)
+        .with_compaction(reactive_only_policy(), Some(summary_config))
+        .unwrap()
+        .with_persist_callback(sink.callback());
+
+    let error = agent.send("go".to_string()).await.unwrap_err();
+
+    assert!(
+        error.downcast_ref::<crate::types::CutOffError>().is_some(),
+        "no-fit recovery ends with the neutral pressure error: {error:#}"
+    );
+    assert_eq!(
+        main_server
+            .received_requests()
+            .await
+            .expect("main requests")
+            .len(),
+        1,
+        "a no-fit must not retry the same request"
+    );
+    assert!(
+        summary_server
+            .received_requests()
+            .await
+            .expect("summary requests")
+            .is_empty(),
+        "a no-fit must not spend on a summary"
+    );
+    assert_eq!(sink.kinds(), vec!["compaction_end"]);
+    let end = sink
+        .records()
+        .into_iter()
+        .find_map(|record| match record {
+            SessionRecord::CompactionEnd(data) => Some(data),
+            _ => None,
+        })
+        .expect("skip record");
+    assert_eq!(end.trigger, CompactionTrigger::Overflow);
+    assert_eq!(end.status, CompactionStatus::NoFit);
+    assert!(!agent.conversation.has_checkpoint());
+}
+
+#[tokio::test]
+async fn a_second_pressure_failure_does_not_compact_again() {
+    let main_server = MockServer::start().await;
+    let summary_server = MockServer::start().await;
+    mount_summary(&summary_server).await;
+    mount_chat_sequence(
+        &main_server,
+        vec![
+            over_window_chat_response(OVER_WINDOW_INPUT),
+            over_window_chat_response(OVER_WINDOW_INPUT),
+        ],
+    )
+    .await;
+    let sink = RecordSink::default();
+    let summary_config = test_config(&summary_server.uri());
+    let mut agent = test_agent_with_window(&main_server.uri(), RECOVERY_WINDOW)
+        .with_history(long_history_with(20))
+        .unwrap()
+        .with_compaction(reactive_only_policy(), Some(summary_config))
+        .unwrap()
+        .with_persist_callback(sink.callback());
+
+    let error = agent.send("finish now".to_string()).await.unwrap_err();
+
+    assert!(
+        error.downcast_ref::<crate::types::CutOffError>().is_some(),
+        "the second pressure failure ends neutrally: {error:#}"
+    );
+    assert_eq!(
+        main_server
+            .received_requests()
+            .await
+            .expect("main requests")
+            .len(),
+        2,
+        "the intended turn is retried exactly once"
+    );
+    assert_eq!(
+        summary_server
+            .received_requests()
+            .await
+            .expect("summary requests")
+            .len(),
+        1,
+        "the guard prevents a second compaction"
+    );
+    assert_eq!(
+        sink.kinds(),
+        vec!["compaction_start", "compaction", "compaction_end"]
+    );
+    assert_eq!(
+        sink.checkpoint().expect("checkpoint").trigger,
+        CompactionTrigger::Overflow
+    );
+}
+
+#[tokio::test]
+async fn a_prior_proactive_checkpoint_still_allows_only_one_reactive_recovery() {
+    let main_server = MockServer::start().await;
+    let summary_server = MockServer::start().await;
+    mount_summary(&summary_server).await;
+    mount_chat_sequence(
+        &main_server,
+        vec![
+            over_window_chat_response(OVER_WINDOW_INPUT),
+            over_window_chat_response(OVER_WINDOW_INPUT),
+        ],
+    )
+    .await;
+    let sink = RecordSink::default();
+    let summary_config = test_config(&summary_server.uri());
+    let mut agent = test_agent_with_window(&main_server.uri(), RECOVERY_WINDOW)
+        .with_history(long_history_with(60))
+        .unwrap()
+        .with_compaction(enabled_policy(), Some(summary_config))
+        .unwrap()
+        .with_persist_callback(sink.callback());
+
+    let error = agent.send("finish now".to_string()).await.unwrap_err();
+
+    assert!(error.downcast_ref::<crate::types::CutOffError>().is_some());
+    let checkpoints: Vec<_> = sink
+        .records()
+        .into_iter()
+        .filter_map(|record| match record {
+            SessionRecord::Compaction(checkpoint) => Some(checkpoint),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        checkpoints.len(),
+        2,
+        "one proactive and one reactive checkpoint"
+    );
+    assert_eq!(checkpoints[0].trigger, CompactionTrigger::Threshold);
+    assert_eq!(checkpoints[1].trigger, CompactionTrigger::Overflow);
+    assert_eq!(
+        main_server
+            .received_requests()
+            .await
+            .expect("main requests")
+            .len(),
+        2
+    );
+    assert_eq!(
+        summary_server
+            .received_requests()
+            .await
+            .expect("summary requests")
+            .len(),
+        2,
+        "one summary per committed checkpoint, never a second reactive attempt"
+    );
+}
+
+#[tokio::test]
+async fn pressure_recovery_keeps_schema_correction_constrained_and_tools_disabled() {
+    let main_server = MockServer::start().await;
+    let summary_server = MockServer::start().await;
+    mount_summary(&summary_server).await;
+    mount_responses_sequence(
+        &main_server,
+        vec![
+            responses_message_response("not json"),
+            over_window_responses_response(OVER_WINDOW_INPUT),
+            responses_message_response(r#"{"summary":"recovered"}"#),
+        ],
+    )
+    .await;
+
+    let mut agent = responses_agent_with_window(&main_server.uri(), RECOVERY_WINDOW)
+        .with_history(long_history_with(20))
+        .unwrap()
+        .with_output_schema(test_schema())
+        .with_compaction(
+            reactive_only_policy(),
+            Some(test_config(&summary_server.uri())),
+        )
+        .unwrap();
+
+    let result = agent.send("finish now".to_string()).await.unwrap();
+
+    assert!(result.contains("recovered"), "{result}");
+    assert_eq!(
+        summary_server
+            .received_requests()
+            .await
+            .expect("summary requests")
+            .len(),
+        1,
+        "the pressure recovery committed one checkpoint"
+    );
+    let requests = main_server
+        .received_requests()
+        .await
+        .expect("main requests");
+    assert_eq!(
+        requests.len(),
+        3,
+        "initial response, discarded pressure response, retried correction"
+    );
+    for (index, request) in requests.iter().enumerate().skip(1) {
+        let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        assert!(
+            body.get("tools").is_none(),
+            "request {index} offered tools during correction: {body}"
+        );
+        assert_eq!(
+            body["text"]["format"]["type"], "json_schema",
+            "request {index} lost the native constraint"
+        );
+        let has_corrective = body["input"].as_array().is_some_and(|items| {
+            items.iter().any(|item| {
+                item["content"][0]["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("failed output schema validation"))
+            })
+        });
+        assert!(
+            has_corrective,
+            "request {index} lost correction mode: {body}"
+        );
+    }
 }
 
 #[test]

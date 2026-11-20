@@ -760,7 +760,7 @@ fn test_schema() -> Arc<OutputSchema> {
 }
 
 #[tokio::test]
-async fn typed_input_overflow_on_a_constraint_turn_is_not_a_constraint_rejection() {
+async fn typed_input_overflow_on_a_constraint_turn_ends_neutrally() {
     let mock_server = MockServer::start().await;
     // An unconstrained retry would match this mock; the typed overflow must end
     // the run instead of buying another request.
@@ -802,16 +802,16 @@ async fn typed_input_overflow_on_a_constraint_turn_is_not_a_constraint_rejection
     let mut agent =
         test_agent_for(ApiType::Responses, &mock_server.uri()).with_output_schema(test_schema());
     let error = agent.send("go".to_string()).await.unwrap_err();
-    let api_error = error
-        .downcast_ref::<crate::exit_code::ApiError>()
-        .expect("the typed overflow stays the terminal provider error");
+    let cutoff = error
+        .downcast_ref::<crate::types::CutOffError>()
+        .expect("the terminal input overflow ends neutrally");
 
-    assert_eq!(api_error.status, 400);
+    assert!(cutoff.detail.contains("did not fit the context limit"));
     assert!(
-        api_error
-            .input_overflow
-            .is_some_and(|overflow| !overflow.fits_with_reduced_output()),
-        "the genuine input overflow keeps its typed verdict"
+        cutoff
+            .detail
+            .ends_with("Session: 550e8400-e29b-41d4-a716-446655440000."),
+        "{cutoff:?}"
     );
     assert_eq!(
         mock_server.received_requests().await.unwrap().len(),

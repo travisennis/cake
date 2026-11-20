@@ -1,9 +1,11 @@
-//! Automatic pre-request compaction orchestration.
+//! Automatic pre-request and pressure-recovery compaction orchestration.
 //!
-//! [`Agent::maybe_compact_before_request`] is the one production caller of
-//! preparation and summarization. It runs at the top of the send loop, after
-//! limits and MCP refresh, so every provider request sees a projection that
-//! fits the configured policy. The helper owns lifecycle ordering: a prepared
+//! [`Agent::maybe_compact_before_request`] runs at the top of the send loop,
+//! after limits and MCP refresh, so every ordinary provider request sees a
+//! projection that fits the configured policy. [`Agent::compact_after_pressure`]
+//! runs once after a classified context-pressure failure and commits an
+//! overflow-triggered checkpoint before the intended request is retried. Both
+//! paths share preparation, summarization, and lifecycle ordering: a prepared
 //! candidate emits `compaction_start`, a successful checkpoint is persisted and
 //! activated, and only then does `compaction_end` report `committed`.
 
@@ -83,35 +85,102 @@ impl Agent {
         turn_mode: TurnMode,
         invocation: &mut InvocationCompactionState,
     ) -> anyhow::Result<()> {
-        if self.compaction_policy.is_none() {
+        if !self.automatic_compaction_ready()? {
             return Ok(());
         }
-        self.ensure_healthy()?;
-        let Some(resolved) = self.resolved_compaction_policy else {
+        if !self.maybe_retry_failed_compaction(turn_mode, invocation)? {
             return Ok(());
-        };
-        if !resolved.enabled {
-            return Ok(());
-        }
-
-        if let Some(retry_at) = invocation.retry_at_tokens {
-            let measure = self.measure_for_request(turn_mode, invocation)?;
-            if !measure.trigger_reached || measure.before_tokens < retry_at {
-                return self.continue_after_failed_attempt(measure, invocation);
-            }
-            invocation.retry_at_tokens = None;
-            tracing::info!(
-                target: "cake",
-                before_tokens = measure.before_tokens,
-                retry_at,
-                "Context compaction retrying after an earlier failed or skipped attempt"
-            );
         }
 
         let checkpoint_id = Uuid::new_v4().to_string();
-        let preparation = self.prepare_for_request(turn_mode, invocation, checkpoint_id.clone())?;
-        self.apply_preparation(preparation, checkpoint_id, invocation)
-            .await
+        let preparation = self.prepare_for_request(
+            turn_mode,
+            invocation,
+            checkpoint_id.clone(),
+            CompactionTrigger::Threshold,
+        )?;
+        let _ = self
+            .apply_preparation(
+                preparation,
+                checkpoint_id,
+                invocation,
+                CompactionTrigger::Threshold,
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Whether automatic compaction may run now.
+    ///
+    /// A configured but disabled policy still checks writer health, matching
+    /// the request path's terminal-writer contract.
+    fn automatic_compaction_ready(&self) -> anyhow::Result<bool> {
+        if self.compaction_policy.is_none() {
+            return Ok(false);
+        }
+        self.ensure_healthy()?;
+        Ok(self
+            .resolved_compaction_policy
+            .is_some_and(|resolved| resolved.enabled))
+    }
+
+    /// Re-check a failed or skipped attempt and clear suppression when due.
+    ///
+    /// Returns `true` when the projection is due for another attempt or none
+    /// was suppressed. A not-yet-grown projection returns `false` after the
+    /// over-window check, so the caller sends without preparing.
+    fn maybe_retry_failed_compaction(
+        &self,
+        turn_mode: TurnMode,
+        invocation: &mut InvocationCompactionState,
+    ) -> anyhow::Result<bool> {
+        let Some(retry_at) = invocation.retry_at_tokens else {
+            return Ok(true);
+        };
+        let measure = self.measure_for_request(turn_mode, invocation)?;
+        if !measure.trigger_reached || measure.before_tokens < retry_at {
+            self.continue_after_failed_attempt(measure, invocation)?;
+            return Ok(false);
+        }
+        invocation.retry_at_tokens = None;
+        tracing::info!(
+            target: "cake",
+            before_tokens = measure.before_tokens,
+            retry_at,
+            "Context compaction retrying after an earlier failed or skipped attempt"
+        );
+        Ok(true)
+    }
+
+    /// Prepare, summarize, and commit one overflow-triggered checkpoint.
+    ///
+    /// Returns whether a checkpoint was committed. A missing or disabled
+    /// policy, an unknown context window, a no-fit selection, or a failed
+    /// summary returns `false`; the caller then ends the invocation with the
+    /// neutral context-pressure error instead of retrying the same request.
+    pub(super) async fn compact_after_pressure(
+        &mut self,
+        turn_mode: TurnMode,
+        invocation: &mut InvocationCompactionState,
+    ) -> anyhow::Result<bool> {
+        if !self.automatic_compaction_ready()? || self.context_window().is_none() {
+            return Ok(false);
+        }
+
+        let checkpoint_id = Uuid::new_v4().to_string();
+        let preparation = self.prepare_for_request(
+            turn_mode,
+            invocation,
+            checkpoint_id.clone(),
+            CompactionTrigger::Overflow,
+        )?;
+        self.apply_preparation(
+            preparation,
+            checkpoint_id,
+            invocation,
+            CompactionTrigger::Overflow,
+        )
+        .await
     }
 
     async fn apply_preparation(
@@ -119,16 +188,18 @@ impl Agent {
         preparation: Preparation,
         checkpoint_id: String,
         invocation: &mut InvocationCompactionState,
-    ) -> anyhow::Result<()> {
+        trigger: CompactionTrigger,
+    ) -> anyhow::Result<bool> {
         let measure = preparation.measure;
         match preparation.outcome {
             PrepareOutcome::NoOp { reason } => {
                 if !measure.trigger_reached {
-                    return Ok(());
+                    return Ok(false);
                 }
                 self.record_compaction_skip(
                     &checkpoint_id,
                     invocation,
+                    trigger,
                     CompactionStatus::NoOp,
                     measure,
                     &reason,
@@ -137,12 +208,13 @@ impl Agent {
             PrepareOutcome::NoFit { reason } => self.record_compaction_skip(
                 &checkpoint_id,
                 invocation,
+                trigger,
                 CompactionStatus::NoFit,
                 measure,
                 &reason,
             ),
             PrepareOutcome::Prepared(prepared) => {
-                self.commit_prepared(*prepared, checkpoint_id, invocation)
+                self.commit_prepared(*prepared, checkpoint_id, invocation, trigger)
                     .await
             },
         }
@@ -165,9 +237,11 @@ impl Agent {
         turn_mode: TurnMode,
         invocation: &InvocationCompactionState,
         checkpoint_id: String,
+        trigger: CompactionTrigger,
     ) -> anyhow::Result<Preparation> {
         let source = self.preparation_source(invocation)?;
-        let input = self.preparation_input(&source, turn_mode, invocation, checkpoint_id)?;
+        let input =
+            self.preparation_input(&source, turn_mode, invocation, checkpoint_id, trigger)?;
         compaction::prepare(input)
     }
 
@@ -177,7 +251,13 @@ impl Agent {
         invocation: &InvocationCompactionState,
     ) -> anyhow::Result<PreparationMeasure> {
         let source = self.preparation_source(invocation)?;
-        let input = self.preparation_input(&source, turn_mode, invocation, String::new())?;
+        let input = self.preparation_input(
+            &source,
+            turn_mode,
+            invocation,
+            String::new(),
+            CompactionTrigger::Threshold,
+        )?;
         compaction::measure(&input)
     }
 
@@ -187,6 +267,7 @@ impl Agent {
         turn_mode: TurnMode,
         invocation: &InvocationCompactionState,
         checkpoint_id: String,
+        trigger: CompactionTrigger,
     ) -> anyhow::Result<PreparationInput<'a>> {
         let Some(policy) = self.compaction_policy else {
             anyhow::bail!("automatic compaction requires a configured policy");
@@ -207,7 +288,7 @@ impl Agent {
             session_id: self.session_id,
             task_id: self.task_id,
             model: self.model_identity(),
-            trigger: CompactionTrigger::Threshold,
+            trigger,
             policy,
         })
     }
@@ -289,10 +370,11 @@ impl Agent {
         &mut self,
         checkpoint_id: &str,
         invocation: &mut InvocationCompactionState,
+        trigger: CompactionTrigger,
         status: CompactionStatus,
         measure: PreparationMeasure,
         reason: &str,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<bool> {
         invocation.retry_at_tokens = Some(self.compaction_retry_at(measure.before_tokens));
         let reason = bounded_compaction_reason(reason);
         self.stream_record(StreamRecord::CompactionEnd(CompactionEndData {
@@ -300,7 +382,7 @@ impl Agent {
             task_id: self.task_id.to_string(),
             checkpoint_id: checkpoint_id.to_string(),
             timestamp: Utc::now(),
-            trigger: CompactionTrigger::Threshold,
+            trigger,
             status,
             estimated_before_tokens: Some(measure.before_tokens),
             estimated_after_tokens: None,
@@ -310,7 +392,7 @@ impl Agent {
             reason: Some(reason.clone()),
         }))?;
         self.report_progress(&format!("Context compaction skipped: {reason}"));
-        if self.over_window(measure.before_tokens) {
+        if trigger == CompactionTrigger::Threshold && self.over_window(measure.before_tokens) {
             return Err(over_window_error(
                 self.session_id,
                 measure.before_tokens,
@@ -318,7 +400,7 @@ impl Agent {
                 invocation,
             ));
         }
-        Ok(())
+        Ok(false)
     }
 
     /// Summarize a prepared candidate, persist it, and activate it in memory.
@@ -327,7 +409,8 @@ impl Agent {
         prepared: PreparedCompaction,
         checkpoint_id: String,
         invocation: &mut InvocationCompactionState,
-    ) -> anyhow::Result<()> {
+        trigger: CompactionTrigger,
+    ) -> anyhow::Result<bool> {
         let before_tokens = prepared.estimated_input.before_tokens;
         let after_tokens = prepared.estimated_input.after_tokens;
         let basis = prepared.estimated_input.basis;
@@ -343,7 +426,7 @@ impl Agent {
             task_id: self.task_id.to_string(),
             checkpoint_id: checkpoint_id.clone(),
             timestamp: Utc::now(),
-            trigger: CompactionTrigger::Threshold,
+            trigger,
             estimated_before_tokens: before_tokens,
             context_window: self.context_window(),
             summary_instruction_version: SUMMARY_INSTRUCTION_VERSION,
@@ -359,6 +442,7 @@ impl Agent {
                 return self.record_prepared_failure(
                     &checkpoint_id,
                     invocation,
+                    trigger,
                     "summary generation failed",
                     before_tokens,
                     after_tokens,
@@ -377,6 +461,7 @@ impl Agent {
             return self.record_prepared_failure(
                 &checkpoint_id,
                 invocation,
+                trigger,
                 "candidate validation failed",
                 before_tokens,
                 after_tokens,
@@ -394,7 +479,7 @@ impl Agent {
             task_id: self.task_id.to_string(),
             checkpoint_id,
             timestamp: Utc::now(),
-            trigger: CompactionTrigger::Threshold,
+            trigger,
             status: CompactionStatus::Committed,
             estimated_before_tokens: Some(before_tokens),
             estimated_after_tokens: Some(after_tokens),
@@ -406,7 +491,7 @@ impl Agent {
         self.report_progress(&format!(
             "Context compacted: approximately {before_tokens} -> {after_tokens} tokens"
         ));
-        Ok(())
+        Ok(true)
     }
 
     async fn summarize_prepared(
@@ -461,20 +546,21 @@ impl Agent {
         &mut self,
         checkpoint_id: &str,
         invocation: &mut InvocationCompactionState,
+        trigger: CompactionTrigger,
         reason: &str,
         before_tokens: u64,
         after_tokens: u64,
         basis: crate::types::compaction::EstimateBasis,
         retired_count: usize,
         retained_count: usize,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<bool> {
         invocation.retry_at_tokens = Some(self.compaction_retry_at(before_tokens));
         let end = StreamRecord::CompactionEnd(CompactionEndData {
             session_id: self.session_id.to_string(),
             task_id: self.task_id.to_string(),
             checkpoint_id: checkpoint_id.to_string(),
             timestamp: Utc::now(),
-            trigger: CompactionTrigger::Threshold,
+            trigger,
             status: CompactionStatus::Failed,
             estimated_before_tokens: Some(before_tokens),
             estimated_after_tokens: Some(after_tokens),
@@ -488,7 +574,7 @@ impl Agent {
             return Err(error);
         }
         self.report_progress(&format!("Context compaction failed: {reason}"));
-        if self.over_window(before_tokens) {
+        if trigger == CompactionTrigger::Threshold && self.over_window(before_tokens) {
             return Err(over_window_error(
                 self.session_id,
                 before_tokens,
@@ -496,7 +582,7 @@ impl Agent {
                 invocation,
             ));
         }
-        Ok(())
+        Ok(false)
     }
 }
 
