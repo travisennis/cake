@@ -2162,23 +2162,31 @@ pub struct AgentSummaryCaller<'a> {
 }
 
 impl<'a> AgentSummaryCaller<'a> {
-    /// Build a production caller from the conversation's resolved config.
+    /// Build a production caller from the conversation's resolved config and
+    /// an optional separate summarizer config.
+    ///
+    /// `summarizer` wins when present; otherwise summaries use the conversation
+    /// configuration. Either way the caller sends that config's provider,
+    /// credentials, model, and reasoning effort with only the generation cap
+    /// changed.
     ///
     /// # Errors
     ///
-    /// Returns an error when the backend drops the generation cap or the
-    /// configured reasoning allowance conflicts with the summary cap.
+    /// Returns an error when the selected backend drops the generation cap or
+    /// the configured reasoning allowance conflicts with the summary cap.
     pub(super) fn new(
-        config: &ResolvedModelConfig,
+        conversation: &ResolvedModelConfig,
+        summarizer: Option<&ResolvedModelConfig>,
         session_id: Uuid,
         task_id: Uuid,
         health: Option<HealthCallback>,
         telemetry: &'a mut (dyn FnMut(AgentRunnerTelemetryEvent) + Send),
         settle: &'a mut (dyn FnMut(TurnUsageSettlement) + Send),
     ) -> anyhow::Result<Self> {
-        validate_summary_backend(config)?;
+        let config = summarizer.unwrap_or(conversation).clone();
+        validate_summary_backend(&config)?;
         Ok(Self {
-            config: config.clone(),
+            config,
             session_id,
             task_id,
             health,

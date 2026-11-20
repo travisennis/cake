@@ -8,7 +8,7 @@ use super::*;
 use crate::clients::agent_runner::AgentRunner;
 use crate::clients::backend::Backend;
 use crate::clients::compaction::MeasuredInput;
-use crate::config::model::{ApiType, ModelConfig, ResolvedModelConfig};
+use crate::config::model::{ApiType, ModelConfig, ReasoningEffort, ResolvedModelConfig};
 use crate::config::settings::CompactionPolicy;
 use crate::types::compaction::HISTORICAL_SUMMARY_MARKER;
 use crate::types::session::MessageData;
@@ -231,6 +231,77 @@ async fn disabled_policy_checks_writer_health_before_returning() {
 
     assert!(error.to_string().contains("writer failed"), "{error}");
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn enabled_compaction_validates_the_selected_summarizer_backend() {
+    let mut summary = test_config("https://chatgpt.com/backend-api/codex");
+    summary.model_config.api_type = ApiType::Responses;
+    let Err(error) =
+        test_agent("https://api.example.com").with_compaction(enabled_policy(), Some(summary))
+    else {
+        panic!("a Codex summarizer cannot create bounded checkpoints");
+    };
+    assert!(
+        error.to_string().contains("bounded summary generation cap"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn summary_uses_separate_compaction_model() {
+    let main_server = MockServer::start().await;
+    let summary_server = MockServer::start().await;
+    mount_summary(&summary_server).await;
+    let mut summary_config = test_config(&summary_server.uri());
+    summary_config.model_config.model = "summary-model".to_string();
+    summary_config.model_config.reasoning_effort = Some(ReasoningEffort::Low);
+    let sink = RecordSink::default();
+    let mut agent = test_agent(&main_server.uri())
+        .with_history(long_history())
+        .unwrap()
+        .with_compaction(enabled_policy(), Some(summary_config))
+        .unwrap()
+        .with_persist_callback(sink.callback())
+        .with_last_usage(Some(Usage {
+            input_tokens: 200_000,
+            ..Usage::default()
+        }));
+    let mut invocation = invocation_for(&agent);
+    agent.last_measurement = Some(MeasuredInput {
+        input_tokens: 200_000,
+        covered_item_count: agent.conversation.history().len(),
+        model: "test-model".to_string(),
+        fixed_tokens: 0,
+        presence: UsagePresence::Complete,
+    });
+
+    agent
+        .maybe_compact_before_request(TurnMode::Normal, &mut invocation)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        sink.kinds(),
+        vec!["compaction_start", "compaction", "compaction_end"]
+    );
+    let requests = summary_server
+        .received_requests()
+        .await
+        .expect("summary requests");
+    assert_eq!(requests.len(), 1, "one summary call expected");
+    let body: serde_json::Value =
+        serde_json::from_slice(&requests[0].body).expect("summary request body should be JSON");
+    assert_eq!(body["model"], "summary-model");
+    assert_eq!(body["reasoning_effort"], "low");
+    assert!(
+        main_server
+            .received_requests()
+            .await
+            .expect("main requests")
+            .is_empty(),
+        "the main provider must not receive the summary call"
+    );
 }
 
 #[tokio::test]

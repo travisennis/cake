@@ -285,11 +285,14 @@ threshold_percent = 80   # fallback trigger as a percent of context_window
 trigger_tokens = 350000  # optional absolute trigger; must be below context_window
 keep_recent_tokens = 20000  # retained-tail token target
 summary_tokens = 4096    # generated summary token target
+model = "cheap-model"    # optional [[models]] entry for checkpoint summaries
+profile = "review"       # optional profile whose default_model selects the summary model
+reasoning_effort = "low" # optional summary-call effort override
 ```
 
-`enabled` defaults to `false`. Enabling it requires the selected model to declare a nonzero `context_window`; otherwise the run fails before it starts. An existing checkpoint is still restored and used when `enabled = false`, including on a backend that cannot create new checkpoints: the setting controls creation, not restoration. `trigger_tokens` does not enable compaction on its own.
+`enabled` defaults to `false`. Enabling it requires the conversation model to declare a nonzero `context_window`; otherwise the run fails before it starts. An existing checkpoint is still restored and used when `enabled = false`, including on a backend that cannot create new checkpoints: the setting controls creation, not restoration. `trigger_tokens` does not enable compaction on its own.
 
-The model's `context_window` keeps its input-token meaning here: it is the limit for the whole request, and Cake does not subtract the output allowance a second time. With a known window, the trigger is:
+The conversation model's `context_window` keeps its input-token meaning here: it is the limit for the whole request, and Cake does not subtract the output allowance a second time. With a known window, the trigger is:
 
 - `trigger_tokens` when set: the positive absolute input-token line, which must be strictly below the window;
 - otherwise `floor(context_window * threshold_percent / 100)`.
@@ -298,13 +301,15 @@ The model's `context_window` keeps its input-token meaning here: it is the limit
 
 `keep_recent_tokens` is the target for the retained tail and is clamped to `floor(context_window / 4)`. `summary_tokens` is the target for the generated summary text and is clamped to `floor(context_window / 16)`. Both configured values must be positive, and a window that clamps an effective target to zero is rejected. Estimates are heuristics, not provider measurements; the session records whether they came from measured usage or content classes.
 
-Project `[compaction]` values override global values per key, and a selected profile may define `[profiles.NAME.compaction]`; profile values override the merged top-level values per key, with project profile values taking precedence over global profile values. All keys are optional, so a section overrides only what it sets.
+By default the summary call reuses the conversation's resolved model, provider, credentials, and reasoning effort. `model` names a `[[models]]` entry for summaries instead. `profile` names a profile, and only that profile's effective `default_model` participates: its skills, tools, sandbox, directories, and compaction budgets do not apply to summary calls. An explicit `model` wins over the profile's `default_model`, and either falls back to the conversation model when absent. `reasoning_effort` overrides the selected model's declared effort; with no model or profile it overrides the conversation effort instead. With none of the three keys, behavior is unchanged. Unknown `model` or `profile` names fail at settings load. The summary call still sends no tools, task hooks, or output schema, and only `max_output_tokens` changes from the selected configuration.
+
+Project `[compaction]` values override global values per key, and a selected profile may define `[profiles.NAME.compaction]`; profile values override the merged top-level values per key, with project profile values taking precedence over global profile values. All keys are optional, so a section overrides only what it sets. The summarizer keys follow the same per-key precedence.
 
 Automatic checks run immediately before each logical provider request, after tool results and context-affecting hook additions have settled. After a failed summary or a no-fit result, Cake makes no further automatic attempt in that invocation, including after new content arrives; every later request is still measured, and an over-window request fails before it is sent. A new invocation starts with a fresh attempt budget.
 
-Creating a checkpoint requires a backend that preserves a bounded summary generation cap. Chat Completions and ordinary Responses satisfy this; the Codex Responses backend strips `max_output_tokens`, so enabling automatic compaction on that backend fails before the run. Restoring an existing checkpoint remains supported there.
+Creating a checkpoint requires the selected summarizer backend to preserve a bounded summary generation cap. Chat Completions and ordinary Responses satisfy this; the Codex Responses backend strips `max_output_tokens`, so enabling automatic compaction with a Codex summarizer fails before the run. Restoring an existing checkpoint remains supported there.
 
-`[compaction]` is low-authority configuration: it can change request size and cost but cannot add filesystem authority, execute code, or select a provider. `cake debug config` reports the configured values before window clamping. The generated `cake init` settings template includes the same keys and defaults. See [Integrations](integrations.md#compaction-lifecycle) for the session and replay records.
+`[compaction]` is low-authority configuration: it can change request size, cost, and which globally configured model summarizes, but cannot add filesystem authority, execute code, or introduce a provider endpoint; `model` and `profile` resolve only to entries and profiles already defined in settings. `cake debug config` reports the configured values before window clamping, including the summarizer selection. The generated `cake init` settings template includes the same keys and defaults. See [Integrations](integrations.md#compaction-lifecycle) for the session and replay records.
 
 ## Tool selection
 

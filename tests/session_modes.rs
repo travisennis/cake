@@ -1137,6 +1137,98 @@ fn assert_compacted_session(mode: &str, env: &TestEnv) {
     );
 }
 
+#[tokio::test]
+async fn compaction_summarizer_uses_the_configured_model_and_effort() {
+    let env = TestEnv::new("cake-compaction-summarizer-model-test");
+    let main_server = MockServer::start().await;
+    let summary_server = MockServer::start().await;
+    write_compaction_summarizer_settings(&env, &main_server.uri(), &summary_server.uri());
+    write_session_fixture(&env, &checkpointed_records_with_large_tail(&env));
+    mount_compaction_provider(&summary_server, "fresh check summary").await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
+        .mount(&main_server)
+        .await;
+
+    let output = env
+        .command()
+        .args(["--resume", SESSION_ID, "carry on"])
+        .env(TEST_KEY, "test-token")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute cake");
+    assert!(
+        output.status.success(),
+        "compaction with a separate summarizer should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let summary_requests = summary_server
+        .received_requests()
+        .await
+        .expect("summary requests");
+    assert_eq!(summary_requests.len(), 1, "one summary call expected");
+    let summary_body: serde_json::Value =
+        serde_json::from_slice(&summary_requests[0].body).expect("summary body should be JSON");
+    assert_eq!(summary_body["model"], "cheap-model");
+    assert_eq!(summary_body["reasoning"]["effort"], "low");
+
+    let main_requests = main_server
+        .received_requests()
+        .await
+        .expect("main requests");
+    assert_eq!(main_requests.len(), 1, "one main provider call expected");
+    let main_body: serde_json::Value =
+        serde_json::from_slice(&main_requests[0].body).expect("main body should be JSON");
+    assert_eq!(main_body["model"], "glm-5.1");
+    assert!(
+        !is_summary_request(&main_body),
+        "the summary call must not reach the main provider"
+    );
+    assert_compacted_session("resume", &env);
+}
+
+fn write_compaction_summarizer_settings(
+    env: &TestEnv,
+    main_base_url: &str,
+    summary_base_url: &str,
+) {
+    env.write_global_settings(&format!(
+        r#"
+[[models]]
+name = "test"
+model = "glm-5.1"
+base_url = "{main_base_url}"
+api_key_env = "{TEST_KEY}"
+api_type = "responses"
+context_window = {COMPACTION_TEST_CONTEXT_WINDOW}
+
+[[models]]
+name = "summarizer"
+model = "cheap-model"
+base_url = "{summary_base_url}"
+api_key_env = "{TEST_KEY}"
+api_type = "responses"
+context_window = 500000
+
+[compaction]
+enabled = true
+trigger_tokens = {COMPACTION_TEST_TRIGGER_TOKENS}
+keep_recent_tokens = 12000
+summary_tokens = 2048
+model = "summarizer"
+reasoning_effort = "low"
+"#
+    ));
+    env.write_project_settings(
+        r#"
+default_model = "test"
+"#,
+    );
+}
+
 async fn assert_enabled_policy_compacts_restored_history(mode: &str) {
     let env = TestEnv::new(&format!("cake-{mode}-enabled-compaction-test"));
     let mock_server = MockServer::start().await;

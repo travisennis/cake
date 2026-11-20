@@ -35,6 +35,10 @@ pub struct RunSession {
     /// Whether a resume or fork accepted a changed provider identity for this
     /// invocation only.
     pub(crate) session_model_change_override: bool,
+    /// Conversation model configuration after restore and CLI overrides. Used
+    /// to derive a separate compaction summarizer configuration. Boxed to keep
+    /// the run future small.
+    pub(crate) resolved: Box<ResolvedModelConfig>,
 }
 
 impl RunSession {
@@ -147,7 +151,7 @@ impl crate::CodingAssistant {
             .with_activated_skills(activated_skills);
         warn_omitted_history_images(&agent, &resolved, &model_config_name);
         let mut session = Session::new(restored.id, restored.working_dir);
-        session.model = Some(resolved.model_config.model);
+        session.model = Some(resolved.model_config.model.clone());
         session.model_config = Some(model_config_name);
         session.provider_identity = restored.provider_identity;
         Ok(RunSession {
@@ -156,6 +160,7 @@ impl crate::CodingAssistant {
             persistence: Some(SessionPersistencePlan::Append),
             effective_provider_identity: Some(effective_provider_identity),
             session_model_change_override,
+            resolved: Box::new(resolved),
         })
     }
 
@@ -189,7 +194,7 @@ impl crate::CodingAssistant {
         let new_id = agent.session_id();
         info!(target: "cake", "New session: {new_id}");
         let mut session = Session::new(new_id, current_dir);
-        session.model = Some(resolved.model_config.model);
+        session.model = Some(resolved.model_config.model.clone());
         session.model_config = Some(model_config_name);
         session.provider_identity = Some(provider_identity.clone());
         session.system_prompt = initial_messages.first().map(|(_, content)| content.clone());
@@ -199,6 +204,7 @@ impl crate::CodingAssistant {
             persistence,
             effective_provider_identity: Some(provider_identity),
             session_model_change_override: false,
+            resolved: Box::new(resolved),
         }
     }
 
@@ -287,7 +293,7 @@ impl crate::CodingAssistant {
             .collect();
         info!(target: "cake", "New forked session: {new_id}");
         let mut session = Session::new(new_id, current_dir);
-        session.model = Some(resolved.model_config.model);
+        session.model = Some(resolved.model_config.model.clone());
         session.model_config = Some(model_config_name);
         // A fork copies the parent snapshot. `--allow-session-model-change`
         // accepts the current resolution for this invocation without
@@ -305,6 +311,7 @@ impl crate::CodingAssistant {
             }),
             effective_provider_identity: Some(effective_provider_identity),
             session_model_change_override,
+            resolved: Box::new(resolved),
         })
     }
 

@@ -239,6 +239,8 @@ async fn explicit_no_gate_bypasses_before_model_resolution() {
         limits: ResolvedLimits::default(),
         images: crate::config::settings::ResolvedImagePolicy::default(),
         compaction: crate::config::settings::CompactionPolicy::default(),
+        compaction_summarizer: crate::config::settings::CompactionSummarizerSettings::default(),
+        profile_default_models: std::collections::HashMap::default(),
         warnings: Vec::new(),
     };
 

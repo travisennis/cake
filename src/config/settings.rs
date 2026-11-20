@@ -7,7 +7,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::config::expand_home;
-use crate::config::model::{ApiType, ModelConfig, ModelProvider, ProviderHeaders, ReasoningEffort};
+use crate::config::model::{
+    ApiType, ModelConfig, ModelProvider, ProviderHeaders, ReasoningEffort, ResolvedModelConfig,
+};
 use crate::config::skills::SkillConfig;
 use crate::config::trust::{
     AuthorityKind, AuthoritySource, ConfigLoadError, ProjectConfigMode, ProjectConfigSnapshot,
@@ -867,17 +869,28 @@ pub struct CompactionSettingsOverlay {
     /// Token target for the generated summary text.
     #[serde(default)]
     pub summary_tokens: Option<PositiveLimit>,
+    /// `[[models]]` entry name used for checkpoint summaries.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Profile whose effective `default_model` selects the summary model when
+    /// [`Self::model`] is absent.
+    #[serde(default)]
+    pub profile: Option<String>,
+    /// Reasoning effort override for checkpoint summaries.
+    #[serde(default)]
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 impl CompactionSettingsOverlay {
     /// Apply the compiled defaults to every absent key.
     ///
-    /// Each setting has exactly one consumer in the resolved policy:
+    /// Each budget setting has exactly one consumer in the resolved policy:
     /// `enabled` becomes [`CompactionPolicy::enabled`], `threshold_percent`
     /// becomes the fallback trigger percentage, `trigger_tokens` becomes the
     /// absolute trigger and its post-compaction target, `keep_recent_tokens`
     /// becomes the retained-tail target, and `summary_tokens` becomes the
-    /// summary-text target.
+    /// summary-text target. The summarizer keys resolve separately through
+    /// [`Self::resolve_summarizer`].
     #[must_use]
     pub const fn resolve(&self) -> CompactionPolicy {
         CompactionPolicy {
@@ -908,6 +921,33 @@ impl CompactionSettingsOverlay {
             None => default,
         }
     }
+
+    /// Resolve the optional summarizer selection for checkpoint summaries.
+    #[must_use]
+    pub fn resolve_summarizer(&self) -> CompactionSummarizerSettings {
+        CompactionSummarizerSettings {
+            model: self.model.clone(),
+            profile: self.profile.clone(),
+            reasoning_effort: self.reasoning_effort,
+        }
+    }
+}
+
+/// Model, profile, and effort selection for checkpoint summaries.
+///
+/// Absent fields fall back to the conversation configuration. An explicit
+/// `model` wins over the named profile's effective `default_model`; the named
+/// profile contributes only that model selection. `reasoning_effort` overrides
+/// the selected model's declared effort, or the conversation effort when no
+/// model or profile is selected.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CompactionSummarizerSettings {
+    /// `[[models]]` entry name used for checkpoint summaries.
+    pub model: Option<String>,
+    /// Profile whose effective `default_model` selects the summary model.
+    pub profile: Option<String>,
+    /// Reasoning effort override for checkpoint summaries.
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 /// Default automatic threshold percentage.
@@ -1254,6 +1294,11 @@ pub struct LoadedSettings {
     /// Effective automatic compaction policy after all overlays resolve and
     /// before model-window validation.
     pub compaction: CompactionPolicy,
+    /// Configured summarizer selection for automatic compaction.
+    pub compaction_summarizer: CompactionSummarizerSettings,
+    /// Effective `default_model` for every named profile after profile
+    /// overlays, used by `[compaction] profile`.
+    pub profile_default_models: HashMap<String, Option<String>>,
     /// Warnings about unrecognized keys in settings files, one per issue and
     /// already formatted with the source file path. Unrecognized keys are
     /// ignored (existing behavior); these warnings surface them instead of
@@ -1262,6 +1307,50 @@ pub struct LoadedSettings {
 }
 
 impl LoadedSettings {
+    /// Resolve the separate summarizer model for automatic compaction.
+    ///
+    /// An explicit `[compaction] model` wins over the named profile's effective
+    /// `default_model`; with neither, an effort override clones the conversation
+    /// configuration. `None` means the summary call uses the conversation
+    /// configuration unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the selected model is missing or its credential
+    /// cannot be resolved. Name validation normally rejects a missing model at
+    /// settings load, so the missing-entry branch is a defensive fallback.
+    pub fn resolve_compaction_summarizer(
+        &self,
+        conversation: &ResolvedModelConfig,
+    ) -> anyhow::Result<Option<ResolvedModelConfig>> {
+        let selection = &self.compaction_summarizer;
+        let model_name = selection.model.as_deref().or_else(|| {
+            selection.profile.as_deref().and_then(|profile| {
+                self.profile_default_models
+                    .get(profile)
+                    .and_then(Option::as_deref)
+            })
+        });
+        let Some(model_name) = model_name else {
+            let Some(effort) = selection.reasoning_effort else {
+                return Ok(None);
+            };
+            let mut config = conversation.clone();
+            config.model_config.reasoning_effort = Some(effort);
+            return Ok(Some(config));
+        };
+        let definition = self.models.get(model_name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "compaction summarizer model '{model_name}' is not configured in settings.toml"
+            )
+        })?;
+        let mut config = definition.to_model_config();
+        if let Some(effort) = selection.reasoning_effort {
+            config.reasoning_effort = Some(effort);
+        }
+        Ok(Some(ResolvedModelConfig::resolve(config)?))
+    }
+
     /// Print the settings warnings to stderr, one per line, prefixed with
     /// `warning:`. The tracing log is file-only, so settings typos surface
     /// here or not at all in the terminal.
@@ -1502,6 +1591,14 @@ pub enum SettingsError {
     DefaultModelNotFound { name: String },
 
     #[error(
+        "Compaction summarizer model '{name}' not found in models list. \
+         [compaction] model and the named profile's default_model take a [[models]] \
+         name, like default_model; define a [[models]] entry with name = \"{name}\" or \
+         remove the summarizer setting."
+    )]
+    CompactionModelNotFound { name: String },
+
+    #[error(
         "Judge model '{name}' not found in models list. \
          [tools.bash.judge] model takes a [[models]] name, like default_model; \
          define a [[models]] entry with name = \"{name}\", or remove the \
@@ -1738,6 +1835,7 @@ impl SettingsLoader {
     ) -> Result<LoadedSettings, SettingsError> {
         Self::apply_profile(profile, &mut acc)?;
         Self::validate_default_model(&acc)?;
+        Self::validate_compaction_summarizer(&acc)?;
         Self::validate_judge_model(&acc, no_gate)?;
         Self::validate_gate_configuration(&acc, no_gate)?;
         Ok(acc.into_loaded())
@@ -1875,6 +1973,43 @@ impl SettingsLoader {
             return Err(SettingsError::DefaultModelNotFound { name: name.clone() });
         }
         Ok(())
+    }
+
+    /// Validate the optional `[compaction]` summarizer selection.
+    ///
+    /// `model` and a named profile's effective `default_model` must resolve to
+    /// a `[[models]]` entry, and `profile` must name a configured profile.
+    /// Validation runs even while automatic compaction is disabled so a typo
+    /// surfaces before the user enables the feature.
+    fn validate_compaction_summarizer(acc: &SettingsAccumulator) -> Result<(), SettingsError> {
+        if let Some(name) = acc.compaction.model.as_deref() {
+            Self::validate_summarizer_model_name(name, acc)?;
+        }
+        let Some(profile) = acc.compaction.profile.as_deref() else {
+            return Ok(());
+        };
+        Self::validate_profile_name(profile)?;
+        let overlays = Self::profile_overlays(profile, acc)?;
+        if let Some(name) = overlays
+            .iter()
+            .rev()
+            .find_map(|overlay| overlay.settings.default_model.as_deref())
+        {
+            Self::validate_summarizer_model_name(name, acc)?;
+        }
+        Ok(())
+    }
+
+    fn validate_summarizer_model_name(
+        name: &str,
+        acc: &SettingsAccumulator,
+    ) -> Result<(), SettingsError> {
+        if acc.models.contains_key(name) {
+            return Ok(());
+        }
+        Err(SettingsError::CompactionModelNotFound {
+            name: name.to_string(),
+        })
     }
 
     /// Validate that the judge model (if set) refers to an existing model,
@@ -2046,8 +2181,9 @@ impl SettingsLoader {
     ///
     /// Absent keys keep lower-precedence values, so a project or profile
     /// `[compaction]` section overrides only the keys it sets. Every budget
-    /// is a positive integer; there is no `"unlimited"` sentinel.
-    const fn merge_compaction(
+    /// is a positive integer; there is no `"unlimited"` sentinel. The
+    /// summarizer keys follow the same per-key precedence.
+    fn merge_compaction(
         compaction: Option<CompactionSettingsOverlay>,
         acc: &mut SettingsAccumulator,
     ) {
@@ -2068,6 +2204,15 @@ impl SettingsLoader {
         }
         if compaction.summary_tokens.is_some() {
             acc.compaction.summary_tokens = compaction.summary_tokens;
+        }
+        if compaction.model.is_some() {
+            acc.compaction.model = compaction.model;
+        }
+        if compaction.profile.is_some() {
+            acc.compaction.profile = compaction.profile;
+        }
+        if compaction.reasoning_effort.is_some() {
+            acc.compaction.reasoning_effort = compaction.reasoning_effort;
         }
     }
 
@@ -2417,6 +2562,20 @@ impl SettingsAccumulator {
 
     /// Convert the accumulated merge state into the final [`LoadedSettings`].
     fn into_loaded(self) -> LoadedSettings {
+        let profile_default_models = self
+            .profiles
+            .iter()
+            .map(|(name, overlays)| {
+                (
+                    name.clone(),
+                    overlays
+                        .iter()
+                        .rev()
+                        .find_map(|overlay| overlay.settings.default_model.clone()),
+                )
+            })
+            .collect();
+        let compaction_summarizer = self.compaction.resolve_summarizer();
         let limits = LimitsSettingsOverlay {
             max_turns: self.max_turns,
             max_tool_calls: self.max_tool_calls,
@@ -2467,6 +2626,8 @@ impl SettingsAccumulator {
             }
             .resolve(),
             compaction: self.compaction.resolve(),
+            compaction_summarizer,
+            profile_default_models,
             warnings: self.warnings,
         }
     }

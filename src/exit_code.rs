@@ -248,6 +248,7 @@ const fn classify_settings_error(error: &SettingsError) -> u8 {
         | SettingsError::ProjectToolsBroadened { .. }
         | SettingsError::UnknownProfile { .. }
         | SettingsError::DefaultModelNotFound { .. }
+        | SettingsError::CompactionModelNotFound { .. }
         | SettingsError::JudgeModelNotFound { .. }
         | SettingsError::InvalidGateConfiguration { .. }
         | SettingsError::ParseError(_)

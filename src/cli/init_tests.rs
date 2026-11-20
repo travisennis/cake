@@ -112,6 +112,9 @@ fn initialize_creates_behavior_preserving_settings() {
         "trigger_tokens = 350000",
         "keep_recent_tokens = 20000",
         "summary_tokens = 4096",
+        "model = \"cheap-model\"",
+        "profile = \"review\"",
+        "reasoning_effort = \"low\"",
     ] {
         assert!(
             content.contains(expected),

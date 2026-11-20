@@ -33,7 +33,6 @@ use crate::cli::{
 };
 use crate::clients::resolve_linked_worktree_dirs;
 use crate::clients::{Agent, SandboxPolicy, ToolContext, resolve_sandbox_policy};
-#[cfg(test)]
 use crate::config::ResolvedModelConfig;
 use crate::config::settings::LoadedSettings;
 use crate::config::trust::{
@@ -1072,6 +1071,24 @@ impl CodingAssistant {
         }
     }
 
+    /// Apply the automatic compaction policy to an agent.
+    ///
+    /// A disabled policy resolves no summarizer credentials, so a configured
+    /// summarizer model stays inert until compaction is enabled. An enabled
+    /// policy resolves the separate summarizer configuration once and validates
+    /// that backend before the run starts.
+    fn apply_compaction_policy(
+        agent: Agent,
+        loaded: &LoadedSettings,
+        conversation: &ResolvedModelConfig,
+    ) -> anyhow::Result<Agent> {
+        if !loaded.compaction.enabled {
+            return agent.with_compaction(loaded.compaction, None);
+        }
+        let summarizer = loaded.resolve_compaction_summarizer(conversation)?;
+        agent.with_compaction(loaded.compaction, summarizer)
+    }
+
     fn attach_persistence(
         mut client: Agent,
         data_dir: &DataDir,
@@ -1699,9 +1716,11 @@ impl CmdRunner for CodingAssistant {
             .agent
             .with_limits(&resources.loaded.limits)
             .with_image_policy(&resources.loaded.images);
-        run_session.agent = run_session
-            .agent
-            .with_compaction_policy(resources.loaded.compaction)?;
+        run_session.agent = Self::apply_compaction_policy(
+            run_session.agent,
+            &resources.loaded,
+            &run_session.resolved,
+        )?;
         run_session.attach_output_schema(prepared.output_schema.as_ref());
 
         let session_start_source =

@@ -387,6 +387,7 @@ impl Agent {
         let task_id = self.task_id;
         let context_window = self.context_window();
         let config = &self.config;
+        let summarizer = self.compaction_summarizer_config.as_deref();
         let mut settle = |settlement| {
             record_turn_usage(
                 &mut self.observer,
@@ -400,6 +401,7 @@ impl Agent {
         };
         let mut caller = AgentSummaryCaller::new(
             config,
+            summarizer,
             session_id,
             task_id,
             health,

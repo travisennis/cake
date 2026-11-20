@@ -243,6 +243,10 @@ pub struct Agent {
     /// Configured automatic compaction policy. `None` until the run applies a
     /// loaded policy; automatic compaction does not run without one.
     compaction_policy: Option<CompactionPolicy>,
+    /// Optional separate model configuration for checkpoint summaries. `None`
+    /// falls back to the conversation configuration. Boxed to keep the agent
+    /// struct and run future small.
+    compaction_summarizer_config: Option<Box<ResolvedModelConfig>>,
     /// The configured policy after model-window validation and clamping.
     resolved_compaction_policy: Option<ResolvedCompactionPolicy>,
     /// Maps SKILL.md paths to skills for path-watching `SkillActivated` records.
@@ -307,6 +311,7 @@ impl Agent {
             max_tool_calls: None,
             image_policy: ResolvedImagePolicy::defaults(),
             compaction_policy: None,
+            compaction_summarizer_config: None,
             resolved_compaction_policy: None,
             skill_locations: Arc::new(HashMap::new()),
             activated_skills: Arc::new(Mutex::new(HashSet::new())),
@@ -1085,7 +1090,28 @@ impl Agent {
     ///
     /// Returns an error for an invalid policy, enabled compaction without a
     /// context window, or a backend that cannot bound a summary.
-    pub fn with_compaction_policy(mut self, policy: CompactionPolicy) -> anyhow::Result<Self> {
+    #[cfg(test)]
+    pub fn with_compaction_policy(self, policy: CompactionPolicy) -> anyhow::Result<Self> {
+        self.with_compaction(policy, None)
+    }
+
+    /// Validate and apply the loaded automatic compaction policy and an
+    /// optional separate summarizer configuration.
+    ///
+    /// `summarizer` selects the provider, credentials, model, and effort for
+    /// checkpoint summaries. `None` uses the conversation configuration, as
+    /// [`Self::with_compaction_policy`] does. Only `max_output_tokens` changes
+    /// for the summary request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid policy, enabled compaction without a
+    /// context window, or a summarizer backend that cannot bound a summary.
+    pub fn with_compaction(
+        mut self,
+        policy: CompactionPolicy,
+        summarizer: Option<ResolvedModelConfig>,
+    ) -> anyhow::Result<Self> {
         let window = self.config.model_config.context_window;
         let resolved = policy.validate(window)?;
         if resolved.enabled && window.is_none() {
@@ -1096,9 +1122,11 @@ impl Agent {
             );
         }
         if resolved.enabled {
-            crate::clients::compaction::validate_summary_backend(&self.config)?;
+            let summary_config = summarizer.as_ref().unwrap_or(&self.config);
+            crate::clients::compaction::validate_summary_backend(summary_config)?;
         }
         self.compaction_policy = Some(policy);
+        self.compaction_summarizer_config = summarizer.map(Box::new);
         self.resolved_compaction_policy = Some(resolved);
         Ok(self)
     }

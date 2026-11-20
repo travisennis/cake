@@ -2559,6 +2559,178 @@ fn compaction_settings_reject_non_positive_budgets() {
 }
 
 #[test]
+fn compaction_settings_resolve_summarizer_selection() {
+    let overlay: CompactionSettingsOverlay =
+        toml::from_str("model = \"cheap\"\nprofile = \"review\"\nreasoning_effort = \"low\"\n")
+            .unwrap();
+    assert_eq!(
+        overlay.resolve_summarizer(),
+        CompactionSummarizerSettings {
+            model: Some("cheap".to_string()),
+            profile: Some("review".to_string()),
+            reasoning_effort: Some(ReasoningEffort::Low),
+        }
+    );
+    assert_eq!(
+        CompactionSettingsOverlay::default().resolve_summarizer(),
+        CompactionSummarizerSettings::default()
+    );
+    assert!(toml::from_str::<CompactionSettingsOverlay>("reasoning_effort = \"extreme\"").is_err());
+}
+
+fn loaded_with_compaction_summarizer(block: &str) -> LoadedSettings {
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        &format!(
+            r#"
+default_model = "main"
+
+[[models]]
+name = "main"
+model = "main-model"
+base_url = "https://example.invalid/v1"
+api_key_env = "SUMMARIZER_TEST_KEY"
+
+[[models]]
+name = "cheap"
+model = "cheap-model"
+base_url = "https://example.invalid/v1"
+api_key_env = "SUMMARIZER_TEST_KEY"
+
+[profiles.review]
+default_model = "cheap"
+
+[compaction]
+{block}
+"#
+        ),
+    );
+    with_var("HOME", Some(home.path()), || SettingsLoader::load(None)).unwrap()
+}
+
+#[test]
+fn resolve_compaction_summarizer_precedence_and_fallback() {
+    with_var("SUMMARIZER_TEST_KEY", Some("test-key"), || {
+        let loaded = loaded_with_compaction_summarizer("");
+        let conversation =
+            ResolvedModelConfig::resolve(loaded.models["main"].to_model_config()).unwrap();
+        assert!(
+            loaded
+                .resolve_compaction_summarizer(&conversation)
+                .unwrap()
+                .is_none()
+        );
+
+        let loaded = loaded_with_compaction_summarizer("model = \"cheap\"");
+        let summary = loaded
+            .resolve_compaction_summarizer(&conversation)
+            .unwrap()
+            .expect("explicit model must select a summarizer");
+        assert_eq!(summary.model_config.model, "cheap-model");
+        assert_eq!(summary.model_config.reasoning_effort, None);
+        assert_eq!(summary.api_key, "test-key");
+
+        let loaded = loaded_with_compaction_summarizer("profile = \"review\"");
+        let summary = loaded
+            .resolve_compaction_summarizer(&conversation)
+            .unwrap()
+            .expect("profile default_model must select a summarizer");
+        assert_eq!(summary.model_config.model, "cheap-model");
+
+        let loaded = loaded_with_compaction_summarizer(
+            "model = \"cheap\"\nprofile = \"review\"\nreasoning_effort = \"low\"",
+        );
+        let summary = loaded
+            .resolve_compaction_summarizer(&conversation)
+            .unwrap()
+            .expect("selection must resolve");
+        assert_eq!(summary.model_config.model, "cheap-model");
+        assert_eq!(
+            summary.model_config.reasoning_effort,
+            Some(ReasoningEffort::Low)
+        );
+
+        let loaded = loaded_with_compaction_summarizer("reasoning_effort = \"low\"");
+        let summary = loaded
+            .resolve_compaction_summarizer(&conversation)
+            .unwrap()
+            .expect("effort-only override must clone the conversation config");
+        assert_eq!(summary.model_config.model, "main-model");
+        assert_eq!(summary.api_key, conversation.api_key);
+        assert_eq!(
+            summary.model_config.reasoning_effort,
+            Some(ReasoningEffort::Low)
+        );
+        assert_eq!(
+            conversation.model_config.reasoning_effort, None,
+            "the conversation config must not be mutated"
+        );
+    });
+}
+
+#[test]
+fn compaction_summarizer_unknown_names_fail_load() {
+    for (compaction, expected) in [
+        (
+            "model = \"missing\"",
+            "Compaction summarizer model 'missing' not found",
+        ),
+        ("profile = \"missing\"", "Unknown profile 'missing'"),
+    ] {
+        let home = create_home_dir();
+        write_global_settings(
+            home.path(),
+            &format!(
+                r#"
+[[models]]
+name = "main"
+model = "main-model"
+base_url = "https://example.invalid/v1"
+api_key_env = "SUMMARIZER_TEST_KEY"
+
+[compaction]
+{compaction}
+"#
+            ),
+        );
+        let error = with_var("HOME", Some(home.path()), || SettingsLoader::load(None))
+            .expect_err("invalid summarizer selection must fail load");
+        assert!(error.to_string().contains(expected), "{error}");
+    }
+
+    let home = create_home_dir();
+    write_global_settings(
+        home.path(),
+        r#"
+[[models]]
+name = "main"
+model = "main-model"
+base_url = "https://example.invalid/v1"
+api_key_env = "SUMMARIZER_TEST_KEY"
+
+[profiles.review]
+default_model = "missing"
+
+[compaction]
+profile = "review"
+"#,
+    );
+    let error = with_var("HOME", Some(home.path()), || SettingsLoader::load(None))
+        .expect_err("an unknown profile default_model must fail load");
+    assert!(
+        error
+            .to_string()
+            .contains("Compaction summarizer model 'missing' not found"),
+        "{error}"
+    );
+}
+
+#[test]
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "two loader setups and their merged assertions share one fixture"
+)]
 fn compaction_settings_global_project_and_profile_precedence() {
     let home = create_home_dir();
     write_global_settings(
@@ -2576,6 +2748,12 @@ threshold_percent = 70
 trigger_tokens = 300000
 keep_recent_tokens = 15000
 summary_tokens = 3000
+model = "test-model"
+profile = "review"
+reasoning_effort = "high"
+
+[profiles.review]
+default_model = "test-model"
 
 [profiles.review.compaction]
 enabled = false
@@ -2583,18 +2761,20 @@ threshold_percent = 60
 trigger_tokens = 250000
 keep_recent_tokens = 12000
 summary_tokens = 2500
+reasoning_effort = "medium"
 "#,
     );
     let project = create_project_settings(
-        r"
+        r#"
 [compaction]
 threshold_percent = 75
 keep_recent_tokens = 18000
+model = "test-model"
 
 [profiles.review.compaction]
 trigger_tokens = 200000
 summary_tokens = 2000
-",
+"#,
     );
 
     let loaded = with_var("HOME", Some(home.path()), || {
@@ -2606,6 +2786,18 @@ summary_tokens = 2000
     assert_eq!(loaded.compaction.trigger_tokens, Some(300_000));
     assert_eq!(loaded.compaction.retained_tokens, 18_000);
     assert_eq!(loaded.compaction.summary_tokens, 3_000);
+    assert_eq!(
+        loaded.compaction_summarizer,
+        CompactionSummarizerSettings {
+            model: Some("test-model".to_string()),
+            profile: Some("review".to_string()),
+            reasoning_effort: Some(ReasoningEffort::High),
+        }
+    );
+    assert_eq!(
+        loaded.profile_default_models.get("review"),
+        Some(&Some("test-model".to_string()))
+    );
 
     let loaded = with_var("HOME", Some(home.path()), || {
         SettingsLoader::load_with_profile(Some(project.path()), Some("review"))
@@ -2616,6 +2808,18 @@ summary_tokens = 2000
     assert_eq!(loaded.compaction.trigger_tokens, Some(200_000));
     assert_eq!(loaded.compaction.retained_tokens, 12_000);
     assert_eq!(loaded.compaction.summary_tokens, 2_000);
+    assert_eq!(
+        loaded.compaction_summarizer.reasoning_effort,
+        Some(ReasoningEffort::Medium)
+    );
+    assert_eq!(
+        loaded.compaction_summarizer.model.as_deref(),
+        Some("test-model")
+    );
+    assert_eq!(
+        loaded.compaction_summarizer.profile.as_deref(),
+        Some("review")
+    );
     assert!(loaded.warnings.is_empty(), "{:#?}", loaded.warnings);
 }
 
@@ -2674,10 +2878,14 @@ threshold_percent = 70
 trigger_tokens = 300000
 keep_recent_tokens = 15000
 summary_tokens = 2048
+model = "cheap"
+profile = "review"
+reasoning_effort = "low"
 
 [profiles.review.compaction]
 enabled = false
 trigger_tokens = 250000
+model = "cheap"
 "#,
     )
     .unwrap();
@@ -2690,12 +2898,16 @@ trigger_tokens = 250000
     assert_eq!(compaction.trigger_tokens.unwrap().value(), 300_000);
     assert_eq!(compaction.keep_recent_tokens.unwrap().value(), 15_000);
     assert_eq!(compaction.summary_tokens.unwrap().value(), 2_048);
+    assert_eq!(compaction.model.as_deref(), Some("cheap"));
+    assert_eq!(compaction.profile.as_deref(), Some("review"));
+    assert_eq!(compaction.reasoning_effort, Some(ReasoningEffort::Low));
     let profile = stripped.profiles["review"]
         .compaction
         .as_ref()
         .expect("profile compaction must be preserved");
     assert_eq!(profile.enabled, Some(false));
     assert_eq!(profile.trigger_tokens.unwrap().value(), 250_000);
+    assert_eq!(profile.model.as_deref(), Some("cheap"));
 }
 
 #[test]

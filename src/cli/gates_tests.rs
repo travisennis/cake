@@ -71,6 +71,8 @@ fn minimal_settings(gates: GateConfiguration) -> LoadedSettings {
         limits: crate::config::settings::ResolvedLimits::default(),
         images: crate::config::settings::ResolvedImagePolicy::default(),
         compaction: crate::config::settings::CompactionPolicy::default(),
+        compaction_summarizer: crate::config::settings::CompactionSummarizerSettings::default(),
+        profile_default_models: std::collections::HashMap::default(),
         warnings: Vec::new(),
     }
 }

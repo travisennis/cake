@@ -23,9 +23,7 @@ use crate::cli::{
 use crate::clients::{GrantReport, SandboxPolicy, builtin_tool_inventory};
 use crate::config::hooks::{HookGroup, HookMatcher, HooksLoader};
 use crate::config::settings::MAX_IMAGE_EDGE;
-use crate::config::settings::{
-    CompactionPolicy, JudgeSettings, LoadedSettings, ResolvedImagePolicy, ResolvedLimits,
-};
+use crate::config::settings::{JudgeSettings, LoadedSettings, ResolvedImagePolicy, ResolvedLimits};
 use crate::config::skills::{
     SkillCatalog, SkillConfig, SkillDiagnostic, discover_skills_with_paths, parse_skill_path_list,
 };
@@ -288,16 +286,26 @@ struct CompactionSnapshot {
     trigger_tokens: Option<u64>,
     keep_recent_tokens: u64,
     summary_tokens: u64,
+    summarizer_model: Option<String>,
+    summarizer_profile: Option<String>,
+    summarizer_reasoning_effort: Option<String>,
 }
 
-impl From<&CompactionPolicy> for CompactionSnapshot {
-    fn from(policy: &CompactionPolicy) -> Self {
+impl From<&LoadedSettings> for CompactionSnapshot {
+    fn from(loaded: &LoadedSettings) -> Self {
+        let policy = &loaded.compaction;
+        let summarizer = &loaded.compaction_summarizer;
         Self {
             enabled: policy.enabled,
             threshold_percent: policy.threshold_percent,
             trigger_tokens: policy.trigger_tokens,
             keep_recent_tokens: policy.retained_tokens,
             summary_tokens: policy.summary_tokens,
+            summarizer_model: summarizer.model.clone(),
+            summarizer_profile: summarizer.profile.clone(),
+            summarizer_reasoning_effort: summarizer
+                .reasoning_effort
+                .map(|effort| effort.as_str().to_string()),
         }
     }
 }
@@ -345,7 +353,7 @@ impl SettingsSnapshot {
             tools_enabled: loaded.tools_enabled.clone(),
             limits: LimitsSnapshot::from(&loaded.limits),
             images: ImagesSnapshot::build(&loaded.images, &loaded.limits),
-            compaction: CompactionSnapshot::from(&loaded.compaction),
+            compaction: CompactionSnapshot::from(loaded),
             judge: JudgeSnapshot::from(&loaded.judge),
         }
     }
@@ -1159,6 +1167,13 @@ impl ConfigReport {
             option_label(compaction.trigger_tokens, "unset"),
             compaction.keep_recent_tokens,
             compaction.summary_tokens,
+        );
+        _ = writeln!(
+            output,
+            "  compaction summarizer: model={}, profile={}, reasoning_effort={}",
+            option_label(compaction.summarizer_model.clone(), "unset"),
+            option_label(compaction.summarizer_profile.clone(), "unset"),
+            option_label(compaction.summarizer_reasoning_effort.clone(), "unset"),
         );
         let judge = &self.settings.judge;
         _ = writeln!(

@@ -143,6 +143,10 @@ fn debug_config_text_reports_effective_sections_without_the_credential() {
     assert!(report.contains(
         "compaction: enabled=false, threshold_percent=80, trigger_tokens=unset, keep_recent_tokens=20000, summary_tokens=4096"
     ));
+    assert!(
+        report
+            .contains("compaction summarizer: model=unset, profile=unset, reasoning_effort=unset")
+    );
     assert!(report.contains("Hooks\n"));
     assert!(report.contains("Toolbox (describe probing skipped)"));
     assert!(!report.contains("actual-secret-value"));
@@ -174,6 +178,18 @@ threshold_percent = 70
 trigger_tokens = 350000
 keep_recent_tokens = 15000
 summary_tokens = 2048
+model = "summary"
+profile = "review"
+reasoning_effort = "low"
+
+[[models]]
+name = "summary"
+model = "cheap-model"
+base_url = "https://example.invalid/v1"
+api_key_env = "CONFIG_TEST_KEY"
+
+[profiles.review]
+default_model = "zen"
 "#,
     );
 
@@ -182,6 +198,12 @@ summary_tokens = 2048
     assert!(stdout(&text).contains(
         "compaction: enabled=true, threshold_percent=70, trigger_tokens=350000, keep_recent_tokens=15000, summary_tokens=2048"
     ));
+    assert!(
+        stdout(&text)
+            .contains("compaction summarizer: model=summary, profile=review, reasoning_effort=low"),
+        "{}",
+        stdout(&text)
+    );
 
     let json = run_with_key(&env, &["debug", "config", "--json"], "actual-secret-value");
     assert_eq!(json.status.code(), Some(0), "stderr: {}", stderr(&json));
@@ -194,6 +216,9 @@ summary_tokens = 2048
             "trigger_tokens": 350_000,
             "keep_recent_tokens": 15_000,
             "summary_tokens": 2_048,
+            "summarizer_model": "summary",
+            "summarizer_profile": "review",
+            "summarizer_reasoning_effort": "low",
         })
     );
 }
@@ -270,6 +295,9 @@ fn assert_config_json_document(env: &TestEnv, document: &serde_json::Value) {
             "trigger_tokens": serde_json::Value::Null,
             "keep_recent_tokens": 20_000,
             "summary_tokens": 4_096,
+            "summarizer_model": serde_json::Value::Null,
+            "summarizer_profile": serde_json::Value::Null,
+            "summarizer_reasoning_effort": serde_json::Value::Null,
         })
     );
     assert_eq!(

@@ -298,13 +298,19 @@ const DEFAULT_SETTINGS: &str = r#"# Cake project settings, created by `cake init
 # Responses backend, which cannot create new checkpoints because it removes the
 # bounded summary generation cap. See docs/configuration.md. A selected profile
 # can also set [profiles.NAME.compaction]; profile values override top-level
-# values per key.
+# values per key. model selects a [[models]] entry for checkpoint summaries;
+# profile contributes only its default_model when model is absent. Either one
+# falls back to the conversation model, and reasoning_effort overrides the
+# selected model's effort. Summary calls still carry no tools, hooks, or schema.
 # [compaction]
 # enabled = false          # opt in to automatic pre-request compaction
 # threshold_percent = 80   # fallback trigger as a percent of context_window
 # trigger_tokens = 350000  # absolute trigger; must be below context_window
 # keep_recent_tokens = 20000 # retained-tail token target
 # summary_tokens = 4096    # generated summary token target
+# model = "cheap-model"    # [[models]] entry used for checkpoint summaries
+# profile = "review"       # profile whose default_model selects the summary model
+# reasoning_effort = "low" # summary-call effort override
 "#;
 
 /// Generated inert `.cake/hooks.json.example` content.
