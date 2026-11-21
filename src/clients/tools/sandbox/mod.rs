@@ -82,6 +82,7 @@ impl SandboxPolicy {
     /// than filesystem grants, so they never appear in [`SandboxConfig`]'s
     /// path lists; this predicate is the single place that decides whether a
     /// platform strategy emits them.
+    #[cfg(target_os = "macos")]
     pub(super) const fn allows_app_interaction(self) -> bool {
         matches!(self, Self::WorkspaceWriteInteractive)
     }
@@ -146,9 +147,11 @@ pub(super) struct SandboxConfig {
     pub writable: Vec<PathBuf>,
     /// Paths with read and execute access, but no write access.
     pub read_execute: Vec<PathBuf>,
-    /// The sandbox policy this config was built for. Platform strategies use
+    /// The sandbox policy this config was built for. The macOS strategy uses
     /// this to adjust rules that are not derived purely from the path lists
-    /// (e.g. macOS Keychain file grants and app-launching capabilities).
+    /// (e.g. macOS Keychain file grants and app-launching capabilities); the
+    /// Linux strategy derives every rule from the path lists alone.
+    #[cfg(target_os = "macos")]
     pub policy: SandboxPolicy,
     /// Directories the user granted directly --- `settings_dirs`,
     /// `additional_dirs`, and `skill_dirs` --- in lexical and canonical form.
@@ -563,6 +566,7 @@ impl SandboxConfig {
         let config = Self {
             writable,
             read_execute,
+            #[cfg(target_os = "macos")]
             policy: grants.policy,
             user_grants: grants.user_grants.clone(),
         };
@@ -1008,6 +1012,7 @@ impl SandboxGuard {
     }
 
     /// Create a guard that owns a cleanup resource.
+    #[cfg(target_os = "macos")]
     pub(super) fn new<T: Send + 'static>(resource: T) -> Self {
         Self {
             _inner: Some(Box::new(resource)),
