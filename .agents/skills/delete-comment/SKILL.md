@@ -83,7 +83,7 @@ A decision belongs to exactly one record. Extend the existing record when the ch
 python3 scripts/lint-comments.py --write-baseline
 ```
 
-The baseline must fall or stay flat. Raising an entry to admit a new comment defeats the gate: either the sentence is a decision that belongs in an ADR, or it should not exist. If a legitimate exception appears, the right change is an exemption in `scripts/lint-comments.py` with a stated reason, not a raised per-file count.
+The baseline must fall or stay flat. The writer refuses a count above the existing entry, so a raise cannot be committed accidentally. Raising an entry to admit a new comment is not the escape hatch: either the sentence is a decision that belongs in an ADR, or it should not exist. If a legitimate exception appears, the right change is an exemption in `scripts/lint-comments.py` with a stated reason.
 
 ### 7. Verify
 

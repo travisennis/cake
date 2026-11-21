@@ -16,7 +16,7 @@ Ordinary comments are banned in Rust production sources under `src/`. Rationale 
 
 - A file may hold no more ordinary comments than its entry in `ci/comment-baseline.json`.
 - A file absent from the baseline may hold none.
-- Entries may only fall. `--write-baseline` rewrites the file after a cleanup; a raised entry is a review decision, not a mechanical update.
+- Entries may only fall. `--write-baseline` rewrites the file after a cleanup and refuses a count above the existing entry; an exemption belongs in the lint, not in a raised allowance.
 
 Two comment forms are exempt:
 

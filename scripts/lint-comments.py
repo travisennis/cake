@@ -225,8 +225,26 @@ def load_baseline(path: str) -> dict[str, int]:
     return {str(key): int(value) for key, value in entries.items()}
 
 
-def write_baseline(path: str, found: dict[str, list[Comment]]) -> None:
+def write_baseline(path: str, found: dict[str, list[Comment]]) -> int:
     entries = {file: len(items) for file, items in sorted(found.items())}
+    previous = load_baseline(path) if os.path.exists(path) else {}
+    raised = {
+        file: (previous.get(file, 0), count)
+        for file, count in entries.items()
+        if count > previous.get(file, 0)
+    }
+    if raised:
+        for file, (before, after) in sorted(raised.items()):
+            print(
+                f"ERROR: {file}: baseline would rise from {before} to {after}",
+                file=sys.stderr,
+            )
+        print(
+            "The ratchet records cleanup, not new comments. Record the rationale "
+            "in docs/adr/ instead, or change the lint's exemptions deliberately.",
+            file=sys.stderr,
+        )
+        return 1
     payload = {
         "schema": 1,
         "note": "Ordinary comments still permitted per file. Ratchet down only.",
@@ -237,6 +255,7 @@ def write_baseline(path: str, found: dict[str, list[Comment]]) -> None:
         json.dump(payload, handle, indent=2)
         handle.write("\n")
     print(f"Recorded {sum(entries.values())} comments in {len(entries)} files: {path}")
+    return 0
 
 
 def list_comments(found: dict[str, list[Comment]]) -> None:
@@ -261,7 +280,7 @@ def gate(root: str, baseline_path: str, found: dict[str, list[Comment]]) -> int:
                 f"FAIL: {file}: {actual} ordinary comments, ratchet allows {allowed}",
                 file=sys.stderr,
             )
-            for comment in found.get(file, [])[allowed:]:
+            for comment in found.get(file, []):
                 print(f"  {file}:{comment.line}: {comment.first_line}", file=sys.stderr)
         elif actual < allowed:
             stale += allowed - actual
@@ -313,8 +332,7 @@ def main() -> int:
         list_comments(found)
         return 0
     if args.write_baseline:
-        write_baseline(os.path.join(root, args.baseline), found)
-        return 0
+        return write_baseline(os.path.join(root, args.baseline), found)
     return gate(root, os.path.join(root, args.baseline), found)
 
 
