@@ -603,25 +603,6 @@ pub fn prune_request_with_plan<'a>(
     })
 }
 
-/// Prune a request projection to the configured image policy.
-///
-/// Images are admitted in source order and an image that would exceed a budget
-/// is omitted, so the result never rewrites an image an earlier request already
-/// projected. Returns the borrowed slice when every image is admitted, so an
-/// image-free or under-budget request pays no copy. The original conversation
-/// and session records are never modified.
-///
-/// # Errors
-///
-/// Returns an error when an image cannot be planned safely, including a corrupt
-/// image or a digest mismatch. A budget never fails a request.
-pub fn prune_request<'a>(
-    history: Cow<'a, [ConversationItem]>,
-    policy: &ResolvedImagePolicy,
-) -> anyhow::Result<Cow<'a, [ConversationItem]>> {
-    Ok(prune_request_with_plan(history, policy)?.history)
-}
-
 /// Verify every image digest in a request history without changing it.
 ///
 /// Vision backends call this immediately before serialization. The planner

@@ -536,31 +536,6 @@ impl SandboxConfig {
         Self::from_grants(context.path_grants())
     }
 
-    /// Build a sandbox configuration with additional directories and an
-    /// explicit sandbox policy.
-    ///
-    /// `additional_dirs` are added as read-only (from `--add-dir`).
-    /// `settings_dirs` are added as read-write (from `settings.toml`).
-    /// `skill_dirs` are added as read-only (parent dirs of SKILL.md files).
-    pub fn build_with_policy(
-        policy: SandboxPolicy,
-        cwd: &std::path::Path,
-        temp_dirs: &[std::path::PathBuf],
-        additional_dirs: &[std::path::PathBuf],
-        settings_dirs: &[std::path::PathBuf],
-        skill_dirs: &[std::path::PathBuf],
-    ) -> Self {
-        let grants = PathGrants::build_with_home_from_env(
-            policy,
-            cwd,
-            temp_dirs,
-            additional_dirs,
-            settings_dirs,
-            skill_dirs,
-        );
-        Self::from_grants(&grants)
-    }
-
     /// Project the shared grants into the Bash-facing path classes.
     ///
     /// The OS sandbox does not apply the in-process credential deny list:
@@ -1022,19 +997,20 @@ fn dedup_vec(mut paths: Vec<PathBuf>) -> Vec<PathBuf> {
 /// of command execution. When the guard is dropped, any held resources are
 /// cleaned up deterministically.
 pub(super) struct SandboxGuard {
-    inner: Option<Box<dyn std::any::Any + Send>>,
+    _inner: Option<Box<dyn std::any::Any + Send>>,
 }
 
 impl SandboxGuard {
     /// Create an empty guard (no cleanup needed).
+    #[cfg(target_os = "linux")]
     pub(super) const fn empty() -> Self {
-        Self { inner: None }
+        Self { _inner: None }
     }
 
     /// Create a guard that owns a cleanup resource.
     pub(super) fn new<T: Send + 'static>(resource: T) -> Self {
         Self {
-            inner: Some(Box::new(resource)),
+            _inner: Some(Box::new(resource)),
         }
     }
 }

@@ -346,19 +346,6 @@ fn denied_path_refs_in_command(
         .collect()
 }
 
-/// Preserve the existing model-facing path-detail helper while the Bash
-/// executor carries structured references for completion audit labels.
-pub(super) fn denied_paths_in_command(
-    command: &str,
-    cwd: &Path,
-    config: &super::sandbox::SandboxConfig,
-) -> Vec<String> {
-    denied_path_refs_in_command(command, cwd, config)
-        .iter()
-        .map(format_path_ref)
-        .collect()
-}
-
 fn scan_sandbox_token<'a>(
     raw: &'a str,
     home: &Path,

@@ -295,104 +295,6 @@ pub struct ApiAttemptTelemetry {
     pub summary_step: Option<u32>,
 }
 
-/// Historical terminal outcome of one in-process judge provider attempt.
-///
-/// Retained so old sidecars keep their schema; Cake no longer writes it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum JudgeAttemptTerminalClass {
-    Verdict,
-    Timeout,
-    Transport,
-    HttpError,
-    ResponseParse,
-    MalformedVerdict,
-    Refusal,
-}
-
-/// Historical metadata-only diagnostics for one in-process judge provider
-/// attempt. Cake no longer writes this record; old sidecars remain readable.
-///
-/// Raw prompts, command text, reason text, cwd, request and response bodies,
-/// credentials, and authorization headers must never enter this type.
-#[derive(Debug, Clone, Serialize)]
-pub struct JudgeAttemptTelemetry {
-    pub attempt: u32,
-    pub retry_ordinal: u32,
-    /// The classification that triggered this attempt's retry, present only on
-    /// a recovery attempt (`retry_ordinal > 0`). Never carries command or
-    /// prompt text.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub retry_reason: Option<RetryReasonSnapshot>,
-    /// The backoff wait before this attempt, 0 for the first attempt.
-    pub retry_delay_ms: u64,
-    /// The complete judge operation deadline for this evaluation
-    /// (`timeout_secs + retry_budget_secs`), the same on every attempt.
-    pub effective_deadline_ms: u64,
-    pub request_build_ms: u64,
-    pub request_ms: u64,
-    pub response_parse_ms: u64,
-    pub verdict_parse_ms: u64,
-    pub total_ms: u64,
-    pub history_items: usize,
-    pub system_prompt_bytes: usize,
-    pub user_prompt_bytes: usize,
-    pub model: String,
-    pub api_type: ApiType,
-    pub reasoning_effort: Option<ReasoningEffort>,
-    pub temperature: Option<f32>,
-    pub top_p: Option<f32>,
-    pub top_k: Option<u32>,
-    pub max_output_tokens: Option<u32>,
-    pub reasoning_max_tokens: Option<u32>,
-    pub configured_timeout_ms: u64,
-    pub tool_count: usize,
-    pub tool_choice: Option<String>,
-    pub status_code: Option<u16>,
-    /// The originating tool call identifier, when the attempt came from a tool
-    /// execution: concurrent Bash calls record attempts in completion order, so
-    /// consumers attribute an attempt to its tool call by hashing the session's
-    /// raw call identifier the same way. The field holds the raw value in
-    /// memory; serialization writes only its one-way digest, so the
-    /// provider-controlled identifier never enters a record.
-    #[serde(
-        skip_serializing_if = "Option::is_none",
-        serialize_with = "serialize_digested_optional"
-    )]
-    pub call_id: Option<String>,
-    /// The provider request identifier, when the provider supplied one.
-    /// Consumers correlate the attempt with provider logs by hashing the known
-    /// raw identifier the same way; serialization writes only the one-way
-    /// digest, so raw provider-controlled text never enters a record.
-    #[serde(serialize_with = "serialize_digested_optional")]
-    pub provider_request_id: Option<String>,
-    pub terminal_class: JudgeAttemptTerminalClass,
-    pub usage: Option<Usage>,
-    pub termination: Option<ProviderTermination>,
-}
-
-/// Historical metadata-only observation from the removed in-process `TypeSafe`
-/// evaluator. Retained so old sidecars keep their schema; Cake no longer makes
-/// `TypeSafe` requests or writes this record.
-#[derive(Debug, Clone, Serialize)]
-pub struct TypeSafeShadowTelemetry {
-    /// The originating tool call identifier, held raw in memory and serialized
-    /// only as the one-way digest [`digest_identifier`] produces, matching
-    /// `judge_attempt.call_id` so a consumer can pair the observation with the
-    /// same call.
-    #[serde(
-        skip_serializing_if = "Option::is_none",
-        serialize_with = "serialize_digested_optional"
-    )]
-    pub call_id: Option<String>,
-    pub elapsed_ms: u64,
-    pub model: Option<String>,
-    pub probability: Option<f32>,
-    pub usage_input_tokens: Option<u64>,
-    pub usage_output_tokens: Option<u64>,
-    pub failure_class: Option<String>,
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub struct RetryScheduledTelemetry {
     pub turn_index: u32,
@@ -927,20 +829,6 @@ pub enum SessionTelemetryRecord {
         timestamp: DateTime<Utc>,
         #[serde(flatten)]
         attempt: ApiAttemptTelemetry,
-    },
-    JudgeAttempt {
-        session_id: String,
-        invocation_id: String,
-        timestamp: DateTime<Utc>,
-        #[serde(flatten)]
-        attempt: JudgeAttemptTelemetry,
-    },
-    TypeSafeShadow {
-        session_id: String,
-        invocation_id: String,
-        timestamp: DateTime<Utc>,
-        #[serde(flatten)]
-        observation: TypeSafeShadowTelemetry,
     },
     RetryScheduled {
         session_id: String,

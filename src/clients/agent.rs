@@ -1030,19 +1030,10 @@ impl Agent {
         Ok(self)
     }
 
-    /// Sets the conversation history from raw conversation items.
-    ///
-    /// Restore and fork seed through [`Self::with_context_seed`], which carries
-    /// the latest checkpoint too. This is the checkpoint-free builder.
-    pub fn with_history(mut self, messages: Vec<ConversationItem>) -> anyhow::Result<Self> {
-        self.conversation.with_restored_history(messages)?;
-        Ok(self)
-    }
-
     /// Restores raw history and the latest checkpoint from a session seed.
     ///
-    /// Restore and fork both use this instead of [`Self::with_history`] so a
-    /// checkpointed session projects the same request context a live run would.
+    /// Restore and fork both use this so a checkpointed session projects the
+    /// same request context a live run would.
     pub fn with_context_seed(mut self, seed: crate::types::ContextSeed) -> anyhow::Result<Self> {
         self.conversation.with_restored_context(seed)?;
         self.last_measurement = None;

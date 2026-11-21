@@ -46,9 +46,6 @@ pub const MAX_ENV_NAMES: usize = 32;
 /// Maximum characters in an identifier or gate code.
 pub const MAX_IDENTIFIER_CHARS: usize = 64;
 
-/// Maximum characters of a script-evidence payload.
-pub const MAX_SCRIPT_EVIDENCE_CHARS: usize = 32_768;
-
 /// Phases a gate can declare.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -273,24 +270,6 @@ impl InitFrame {
             env: Vec::new(),
         }
     }
-
-    pub fn with_config(mut self, config: Value) -> Self {
-        self.config = Some(config);
-        self
-    }
-
-    pub fn with_models(
-        mut self,
-        models: std::collections::BTreeMap<String, ModelDescriptor>,
-    ) -> Self {
-        self.models = Some(models);
-        self
-    }
-
-    pub fn with_env(mut self, env: Vec<String>) -> Self {
-        self.env = env;
-        self
-    }
 }
 
 /// The `ready` reply to `init`.
@@ -304,19 +283,6 @@ pub struct ReadyFrame {
     pub version: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
-}
-
-impl ReadyFrame {
-    pub fn new(name: String, version: String) -> Self {
-        Self {
-            protocol: PROTOCOL_VERSION.to_string(),
-            frame_type: FrameType::Ready,
-            id: InitFrame::INIT_ID.to_string(),
-            name,
-            version,
-            warnings: Vec::new(),
-        }
-    }
 }
 
 /// One collected script's untrusted contents.
@@ -427,15 +393,6 @@ pub struct GateAnnotation {
     pub text: String,
 }
 
-impl GateAnnotation {
-    pub const fn prepend(text: String) -> Self {
-        Self {
-            placement: AnnotationPlacement::Prepend,
-            text,
-        }
-    }
-}
-
 /// One gate-declared evidence item. Evidence is the only gate-controlled data
 /// that reaches telemetry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -467,51 +424,6 @@ pub struct DecisionFrame {
 }
 
 impl DecisionFrame {
-    pub fn new(id: String, decision: GateDecision) -> Self {
-        Self {
-            protocol: PROTOCOL_VERSION.to_string(),
-            frame_type: FrameType::Decision,
-            id,
-            decision,
-            code: None,
-            message: String::new(),
-            confidence: None,
-            annotations: Vec::new(),
-            short_circuit: false,
-            evidence: Vec::new(),
-        }
-    }
-
-    pub fn with_code(mut self, code: String) -> Self {
-        self.code = Some(code);
-        self
-    }
-
-    pub fn with_message(mut self, message: String) -> Self {
-        self.message = message;
-        self
-    }
-
-    pub const fn with_confidence(mut self, confidence: f32) -> Self {
-        self.confidence = Some(confidence);
-        self
-    }
-
-    pub fn with_annotations(mut self, annotations: Vec<GateAnnotation>) -> Self {
-        self.annotations = annotations;
-        self
-    }
-
-    pub const fn with_short_circuit(mut self, short_circuit: bool) -> Self {
-        self.short_circuit = short_circuit;
-        self
-    }
-
-    pub fn with_evidence(mut self, evidence: Vec<GateEvidence>) -> Self {
-        self.evidence = evidence;
-        self
-    }
-
     /// Validate protocol, id matching, the block/warn requirements, code shape,
     /// and confidence range. Unknown fields were already ignored by serde.
     pub fn validate(&self, expected_id: &str) -> Result<(), String> {
@@ -582,18 +494,6 @@ pub struct ErrorFrame {
     pub id: String,
     pub class: GateErrorClass,
     pub message: String,
-}
-
-impl ErrorFrame {
-    pub fn new(id: String, class: GateErrorClass, message: String) -> Self {
-        Self {
-            protocol: PROTOCOL_VERSION.to_string(),
-            frame_type: FrameType::Error,
-            id,
-            class,
-            message,
-        }
-    }
 }
 
 /// The frame sent at session end. Shutdown is best effort.
@@ -821,12 +721,6 @@ pub fn is_valid_evidence_kind(value: &str) -> bool {
         && value.chars().count() <= MAX_IDENTIFIER_CHARS
         && characters
             .all(|character| is_lower_alphanumeric(character) || matches!(character, '-' | '_'))
-}
-
-/// Whether an id fits the schema's `1..=64` character identifier rule.
-#[must_use]
-pub fn is_valid_identifier(value: &str) -> bool {
-    !value.is_empty() && value.chars().count() <= MAX_IDENTIFIER_CHARS
 }
 
 const fn is_lower_alphanumeric(character: char) -> bool {

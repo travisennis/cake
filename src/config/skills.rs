@@ -305,26 +305,6 @@ impl Skill {
 
         Ok((name, description))
     }
-
-    /// Load the full body content of the skill (markdown after frontmatter).
-    ///
-    /// This reads from disk at activation time, not during discovery. The
-    /// caller is responsible for any per-session caching or deduplication.
-    pub fn load_body(&self) -> Result<String, std::io::Error> {
-        let content = std::fs::read_to_string(&self.location)?;
-
-        // Strip frontmatter
-        let trimmed = content.trim_start();
-        let Some(after_open) = trimmed.strip_prefix("---") else {
-            return Ok(content);
-        };
-
-        if let Some((_yaml_text, body)) = after_open.split_once("\n---") {
-            return Ok(body.trim_start().to_string());
-        }
-
-        Ok(content)
-    }
 }
 
 // =============================================================================
@@ -467,12 +447,6 @@ impl SkillCatalogMetrics {
         }
     }
 
-    /// Whether the rendered catalog exceeds an advisory character budget.
-    #[must_use]
-    pub const fn catalog_over_budget(self, budget: usize) -> bool {
-        self.characters > budget
-    }
-
     /// Characters over an advisory budget, or zero when within it.
     #[must_use]
     pub const fn catalog_over_budget_by(self, budget: usize) -> usize {
@@ -481,65 +455,6 @@ impl SkillCatalogMetrics {
 }
 
 impl SkillCatalog {
-    /// Measure the rendered catalog without changing its contents.
-    #[must_use]
-    pub fn metrics(&self) -> SkillCatalogMetrics {
-        SkillCatalogMetrics::from_xml(&self.to_prompt_xml())
-    }
-
-    /// Report the actual rendered catalog without changing its contents.
-    ///
-    /// Budgets are advisory Unicode-scalar counts. The token estimate is
-    /// ceil(characters / 4), not a provider tokenizer or a context guarantee.
-    pub fn size_report(&self, catalog_budget: usize, description_budget: usize) -> String {
-        use std::fmt::Write;
-
-        let metrics = self.metrics();
-        let mut report = format!(
-            "Skill catalog: {} skills, {} bytes, {} characters, ~{} tokens \
-             (ceil(characters / 4); not a provider token count).\n\
-             Advisory thresholds: {catalog_budget} catalog characters; \
-             {description_budget} description characters.\n",
-            self.skills.len(),
-            metrics.bytes,
-            metrics.characters,
-            metrics.estimated_tokens,
-        );
-        if metrics.catalog_over_budget(catalog_budget) {
-            _ = writeln!(
-                report,
-                "WARNING: rendered catalog exceeds the advisory budget."
-            );
-        }
-        let mut descriptions: Vec<_> = self.skills.iter().collect();
-        descriptions.sort_by(|left, right| {
-            right
-                .description
-                .chars()
-                .count()
-                .cmp(&left.description.chars().count())
-                .then_with(|| left.name.cmp(&right.name))
-        });
-        for skill in descriptions {
-            let count = skill.description.chars().count();
-            let warning = if count > description_budget {
-                " WARNING"
-            } else {
-                ""
-            };
-            _ = writeln!(
-                report,
-                "  {count} description characters: {}{warning}",
-                skill.name
-            );
-        }
-        report.push_str(
-            "Reduce the catalog with skills.only, a skills profile, or --no-skills. \
-             Thresholds do not truncate descriptions or remove skills.\n",
-        );
-        report
-    }
-
     /// Create an empty skill catalog.
     #[must_use]
     pub const fn empty() -> Self {
@@ -566,23 +481,6 @@ impl SkillCatalog {
             skills: Vec::new(),
             diagnostics: Vec::new(),
         }
-    }
-
-    /// Generate XML catalog for system prompt.
-    ///
-    /// Returns an empty string if no valid skills are in the catalog. Prefer
-    /// [`Self::to_prompt_xml_with_budget`] for prompt construction; this method
-    /// is the unbudgeted compatibility view.
-    pub fn to_prompt_xml(&self) -> String {
-        if self.skills.is_empty() {
-            return String::new();
-        }
-        render_skill_catalog(
-            self.skills
-                .iter()
-                .map(|skill| (skill, skill.description.as_str())),
-            &[],
-        )
     }
 
     /// Render the catalog within `budget`.

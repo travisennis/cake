@@ -180,18 +180,6 @@ pub struct Preparation {
     pub measure: PreparationMeasure,
 }
 
-impl Preparation {
-    /// The no-op reason, when the outcome is a no-op.
-    pub fn no_op_reason(&self) -> Option<&str> {
-        self.outcome.no_op_reason()
-    }
-
-    /// The no-fit reason, when the outcome is a no-fit.
-    pub fn no_fit_reason(&self) -> Option<&str> {
-        self.outcome.no_fit_reason()
-    }
-}
-
 /// The typed result of preparation.
 #[derive(Debug)]
 pub enum PrepareOutcome {
@@ -203,34 +191,11 @@ pub enum PrepareOutcome {
     Prepared(Box<PreparedCompaction>),
 }
 
-impl PrepareOutcome {
-    /// The no-op reason, when this outcome is a no-op.
-    pub fn no_op_reason(&self) -> Option<&str> {
-        match self {
-            Self::NoOp { reason } => Some(reason),
-            Self::Prepared(_) | Self::NoFit { .. } => None,
-        }
-    }
-
-    /// The no-fit reason, when this outcome is a no-fit.
-    pub fn no_fit_reason(&self) -> Option<&str> {
-        match self {
-            Self::NoFit { reason } => Some(reason),
-            Self::Prepared(_) | Self::NoOp { .. } => None,
-        }
-    }
-}
-
 /// A prepared candidate whose retained tail and summary bounds are fixed.
 #[derive(Debug)]
 pub struct PreparedCompaction {
     pub checkpoint_id: String,
     pub retained: Vec<RetainedRecord>,
-    /// The read-only admission plan for the post-checkpoint request.
-    ///
-    /// Retained records keep their original image references; this plan is
-    /// used only to estimate the request projection.
-    pub image_plan: ImageBudgetPlan,
     /// Retired whole exchanges, oldest first, for the summary caller.
     pub retired_exchanges: Vec<Vec<RetainedRecord>>,
     pub estimated_input: EstimatedInput,
@@ -440,7 +405,6 @@ fn request_image_slots<'a>(
 /// One request projection after image admission.
 struct PlannedProjection {
     items: Vec<ConversationItem>,
-    plan: ImageBudgetPlan,
     pinned_omission: Option<String>,
 }
 
@@ -458,7 +422,6 @@ fn plan_request_projection(
         }
         return Ok(PlannedProjection {
             items,
-            plan: ImageBudgetPlan::default(),
             pinned_omission: None,
         });
     }
@@ -466,7 +429,6 @@ fn plan_request_projection(
     if slots.is_empty() {
         return Ok(PlannedProjection {
             items: items.to_vec(),
-            plan: ImageBudgetPlan::default(),
             pinned_omission: None,
         });
     }
@@ -484,11 +446,9 @@ fn plan_request_projection(
     let pinned_omission = pinned_omission_reason(&slots, &plan, pinned_count);
     drop(slots);
     let mut planned = items.to_vec();
-    apply_plan_to_history(&mut planned, &owners, plan.clone())
-        .map_err(RetainedImageFailure::Hard)?;
+    apply_plan_to_history(&mut planned, &owners, plan).map_err(RetainedImageFailure::Hard)?;
     Ok(PlannedProjection {
         items: planned,
-        plan,
         pinned_omission,
     })
 }
@@ -1136,7 +1096,6 @@ fn outcome_from_selection(
         Selection::Fits {
             retired_ranges,
             after_tokens,
-            image_plan,
         } => finalize_prepared(
             input,
             source,
@@ -1145,7 +1104,6 @@ fn outcome_from_selection(
             after_tokens,
             basis,
             resolved,
-            image_plan,
         ),
         Selection::PinnedNoFit(reason) => PrepareOutcome::NoFit { reason },
         Selection::None => no_fit_outcome(
@@ -1244,7 +1202,6 @@ fn pinned_source_records(source: &[RetainedRecord], exchanges: &[Exchange]) -> V
 struct PlannedPostCheckpoint {
     prefix_items: Vec<ConversationItem>,
     retained_items: Vec<ConversationItem>,
-    plan: ImageBudgetPlan,
     pinned_omission: Option<String>,
 }
 
@@ -1302,7 +1259,6 @@ fn plan_post_checkpoint(
     Ok(PlannedPostCheckpoint {
         prefix_items: planned.items[..prefix.len()].to_vec(),
         retained_items: planned.items[retained_offset..].to_vec(),
-        plan: planned.plan,
         pinned_omission: planned.pinned_omission,
     })
 }
@@ -1322,7 +1278,6 @@ enum Selection {
     Fits {
         retired_ranges: Vec<Range<usize>>,
         after_tokens: u64,
-        image_plan: ImageBudgetPlan,
     },
     PinnedNoFit(String),
     None,
@@ -1331,7 +1286,6 @@ enum Selection {
 struct EvaluatedCandidate {
     after_tokens: u64,
     retained_tokens: u64,
-    image_plan: ImageBudgetPlan,
 }
 
 enum CandidateEvaluation {
@@ -1406,7 +1360,6 @@ fn evaluate_candidate(
     Ok(CandidateEvaluation::Evaluated(EvaluatedCandidate {
         after_tokens,
         retained_tokens,
-        image_plan: planned.plan,
     }))
 }
 
@@ -1577,7 +1530,6 @@ fn select_exchanges(
                     return Ok(Selection::Fits {
                         retired_ranges,
                         after_tokens: candidate.after_tokens,
-                        image_plan: candidate.image_plan,
                     });
                 }
             },
@@ -1615,10 +1567,6 @@ fn no_fit_outcome(
     PrepareOutcome::NoFit { reason }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "finalization threads the selected ranges, estimates, and envelope identity"
-)]
 fn finalize_prepared(
     input: &PreparationInput<'_>,
     source: &[RetainedRecord],
@@ -1627,7 +1575,6 @@ fn finalize_prepared(
     after_tokens: u64,
     basis: EstimateBasis,
     resolved: ResolvedCompactionPolicy,
-    image_plan: ImageBudgetPlan,
 ) -> PrepareOutcome {
     let retired_exchanges: Vec<Vec<RetainedRecord>> = retired_ranges
         .iter()
@@ -1642,7 +1589,6 @@ fn finalize_prepared(
     PrepareOutcome::Prepared(Box::new(PreparedCompaction {
         checkpoint_id: input.checkpoint_id.clone(),
         retained,
-        image_plan,
         retired_exchanges,
         estimated_input: EstimatedInput {
             before_tokens,

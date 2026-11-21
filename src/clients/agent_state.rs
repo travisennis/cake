@@ -104,14 +104,6 @@ impl RecordProvenance {
     }
 }
 
-/// One retirable raw-history record in source order.
-#[derive(Debug, Clone, Copy)]
-pub(super) struct RawSourceRecord<'a> {
-    pub(super) raw_index: usize,
-    pub(super) item: &'a ConversationItem,
-    pub(super) provenance: &'a RecordProvenance,
-}
-
 /// One source record in a preparation projection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SourceRef {
@@ -129,7 +121,6 @@ pub(super) struct PreparationSource {
     pub(super) current_user_input: Option<usize>,
     pub(super) invocation_pins: Vec<InvocationPin>,
     pub(super) image_consumption: Vec<ImageConsumption>,
-    pub(super) source_refs: Vec<SourceRef>,
 }
 
 #[derive(Debug)]
@@ -180,26 +171,6 @@ impl ConversationState {
 
     pub(super) fn history(&self) -> &[ConversationItem] {
         &self.history
-    }
-
-    /// Provenance aligned one-to-one with [`Self::history`] by raw index.
-    pub(super) fn provenance(&self) -> &[RecordProvenance] {
-        &self.provenance
-    }
-
-    /// Raw body records in retirement order: oldest first, after the fresh
-    /// prompt prefix and any active checkpoint boundary.
-    ///
-    /// These are candidates, not final eligibility: preparation removes pinned
-    /// exchanges later. Retained records in an active checkpoint are ordered by
-    /// `checkpoint.retained`, not by this raw slice.
-    pub(super) fn retirable_raw_source_records(&self) -> impl Iterator<Item = RawSourceRecord<'_>> {
-        let start = prompt_context_prefix_len(&self.history).max(self.checkpoint_boundary);
-        (start..self.history.len()).map(|raw_index| RawSourceRecord {
-            raw_index,
-            item: &self.history[raw_index],
-            provenance: &self.provenance[raw_index],
-        })
     }
 
     /// The provider request derived from raw history and the active checkpoint.
@@ -258,7 +229,6 @@ impl ConversationState {
             current_user_input: Some(current_user_input),
             invocation_pins,
             image_consumption,
-            source_refs,
         })
     }
 
@@ -548,26 +518,6 @@ impl ConversationState {
         self.assert_provenance_aligned();
     }
 
-    /// Restore a persisted conversation, repairing tool calls the previous
-    /// process left without an output.
-    ///
-    /// A process that ends between persisting a `FunctionCall` and persisting
-    /// its `FunctionCallOutput` leaves history that providers reject, so each
-    /// unmatched call gains an explicit failed output before the next request.
-    /// The repair items are also queued for persistence so later restores see
-    /// the same well-formed history.
-    pub(super) fn with_restored_history(
-        &mut self,
-        messages: Vec<ConversationItem>,
-    ) -> anyhow::Result<()> {
-        self.with_restored_context(ContextSeed {
-            messages,
-            provenance: Vec::new(),
-            checkpoint: None,
-            boundary: None,
-        })
-    }
-
     /// Restore a persisted conversation and its latest checkpoint.
     ///
     /// The checkpoint's positional boundary is translated into raw-history
@@ -699,14 +649,6 @@ impl ConversationState {
             .push(RecordProvenance::consumed(source_task.map(str::to_owned)).with_origin(origin));
         self.assert_provenance_aligned();
         item
-    }
-
-    pub(super) fn extend_turn_items(&mut self, items: Vec<ConversationItem>) {
-        let provenance: Vec<RecordProvenance> = items
-            .iter()
-            .map(|item| RecordProvenance::live(item, None, None))
-            .collect();
-        self.extend_turn_items_with_provenance(items, provenance);
     }
 
     /// Append assistant-turn items with the exact provenance captured for each.

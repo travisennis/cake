@@ -789,9 +789,9 @@ impl CodingAssistant {
         );
         let tool_context = ToolContext::new(
             current_dir.to_path_buf(),
-            additional_dirs,
-            skill_base_dirs,
-            settings_dirs,
+            &additional_dirs,
+            &skill_base_dirs,
+            &settings_dirs,
             sandbox_policy,
         )
         .with_limits(loaded.limits.tool_limits);

@@ -19,8 +19,7 @@ use fs4::{FileExt, TryLockError};
 
 use crate::types::ProviderIdentity;
 use crate::types::{
-    CompactionData, ContextProvenance, ContextSeed, ConversationItem, GitState, SessionRecord,
-    TurnUsageData, Usage,
+    CompactionData, ContextProvenance, ContextSeed, GitState, SessionRecord, TurnUsageData, Usage,
 };
 
 /// Shared writer that holds the locked append handle for a session JSONL file.
@@ -259,20 +258,10 @@ impl Session {
         }
     }
 
-    /// Returns the conversation items from this session's records,
-    /// filtering out session metadata and task boundary records.
-    pub fn messages(&self) -> Vec<ConversationItem> {
-        self.records
-            .iter()
-            .filter_map(SessionRecord::to_conversation_item)
-            .collect()
-    }
-
     /// Returns the full raw conversation and the latest checkpoint's boundary.
     ///
-    /// [`Self::messages`] keeps its existing meaning. Restore uses this seed
-    /// instead, so the request projector can replace every conversation item
-    /// before the latest checkpoint record's position. The boundary is a count
+    /// Restore uses this seed, so the request projector can replace every
+    /// conversation item before the latest checkpoint record's position. The boundary is a count
     /// of conversation items, derived by scanning records in order, so it stays
     /// stable across resume and fork without storing an index.
     pub fn context_seed(&self) -> ContextSeed {

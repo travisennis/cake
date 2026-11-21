@@ -168,10 +168,6 @@ impl GateProcess {
         }
     }
 
-    pub const fn describe_info(&self) -> Option<&Describe> {
-        self.describe.as_ref()
-    }
-
     /// Run `describe` once per gate per run. Nonzero exit, timeout, extra
     /// stdout, or an invalid object is a startup failure.
     pub async fn describe(&mut self) -> Result<Describe, GateFailure> {

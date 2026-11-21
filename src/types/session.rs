@@ -1256,31 +1256,6 @@ impl SessionRecord {
             .chain(output_ids)
     }
 
-    /// Remove payload content ids from every persisted payload shape.
-    ///
-    /// Session records keep references so a hydrated record can be written
-    /// again, but stream-json output must preserve the pre-blob shape. This is
-    /// the shared projection used by replay and any other stream emitter.
-    pub fn strip_content_ids(&mut self) {
-        match self {
-            Self::Message(data) => strip_image_content_ids(&mut data.images),
-            Self::FunctionCallOutput(data) => data.strip_content_ids(),
-            Self::Compaction(data) => data.strip_content_ids(),
-            Self::SessionMeta { .. }
-            | Self::TaskStart(_)
-            | Self::PromptContext { .. }
-            | Self::FunctionCall(_)
-            | Self::SkillActivated { .. }
-            | Self::McpToolsActivated { .. }
-            | Self::HookEvent(_)
-            | Self::Reasoning(_)
-            | Self::TaskComplete(_)
-            | Self::CompactionStart(_)
-            | Self::CompactionEnd(_)
-            | Self::TurnUsage(_) => {},
-        }
-    }
-
     /// Fill legacy omissions that are no longer absent in newly written sessions.
     pub(crate) fn normalize_legacy_fields(&mut self, fallback_timestamp: DateTime<Utc>) {
         match self {

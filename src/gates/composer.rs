@@ -56,49 +56,12 @@ pub struct GateStageConfig {
     pub allowlist: Vec<String>,
 }
 
-impl GateStageConfig {
-    pub fn enforce(name: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            mode: GateMode::Enforce,
-            fail: FailMode::Closed,
-            short_circuit_on_allow: false,
-            allowlist: Vec::new(),
-        }
-    }
-
-    pub fn shadow(name: impl Into<String>) -> Self {
-        Self {
-            mode: GateMode::Shadow,
-            ..Self::enforce(name)
-        }
-    }
-}
-
 /// A startup failure or a gate that is ready to serve checks.
 #[derive(Debug)]
 pub struct GateStartup {
     pub config: GateStageConfig,
     pub gate: Result<Arc<dyn Gate>, GateFailure>,
     pub latency: Duration,
-}
-
-impl GateStartup {
-    pub fn ready(config: GateStageConfig, gate: Arc<dyn Gate>, latency: Duration) -> Self {
-        Self {
-            config,
-            gate: Ok(gate),
-            latency,
-        }
-    }
-
-    pub fn failed(config: GateStageConfig, failure: GateFailure, latency: Duration) -> Self {
-        Self {
-            config,
-            gate: Err(failure),
-            latency,
-        }
-    }
 }
 
 /// A bounded failure from a gate or from Cake's process management.
@@ -156,13 +119,6 @@ impl GateAnswer {
         }
     }
 
-    pub const fn bypassed(latency: Duration) -> Self {
-        Self {
-            kind: GateAnswerKind::Bypassed,
-            latency,
-        }
-    }
-
     pub const fn failure(failure: GateFailure, disabled: bool, latency: Duration) -> Self {
         Self {
             kind: GateAnswerKind::Failure { failure, disabled },
@@ -175,7 +131,6 @@ impl GateAnswer {
 #[derive(Debug, Clone)]
 pub enum GateAnswerKind {
     Decision(DecisionFrame),
-    Bypassed,
     Failure {
         failure: GateFailure,
         disabled: bool,
@@ -257,11 +212,6 @@ impl GateRequest {
 
     pub fn with_session(mut self, session: CheckSession) -> Self {
         self.session = Some(session);
-        self
-    }
-
-    pub const fn with_diagnostic(mut self, diagnostic: bool) -> Self {
-        self.diagnostic = diagnostic;
         self
     }
 }
@@ -370,14 +320,6 @@ impl GatePipelineError {
             Self::Startup { failure, .. } | Self::Check { failure, .. } => failure.class.clone(),
         }
     }
-
-    /// The startup record this failure carries, when it is a startup failure.
-    pub const fn startup_record(&self) -> Option<&GateStartupTelemetry> {
-        match self {
-            Self::Startup { startup, .. } => Some(startup),
-            Self::NoEnforceGate | Self::Check { .. } => None,
-        }
-    }
 }
 
 impl GatePipeline {
@@ -446,11 +388,6 @@ impl GatePipeline {
             startup_failures,
             telemetry: OnceLock::new(),
         })
-    }
-
-    /// Build a single-gate pipeline.
-    pub fn single(startup: GateStartup) -> Result<Self, GatePipelineError> {
-        Self::start(vec![startup])
     }
 
     /// An explicit global bypass: no gate runs, and every check records one
@@ -525,9 +462,6 @@ impl GatePipeline {
                 frame = frame.with_session(session);
             }
             let answer = stage.gate.check(frame).await;
-            if matches!(answer.kind, GateAnswerKind::Bypassed) {
-                return Ok(self.bypass_outcome(&request));
-            }
             let outcome = stage_outcome(&stage.config, stage.gate.describe(), &request_id, answer);
             composer.record(&stage.config, outcome);
             if let Some(recorded) = composer.last_stage() {
@@ -692,13 +626,6 @@ fn stage_outcome(
         GateAnswerKind::Failure { failure, disabled } => StageOutcome {
             failure: Some(failure),
             disabled,
-            ..base
-        },
-        GateAnswerKind::Bypassed => StageOutcome {
-            failure: Some(GateFailure::new(
-                GateErrorClass::Protocol,
-                "a gate answered a bypass outside the pipeline bypass",
-            )),
             ..base
         },
     }
@@ -961,27 +888,6 @@ impl Composer {
             deciding_gate,
         })
     }
-}
-
-/// Pure composition over already-executed stage results, in execution order.
-///
-/// The pipeline uses the same composer incrementally so it can stop the enforce
-/// chain at the right gate; callers use this entry point directly.
-pub fn compose(
-    configs: &[GateStageConfig],
-    command: &str,
-    stages: Vec<StageOutcome>,
-) -> Result<PipelineOutcome, GatePipelineError> {
-    let mut composer = Composer::new(configs.to_vec(), command.to_string());
-    for (index, stage) in stages.into_iter().enumerate() {
-        match configs.get(index) {
-            Some(config) => composer.record(config, stage),
-            None => {
-                composer.stages.push(stage);
-            },
-        }
-    }
-    composer.finish()
 }
 
 fn duration_millis(duration: Duration) -> u64 {

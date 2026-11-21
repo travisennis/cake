@@ -261,12 +261,6 @@ impl BlobStore {
         Self { root }
     }
 
-    /// Return the configured store root.
-    #[must_use]
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-
     /// Store `bytes` and return their content id.
     ///
     /// The blob is published under its digest without replacing an existing

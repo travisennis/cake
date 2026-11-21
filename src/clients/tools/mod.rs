@@ -83,22 +83,13 @@ pub fn compute_temp_directories() -> Vec<PathBuf> {
 }
 
 /// Directory context used by tool execution and sandbox construction.
-///
-/// The directory fields are construction inputs. Mutating any of them after
-/// construction requires a call to [`Self::refresh_path_grants`] before the
-/// next sandbox or path-validation use.
 #[derive(Clone, Debug)]
 pub struct ToolContext {
     pub cwd: PathBuf,
-    pub temp_dirs: Vec<PathBuf>,
-    pub additional_dirs: Vec<PathBuf>,
-    pub skill_dirs: Vec<PathBuf>,
-    pub settings_dirs: Vec<PathBuf>,
     /// Resolved sandbox policy applied to model-generated shell commands.
     sandbox_policy: SandboxPolicy,
     /// The single resolved grant table shared by the OS sandbox and the
-    /// in-process file tools. Built once at construction and refreshed only
-    /// when a construction input or the policy changes.
+    /// in-process file tools, built once at construction.
     path_grants: sandbox::PathGrants,
     /// The ordered command-policy pipeline for the Bash preflight. `None` when
     /// the run has no gate configured; the Bash tool fails closed on an absent
@@ -120,14 +111,14 @@ impl ToolContext {
     /// existing process-global cache.
     pub fn new(
         cwd: PathBuf,
-        additional_dirs: Vec<PathBuf>,
-        skill_dirs: Vec<PathBuf>,
-        settings_dirs: Vec<PathBuf>,
+        additional_dirs: &[PathBuf],
+        skill_dirs: &[PathBuf],
+        settings_dirs: &[PathBuf],
         sandbox_policy: SandboxPolicy,
     ) -> Self {
         Self::with_temp_dirs_and_policy(
             cwd,
-            compute_temp_directories(),
+            &compute_temp_directories(),
             additional_dirs,
             skill_dirs,
             settings_dirs,
@@ -138,28 +129,6 @@ impl ToolContext {
     /// The resolved sandbox policy for this context.
     pub(crate) const fn sandbox_policy(&self) -> SandboxPolicy {
         self.sandbox_policy
-    }
-
-    /// Change the sandbox policy and rebuild the cached grants.
-    pub(crate) fn set_sandbox_policy(&mut self, sandbox_policy: SandboxPolicy) {
-        self.sandbox_policy = sandbox_policy;
-        self.refresh_path_grants();
-    }
-
-    /// Rebuild the cached grants after a directory field changes.
-    ///
-    /// Production code never mutates the directory inputs after construction;
-    /// this exists for callers that deliberately replace a directory input
-    /// before using the context.
-    pub(crate) fn refresh_path_grants(&mut self) {
-        self.path_grants = Self::build_path_grants(
-            self.sandbox_policy,
-            &self.cwd,
-            &self.temp_dirs,
-            &self.additional_dirs,
-            &self.settings_dirs,
-            &self.skill_dirs,
-        );
     }
 
     /// The cached grant table. The OS sandbox projects its writable and
@@ -207,26 +176,22 @@ impl ToolContext {
 
     fn with_temp_dirs_and_policy(
         cwd: PathBuf,
-        temp_dirs: Vec<PathBuf>,
-        additional_dirs: Vec<PathBuf>,
-        skill_dirs: Vec<PathBuf>,
-        settings_dirs: Vec<PathBuf>,
+        temp_dirs: &[PathBuf],
+        additional_dirs: &[PathBuf],
+        skill_dirs: &[PathBuf],
+        settings_dirs: &[PathBuf],
         sandbox_policy: SandboxPolicy,
     ) -> Self {
         let path_grants = Self::build_path_grants(
             sandbox_policy,
             &cwd,
-            &temp_dirs,
-            &additional_dirs,
-            &settings_dirs,
-            &skill_dirs,
+            temp_dirs,
+            additional_dirs,
+            settings_dirs,
+            skill_dirs,
         );
         Self {
             cwd,
-            temp_dirs,
-            additional_dirs,
-            skill_dirs,
-            settings_dirs,
             sandbox_policy,
             path_grants,
             gates: None,
@@ -266,10 +231,10 @@ impl ToolContext {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         Self::with_temp_dirs_and_policy(
             cwd,
-            compute_temp_directories(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            &compute_temp_directories(),
+            &[],
+            &[],
+            &[],
             SandboxPolicy::WorkspaceWrite,
         )
     }
