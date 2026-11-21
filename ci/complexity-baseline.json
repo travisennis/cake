@@ -23,12 +23,6 @@
     },
     {
       "file": "./src/config/skills.rs",
-      "function": "Skill::parse_frontmatter_fallback",
-      "cyclomatic": 14.0,
-      "crap": 210.0
-    },
-    {
-      "file": "./src/config/skills.rs",
       "function": "scan_directory",
       "cyclomatic": 13.0
     },

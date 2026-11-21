@@ -113,8 +113,8 @@ impl Skill {
     /// Returns a diagnostic if the file cannot be read, has invalid frontmatter,
     /// or is missing required fields.
     pub fn parse(path: &Path, scope: SkillScope) -> Result<Self, SkillDiagnostic> {
-        let yaml_text = Self::read_frontmatter(path)?;
-        let (name, description) = Self::parse_frontmatter_yaml(&yaml_text, path)?;
+        let (yaml_text, frontmatter_line) = Self::read_frontmatter(path)?;
+        let (name, description) = Self::parse_frontmatter_yaml(&yaml_text, frontmatter_line, path)?;
 
         let base_directory = path
             .parent()
@@ -129,8 +129,8 @@ impl Skill {
         })
     }
 
-    /// Read only the YAML frontmatter from a skill file.
-    fn read_frontmatter(path: &Path) -> Result<String, SkillDiagnostic> {
+    /// Read the YAML frontmatter from a skill file and the 1-based line where it starts.
+    fn read_frontmatter(path: &Path) -> Result<(String, u64), SkillDiagnostic> {
         let file = std::fs::File::open(path).map_err(|e| SkillDiagnostic {
             level: DiagnosticLevel::Error,
             message: format!("Failed to read SKILL.md: {e}"),
@@ -139,8 +139,10 @@ impl Skill {
         let reader = std::io::BufReader::new(file);
         let mut yaml_text = String::new();
         let mut saw_open = false;
+        let mut frontmatter_line = 0;
 
-        for line_result in reader.lines() {
+        for (index, line_result) in reader.lines().enumerate() {
+            let file_line = index as u64 + 1;
             let line = line_result.map_err(|e| SkillDiagnostic {
                 level: DiagnosticLevel::Error,
                 message: format!("Failed to read SKILL.md: {e}"),
@@ -154,6 +156,7 @@ impl Skill {
                 }
                 if trimmed == "---" {
                     saw_open = true;
+                    frontmatter_line = file_line + 1;
                     continue;
                 }
                 return Err(SkillDiagnostic {
@@ -168,7 +171,7 @@ impl Skill {
                 if yaml_text.ends_with('\n') {
                     yaml_text.pop();
                 }
-                return Ok(yaml_text);
+                return Ok((yaml_text, frontmatter_line));
             }
             yaml_text.push_str(&line);
             yaml_text.push('\n');
@@ -190,16 +193,27 @@ impl Skill {
     }
 
     /// Parse YAML frontmatter from a skill file.
+    ///
+    /// `frontmatter_line` is the 1-based line in `SKILL.md` where `yaml_text`
+    /// begins, used to report parse failures against the file rather than the
+    /// extracted fragment.
     fn parse_frontmatter_yaml(
         yaml_text: &str,
+        frontmatter_line: u64,
         path: &Path,
     ) -> Result<(String, String), SkillDiagnostic> {
-        let frontmatter: SkillFrontmatter = match serde_saphyr::from_str(yaml_text) {
-            Ok(fm) => fm,
-            Err(_e) => {
-                return Self::parse_frontmatter_fallback(yaml_text, path);
-            },
-        };
+        let frontmatter: SkillFrontmatter =
+            serde_saphyr::from_str(yaml_text).map_err(|error| SkillDiagnostic {
+                level: DiagnosticLevel::Error,
+                message: format!(
+                    "SKILL.md frontmatter is not valid YAML: {}. Quote values that contain ': '.",
+                    error.render_with_options(serde_saphyr::render_options! {
+                        snippets: serde_saphyr::SnippetMode::Off,
+                        line_offset: frontmatter_line.saturating_sub(1),
+                    })
+                ),
+                file: path.to_path_buf(),
+            })?;
 
         let name = frontmatter
             .name
@@ -218,70 +232,6 @@ impl Skill {
                 message: "SKILL.md missing required field 'description' in frontmatter".to_string(),
                 file: path.to_path_buf(),
             })?;
-
-        Ok((name, description))
-    }
-
-    /// Fallback parser for malformed YAML frontmatter.
-    ///
-    /// Handles common issues like unquoted colons by extracting key-value pairs manually.
-    fn parse_frontmatter_fallback(
-        yaml_text: &str,
-        path: &Path,
-    ) -> Result<(String, String), SkillDiagnostic> {
-        let mut name = None;
-        let mut description = None;
-        let mut current_key: Option<String> = None;
-        let mut current_value = String::new();
-
-        for line in yaml_text.lines() {
-            let trimmed = line.trim_end();
-            if trimmed.is_empty() {
-                continue;
-            }
-
-            if !trimmed.starts_with(' ') && !trimmed.starts_with('\t') {
-                if let Some(key) = current_key.take() {
-                    let value = current_value.trim().to_string();
-                    if key == "name" {
-                        name = Some(value);
-                    } else if key == "description" {
-                        description = Some(value);
-                    }
-                }
-
-                if let Some((key, value_after)) = trimmed.split_once(':') {
-                    let key = key.trim().to_string();
-                    let value_after = value_after.trim().to_string();
-                    current_key = Some(key);
-                    current_value = value_after;
-                }
-            } else {
-                current_value.push('\n');
-                current_value.push_str(trimmed);
-            }
-        }
-
-        if let Some(key) = current_key {
-            let value = current_value.trim().to_string();
-            if key == "name" {
-                name = Some(value);
-            } else if key == "description" {
-                description = Some(value);
-            }
-        }
-
-        let name = name.ok_or_else(|| SkillDiagnostic {
-            level: DiagnosticLevel::Error,
-            message: "SKILL.md missing required field 'name' in frontmatter".to_string(),
-            file: path.to_path_buf(),
-        })?;
-
-        let description = description.ok_or_else(|| SkillDiagnostic {
-            level: DiagnosticLevel::Error,
-            message: "SKILL.md missing required field 'description' in frontmatter".to_string(),
-            file: path.to_path_buf(),
-        })?;
 
         Ok((name, description))
     }

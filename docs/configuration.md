@@ -499,6 +499,8 @@ These are security decisions. See [Security](security.md) before expanding acces
 
 Skills are directories containing `SKILL.md` with YAML `name` and `description` frontmatter. Cake discovers project and user skills plus configured roots, lists their metadata to the model, and lets the model read the full instructions on demand.
 
+Frontmatter must be valid YAML. A parse failure is reported as a skill diagnostic naming the file, line, and column, and the skill is not loaded. Quote any value that contains a colon followed by a space.
+
 Default roots are `<working-directory>/.agents/skills/` for project skills and `~/.agents/skills/` for user skills. The user root is read-write by default, even with `--no-skills`; the project root is part of the writable workspace. Configured `skills.path` roots are scanned between them. When names collide, project skills win, then configured roots in path order, then user skills. A project `skills.path` requires trust because configured roots become read-only path grants. Project default-root skills remain untrusted model input and need no trust record.
 
 ```toml

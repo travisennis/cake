@@ -27,7 +27,7 @@ The clippy cognitive-complexity ceiling is a separate, complementary signal: `co
 
 ### Grandfathered functions
 
-The committed baseline currently has no functions at or above the ≤ 15 dispatch-heavy allowance. Functions at CC 11--14 are within that allowance and remain ratcheted by `max(CC 10, baseline CC)`; the current highest entries are `Skill::parse_frontmatter_fallback`, `ensure_secure_temp_dir`, `run_command_hook`, and `TaskOutcome::deserialize` at CC 14, followed by `scan_directory` and `escape_control_chars_in_strings` at CC 13.
+The committed baseline currently has no functions at or above the ≤ 15 dispatch-heavy allowance. Functions at CC 11--14 are within that allowance and remain ratcheted by `max(CC 10, baseline CC)`; the current highest entries are `ensure_secure_temp_dir`, `run_command_hook`, and `TaskOutcome::deserialize` at CC 14, followed by `scan_directory` and `escape_control_chars_in_strings` at CC 13.
 
 ### Baseline maintenance
 
