@@ -61,9 +61,9 @@ landlock = "0.4.5"
 [lints.rust]
 # Binary crate - missing_docs produces noise without producing useful public API docs.
 missing_docs = "allow"
-# The test suite is gone. Test-only seams and inspection helpers are kept in
-# place rather than reshaping production code around their absence.
-dead_code = "allow"
+# Dead code is deleted, not suppressed; an explained #[expect] is the only
+# exception.
+dead_code = "deny"
 
 # Catch common mistakes
 rust_2018_idioms = { level = "warn", priority = -1 }
