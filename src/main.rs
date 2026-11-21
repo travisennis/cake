@@ -19,7 +19,6 @@ mod types;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::cli::{
@@ -1657,10 +1656,9 @@ impl CmdRunner for CodingAssistant {
 
         let mut interrupts = InterruptListeners::install();
 
-        let interrupted = AtomicBool::new(false);
         let turn_start = Instant::now();
 
-        let turn: TurnResult = tokio::select! {
+        let turn: Option<TurnResult> = tokio::select! {
             biased;
             result = async {
                 Self::execute_agent_turn(
@@ -1672,27 +1670,20 @@ impl CmdRunner for CodingAssistant {
                     prepared.output_schema.is_none(),
                 )
                 .await
-            } => match result {
+            } => Some(match result {
                 Ok(t) => t,
                 Err(e) => {
                     Self::restore_post_turn_signal_state();
                     program_status::report(State::Error, Some(&sink_safe_error_text(&e)));
                     return Err(e);
                 },
-            },
-            () = interrupts.wait() => {
-                interrupted.store(true, Ordering::SeqCst);
-                TurnResult {
-                    result: Ok(String::new()),
-                    duration_ms: 0,
-                    intermediate: Vec::new(),
-                }
-            },
+            }),
+            () = interrupts.wait() => None,
         };
 
-        if interrupted.load(Ordering::SeqCst) {
+        let Some(turn) = turn else {
             return Self::handle_interrupt(&mut client, hook_runner.as_ref(), turn_start).await;
-        }
+        };
 
         Self::restore_post_turn_signal_state();
 
