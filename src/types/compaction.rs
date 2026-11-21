@@ -106,6 +106,31 @@ pub enum CompactionStatus {
     Failed,
 }
 
+/// Why summary generation failed before a checkpoint could commit.
+///
+/// The class is audit metadata. It names the failed stage or rejection reason
+/// without copying provider or model text into the session record.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SummaryFailureClass {
+    /// The summary call exhausted its share of the operation deadline.
+    Timeout,
+    /// The provider request failed before a usable turn was returned.
+    ProviderError,
+    /// The response contained structured or textual tool-call syntax.
+    ToolCallMarkup,
+    /// The response exceeded the configured summary token target.
+    OverBudget,
+    /// The response did not complete normally or contained no text.
+    Incomplete,
+    /// The backend or configuration cannot serve a bounded summary request.
+    Unsupported,
+    /// The prompt, batch set, or checkpoint exceeded a hard size bound.
+    LimitExceeded,
+    /// A failure outside the enumerated summary stages.
+    Other,
+}
+
 /// One attempted compaction before provider work starts.
 ///
 /// Start metadata is emitted only for a prepared candidate. A no-op or no-fit
@@ -127,7 +152,9 @@ pub struct CompactionStartData {
 ///
 /// A committed checkpoint emits this after its checkpoint record. A skipped or
 /// failed attempt emits it without a checkpoint. The reason is bounded and is
-/// never projected into model context.
+/// never projected into model context. `failure_class` classifies a summary
+/// generation failure; it is absent for skips, commits, and candidate
+/// validation failures.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CompactionEndData {
     pub session_id: String,
@@ -148,6 +175,8 @@ pub struct CompactionEndData {
     pub retained_count: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_class: Option<SummaryFailureClass>,
 }
 
 /// Estimated input tokens before and after the checkpoint, with their basis.

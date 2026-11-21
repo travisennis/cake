@@ -16,10 +16,11 @@ use crate::clients::agent_state::PreparationSource;
 use crate::clients::compaction::{
     self, AgentSummaryCaller, DEFAULT_SUMMARY_TIMEOUT, FixedRequest, Preparation, PreparationInput,
     PreparationMeasure, PrepareOutcome, PreparedCompaction, SUMMARY_INSTRUCTION_VERSION,
+    SummaryFailure,
 };
 use crate::types::compaction::{
     CompactionEndData, CompactionStartData, CompactionStatus, CompactionTrigger, ModelIdentity,
-    bounded_compaction_reason,
+    SummaryFailureClass, bounded_compaction_reason,
 };
 use crate::types::{CutOffError, StreamRecord};
 
@@ -384,6 +385,7 @@ impl Agent {
             retired_count: None,
             retained_count: None,
             reason: Some(reason.clone()),
+            failure_class: None,
         }))?;
         self.report_progress(&format!("Context compaction skipped: {reason}"));
         if trigger == CompactionTrigger::Threshold && self.over_window(measure.before_tokens) {
@@ -438,6 +440,7 @@ impl Agent {
                     invocation,
                     trigger,
                     "summary generation failed",
+                    Some(error.class()),
                     before_tokens,
                     after_tokens,
                     basis,
@@ -457,6 +460,7 @@ impl Agent {
                 invocation,
                 trigger,
                 "candidate validation failed",
+                None,
                 before_tokens,
                 after_tokens,
                 basis,
@@ -481,6 +485,7 @@ impl Agent {
             retired_count: Some(retired_count),
             retained_count: Some(retained_count),
             reason: None,
+            failure_class: None,
         }))?;
         self.report_progress(&format!(
             "Context compacted: approximately {before_tokens} -> {after_tokens} tokens"
@@ -491,7 +496,7 @@ impl Agent {
     async fn summarize_prepared(
         &mut self,
         prepared: PreparedCompaction,
-    ) -> anyhow::Result<crate::types::CompactionData> {
+    ) -> Result<crate::types::CompactionData, SummaryFailure> {
         let health = self.health_callback();
         let telemetry_sink = self.runner_telemetry_sink();
         let mut telemetry = move |event| {
@@ -523,7 +528,8 @@ impl Agent {
             health,
             &mut telemetry,
             &mut settle,
-        )?;
+        )
+        .map_err(|error| SummaryFailure::new(SummaryFailureClass::Unsupported, error))?;
         let timeout = self
             .resolved_compaction_policy
             .map_or(DEFAULT_SUMMARY_TIMEOUT, |policy| policy.summary_timeout);
@@ -542,6 +548,7 @@ impl Agent {
         invocation: &mut InvocationCompactionState,
         trigger: CompactionTrigger,
         reason: &str,
+        failure_class: Option<SummaryFailureClass>,
         before_tokens: u64,
         after_tokens: u64,
         basis: crate::types::compaction::EstimateBasis,
@@ -562,6 +569,7 @@ impl Agent {
             retired_count: Some(retired_count),
             retained_count: Some(retained_count),
             reason: Some(reason.to_string()),
+            failure_class,
         });
         if let Err(error) = self.stream_record(end) {
             self.ensure_healthy()?;

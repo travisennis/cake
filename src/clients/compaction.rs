@@ -8,7 +8,8 @@
 //! provider call. [`summarize`] drives a [`SummaryCaller`] through at most four
 //! logical requests, each with at most two bounded attempts sharing one
 //! configurable deadline, and validates every result before it can become a
-//! checkpoint.
+//! checkpoint. A response rejected for tool-call markup gets one corrective
+//! retry with the same batch.
 //!
 //! Automatic pre-request compaction calls [`measure`], [`prepare`], and
 //! [`summarize`] from the agent loop; manual compaction shares the same rule
@@ -40,8 +41,8 @@ use crate::session_telemetry::{AgentRunnerTelemetryEvent, ProviderTermination};
 use crate::types::compaction::{
     CompactionData, CompactionTrigger, EstimateBasis, EstimatedInput, HISTORICAL_SUMMARY_MARKER,
     MAX_CHECKPOINT_RECORD_BYTES, MessageOrigin, ModelIdentity, PinReason,
-    RetainedConversationRecord, RetainedRecord, SkillRead, SummaryUsage, estimate_item_tokens,
-    estimate_items_tokens, estimate_text_tokens,
+    RetainedConversationRecord, RetainedRecord, SkillRead, SummaryFailureClass, SummaryUsage,
+    estimate_item_tokens, estimate_items_tokens, estimate_text_tokens,
 };
 use crate::types::session::{FunctionCallOutputData, MessageData, ReasoningData};
 use crate::types::{ConversationItem, ImagePart, ReportedUsage, Role, Usage, UsagePresence};
@@ -55,10 +56,12 @@ pub const MAX_SUMMARY_PROMPT_BYTES: usize = 1024 * 1024;
 /// Maximum logical summary requests in one compaction operation.
 pub const MAX_SUMMARY_REQUESTS: u32 = 4;
 
-/// Attempts allowed per logical summary request, including the first.
+/// Attempts allowed per logical summary request for a timed-out call, including
+/// the first.
 ///
 /// Each attempt is bounded by its share of the operation's remaining budget so
-/// one stalled provider request cannot consume it all.
+/// one stalled provider request cannot consume it all. A response rejected for
+/// tool-call markup gets one additional corrective request outside this count.
 pub const SUMMARY_ATTEMPTS_PER_BATCH: u32 = 2;
 
 /// Default wall time spent in summary calls, including retries.
@@ -224,6 +227,27 @@ pub struct SummaryTurn {
     /// Every attempt that reported usage, once each, including failed and
     /// discarded attempts.
     pub attempts: Vec<ReportedUsage>,
+}
+
+/// A rejected summary generation, classified for the lifecycle record.
+#[derive(Debug, thiserror::Error)]
+#[error("{class:?}: {message}")]
+pub struct SummaryFailure {
+    class: SummaryFailureClass,
+    message: String,
+}
+
+impl SummaryFailure {
+    pub(crate) fn new(class: SummaryFailureClass, message: impl std::fmt::Display) -> Self {
+        Self {
+            class,
+            message: message.to_string(),
+        }
+    }
+
+    pub(crate) const fn class(&self) -> SummaryFailureClass {
+        self.class
+    }
 }
 
 /// The summary-call seam.
@@ -1608,6 +1632,14 @@ steps. Use the labeled source roles. Do not invent facts, do not claim unverifie
 work succeeded, and explicitly label omitted non-text content or truncated output. \
 Return only the summary text.";
 
+/// The corrective instruction sent once after a response contains tool-call markup.
+const SUMMARY_CORRECTION: &str = "\
+A previous attempt to summarize this batch was rejected because it contained tool-call \
+syntax instead of summary prose. Regenerate the summary for this batch as factual prose \
+only. Do not emit tool calls, transcript labels such as [tool call ...] or [tool result ...], \
+XML or DSML tool tags, JSON function-call objects, or any other executable syntax. Do not \
+continue the conversation, call a tool, or execute anything. Return only the summary text.";
+
 /// Serialize one retained record as labeled summary data.
 fn format_summary_record(record: &RetainedRecord, output_limit: usize) -> String {
     match &record.record {
@@ -1731,7 +1763,11 @@ fn format_exchange(exchange: &[RetainedRecord], max_bytes: usize) -> String {
 }
 
 /// Build the prompt messages for one batch.
-fn summary_prompt(batch: &str, candidate: Option<&str>) -> Vec<ConversationItem> {
+fn summary_prompt(
+    batch: &str,
+    candidate: Option<&str>,
+    correction: Option<&str>,
+) -> Vec<ConversationItem> {
     let mut user = String::new();
     if let Some(candidate) = candidate {
         user.push_str("[summary so far]\n");
@@ -1740,6 +1776,10 @@ fn summary_prompt(batch: &str, candidate: Option<&str>) -> Vec<ConversationItem>
     }
     user.push_str("[retired conversation]\n");
     user.push_str(batch);
+    if let Some(correction) = correction {
+        user.push_str("\n\n[correction]\n");
+        user.push_str(correction);
+    }
     vec![
         ConversationItem::Message {
             role: Role::System,
@@ -1800,7 +1840,7 @@ fn pack_batches(
     prepared: &PreparedCompaction,
     limits: PromptLimits,
 ) -> anyhow::Result<Vec<String>> {
-    let instruction_and_overhead = summary_prompt("", None)
+    let instruction_and_overhead = summary_prompt("", None, Some(SUMMARY_CORRECTION))
         .iter()
         .map(|item| match item {
             ConversationItem::Message { content, .. } => content.len(),
@@ -1818,7 +1858,7 @@ fn pack_batches(
                 .saturating_sub(instruction_and_overhead.saturating_add(current.len()));
             let formatted = format_exchange(exchange, remaining.max(4096));
             let candidate = format!("{current}\n\n{formatted}");
-            if limits.allows(&summary_prompt(&candidate, None)) {
+            if limits.allows(&summary_prompt(&candidate, None, None)) {
                 current = candidate;
                 continue;
             }
@@ -1831,7 +1871,7 @@ fn pack_batches(
             .max(4096);
         loop {
             let formatted = format_exchange(exchange, budget);
-            if limits.allows(&summary_prompt(&formatted, None)) {
+            if limits.allows(&summary_prompt(&formatted, None, None)) {
                 current = formatted;
                 break;
             }
@@ -1861,19 +1901,65 @@ fn pack_batches(
     Ok(batches)
 }
 
+/// Tool-call markers that must not appear in model-authored summary prose.
+const TOOL_CALL_MARKUP: &[&str] = &[
+    "<tool calls>",
+    "</tool calls>",
+    "<tool call ",
+    "<tool call>",
+    "</tool call>",
+    "<tool_call",
+    "</tool_call>",
+    "<tool-call",
+    "</tool-call>",
+    "<tool_use",
+    "</tool_use>",
+    "<tool-result",
+    "</tool-result>",
+    "<tool_result",
+    "</tool_result>",
+    "<function_calls",
+    "</function_calls>",
+    "<function_call",
+    "</function_call>",
+    "<invoke ",
+    "<invoke>",
+    "</invoke>",
+    "<|dsml|",
+    "<｜dsml｜",
+    "<|channel|>",
+    "<|tool_call|>",
+    "[tool call",
+    "[tool_call",
+    "[tool result",
+    "[tool_result",
+];
+
+/// Whether summary prose contains tool-call syntax copied from a transcript.
+fn contains_tool_call_markup(text: &str) -> bool {
+    let lowercase = text.to_ascii_lowercase();
+    TOOL_CALL_MARKUP
+        .iter()
+        .any(|marker| lowercase.contains(marker))
+}
+
 /// Extract the final assistant text and reject every unusable turn.
 fn validated_summary_text(
     turn: &SummaryTurn,
     generation_cap: u32,
     prepared: &PreparedCompaction,
-) -> anyhow::Result<String> {
-    anyhow::ensure!(
-        !turn.items.iter().any(|item| matches!(
+) -> Result<String, SummaryFailure> {
+    if turn.items.iter().any(|item| {
+        matches!(
             item,
             ConversationItem::FunctionCall { .. } | ConversationItem::FunctionCallOutput { .. }
-        )),
-        "summary response contained tool calls"
-    );
+        )
+    }) {
+        return Err(SummaryFailure::new(
+            SummaryFailureClass::ToolCallMarkup,
+            "summary response contained tool calls",
+        ));
+    }
     let verdict = termination::classify(
         IntendedLimits {
             output_cap: Some(generation_cap),
@@ -1884,11 +1970,15 @@ fn validated_summary_text(
             usage: turn.usage,
         },
     );
-    anyhow::ensure!(
-        verdict.accepts_complete_output(),
-        "summary response did not complete normally: {:?}",
-        verdict.outcome
-    );
+    if !verdict.accepts_complete_output() {
+        return Err(SummaryFailure::new(
+            SummaryFailureClass::Incomplete,
+            format!(
+                "summary response did not complete normally: {:?}",
+                verdict.outcome
+            ),
+        ));
+    }
     let text = turn
         .items
         .iter()
@@ -1903,12 +1993,27 @@ fn validated_summary_text(
         .collect::<Vec<_>>()
         .join("\n");
     let text = text.trim().to_string();
-    anyhow::ensure!(!text.is_empty(), "summary response contained no text");
-    anyhow::ensure!(
-        estimate_text_tokens(&text) <= prepared.summary_tokens,
-        "summary response exceeds the {} token summary target",
-        prepared.summary_tokens
-    );
+    if text.is_empty() {
+        return Err(SummaryFailure::new(
+            SummaryFailureClass::Incomplete,
+            "summary response contained no text",
+        ));
+    }
+    if contains_tool_call_markup(&text) {
+        return Err(SummaryFailure::new(
+            SummaryFailureClass::ToolCallMarkup,
+            "summary response contained tool-call markup",
+        ));
+    }
+    if estimate_text_tokens(&text) > prepared.summary_tokens {
+        return Err(SummaryFailure::new(
+            SummaryFailureClass::OverBudget,
+            format!(
+                "summary response exceeds the {} token summary target",
+                prepared.summary_tokens
+            ),
+        ));
+    }
     Ok(text)
 }
 
@@ -1935,71 +2040,87 @@ const fn add_summary_usage(total: &mut SummaryUsage, usage: Usage) {
 ///
 /// # Errors
 ///
-/// Returns an error when the backend does not preserve a generation cap, a
-/// summary request fails, a response is unusable, the summary exceeds its
-/// target, the batch count exceeds four, the deadline is exceeded, or the
-/// final checkpoint cannot fit its ceiling. A timed-out request is retried once
-/// within the same total budget.
+/// Returns a classified [`SummaryFailure`] when the backend does not preserve
+/// a generation cap, a summary request fails, a response is unusable, the
+/// summary exceeds its target, the batch count exceeds four, the deadline is
+/// exceeded, or the final checkpoint cannot fit its ceiling. A timed-out
+/// request is retried once within the same total budget, and a response
+/// rejected for tool-call markup gets one corrective retry.
 pub async fn summarize<C: SummaryCaller>(
     prepared: PreparedCompaction,
     caller: &mut C,
     timeout: Duration,
-) -> anyhow::Result<CompactionData> {
-    anyhow::ensure!(!timeout.is_zero(), "the summary deadline must be positive");
-    anyhow::ensure!(
-        caller.supports_generation_cap(),
-        "the configured backend does not support a bounded summary generation cap"
-    );
+) -> Result<CompactionData, SummaryFailure> {
+    if timeout.is_zero() {
+        return Err(SummaryFailure::new(
+            SummaryFailureClass::Unsupported,
+            "the summary deadline must be positive",
+        ));
+    }
+    if !caller.supports_generation_cap() {
+        return Err(SummaryFailure::new(
+            SummaryFailureClass::Unsupported,
+            "the configured backend does not support a bounded summary generation cap",
+        ));
+    }
     let generation_cap = caller
         .configured_output_max()
         .unwrap_or(MAX_SUMMARY_OUTPUT_TOKENS)
         .min(MAX_SUMMARY_OUTPUT_TOKENS);
-    anyhow::ensure!(
-        generation_cap > 0,
-        "the configured output maximum leaves no room for a summary"
-    );
-    caller.validate_summary_request(generation_cap)?;
+    if generation_cap == 0 {
+        return Err(SummaryFailure::new(
+            SummaryFailureClass::Unsupported,
+            "the configured output maximum leaves no room for a summary",
+        ));
+    }
+    caller
+        .validate_summary_request(generation_cap)
+        .map_err(|error| SummaryFailure::new(SummaryFailureClass::Unsupported, error))?;
 
     let started = Instant::now();
     let limits = PromptLimits::from_prepared(&prepared);
-    let batches = pack_batches(&prepared, limits)?;
-    anyhow::ensure!(
-        batches.len() <= MAX_SUMMARY_REQUESTS as usize,
-        "summary requires more than {MAX_SUMMARY_REQUESTS} logical requests"
-    );
+    let batches = pack_batches(&prepared, limits)
+        .map_err(|error| SummaryFailure::new(SummaryFailureClass::LimitExceeded, error))?;
 
-    let mut candidate: Option<String> = None;
-    let mut usage = SummaryUsage::default();
-    let mut saw_usage = false;
-
-    for (index, batch) in batches.iter().enumerate() {
-        let step = u32::try_from(index).unwrap_or(u32::MAX).saturating_add(1);
-        let prompt = summary_prompt(batch, candidate.as_deref());
-        anyhow::ensure!(
-            limits.allows(&prompt),
-            "summary step {step} exceeds the prompt limits"
-        );
-        let turn = summarize_batch(
+    let (summary, usage) = {
+        let mut run = SummaryRun {
             caller,
-            &prepared,
-            step,
-            &prompt,
+            prepared: &prepared,
+            limits,
             generation_cap,
             started,
             timeout,
-        )
-        .await?;
-
-        for attempt in &turn.attempts {
-            saw_usage = true;
-            add_summary_usage(&mut usage, attempt.usage);
+            usage: None,
+        };
+        let mut candidate: Option<String> = None;
+        for (index, batch) in batches.iter().enumerate() {
+            let step = u32::try_from(index).unwrap_or(u32::MAX).saturating_add(1);
+            let next = run.batch(step, batch, candidate.as_deref()).await?;
+            candidate = Some(next);
         }
-        candidate = Some(validated_summary_text(&turn, generation_cap, &prepared)?);
+        (candidate.unwrap_or_default(), run.usage)
+    };
+    build_checkpoint(
+        prepared,
+        summary,
+        usage,
+        u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+    )
+}
+
+/// Build the checkpoint and enforce the serialized record ceiling.
+fn build_checkpoint(
+    prepared: PreparedCompaction,
+    summary: String,
+    usage: Option<SummaryUsage>,
+    summary_time_ms: u64,
+) -> Result<CompactionData, SummaryFailure> {
+    if summary.trim().is_empty() {
+        return Err(SummaryFailure::new(
+            SummaryFailureClass::Incomplete,
+            "summary is empty",
+        ));
     }
-
-    let summary = candidate.unwrap_or_default();
-    anyhow::ensure!(!summary.trim().is_empty(), "summary is empty");
-
     let checkpoint = CompactionData {
         checkpoint_version: crate::types::compaction::CHECKPOINT_VERSION,
         checkpoint_id: prepared.checkpoint_id.clone(),
@@ -2012,19 +2133,91 @@ pub async fn summarize<C: SummaryCaller>(
         model: prepared.model,
         summary_instruction_version: SUMMARY_INSTRUCTION_VERSION,
         estimated_input: prepared.estimated_input,
-        summary_usage: saw_usage.then_some(usage),
-        summary_time_ms: Some(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)),
+        summary_usage: usage,
+        summary_time_ms: Some(summary_time_ms),
     };
-
     let externalized = simulated_externalized(&checkpoint);
-    let bytes = externalized.to_record_bytes()?;
-    anyhow::ensure!(
-        bytes.len() <= MAX_CHECKPOINT_RECORD_BYTES,
-        "final checkpoint is {} bytes; the limit is {MAX_CHECKPOINT_RECORD_BYTES} bytes",
-        bytes.len()
-    );
-
+    let bytes = externalized
+        .to_record_bytes()
+        .map_err(|error| SummaryFailure::new(SummaryFailureClass::Other, error))?;
+    if bytes.len() > MAX_CHECKPOINT_RECORD_BYTES {
+        return Err(SummaryFailure::new(
+            SummaryFailureClass::LimitExceeded,
+            format!(
+                "final checkpoint is {} bytes; the limit is {MAX_CHECKPOINT_RECORD_BYTES} bytes",
+                bytes.len()
+            ),
+        ));
+    }
     Ok(checkpoint)
+}
+
+/// One summary operation's shared state across batch calls.
+struct SummaryRun<'a, C> {
+    caller: &'a mut C,
+    prepared: &'a PreparedCompaction,
+    limits: PromptLimits,
+    generation_cap: u32,
+    started: Instant,
+    timeout: Duration,
+    usage: Option<SummaryUsage>,
+}
+
+impl<C: SummaryCaller> SummaryRun<'_, C> {
+    async fn batch(
+        &mut self,
+        step: u32,
+        batch: &str,
+        candidate: Option<&str>,
+    ) -> Result<String, SummaryFailure> {
+        let prompt = summary_prompt(batch, candidate, None);
+        ensure_prompt_fits(self.limits, &prompt, step)?;
+        match self.text(step, &prompt).await {
+            Ok(text) => Ok(text),
+            Err(error) if error.class() == SummaryFailureClass::ToolCallMarkup => {
+                let prompt = summary_prompt(batch, candidate, Some(SUMMARY_CORRECTION));
+                ensure_prompt_fits(self.limits, &prompt, step)?;
+                self.text(step, &prompt).await
+            },
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn text(
+        &mut self,
+        step: u32,
+        prompt: &[ConversationItem],
+    ) -> Result<String, SummaryFailure> {
+        let turn = summarize_batch(
+            self.caller,
+            self.prepared,
+            step,
+            prompt,
+            self.generation_cap,
+            self.started,
+            self.timeout,
+        )
+        .await?;
+        for attempt in &turn.attempts {
+            add_summary_usage(self.usage.get_or_insert_default(), attempt.usage);
+        }
+        validated_summary_text(&turn, self.generation_cap, self.prepared)
+    }
+}
+
+/// Reject a prompt that exceeds the current summary request bounds.
+fn ensure_prompt_fits(
+    limits: PromptLimits,
+    prompt: &[ConversationItem],
+    step: u32,
+) -> Result<(), SummaryFailure> {
+    if limits.allows(prompt) {
+        return Ok(());
+    }
+    Err(SummaryFailure::new(
+        SummaryFailureClass::LimitExceeded,
+        format!("summary step {step} exceeds the prompt limits"),
+    ))
 }
 
 /// Call one logical summary request, retrying a timed-out attempt once.
@@ -2041,15 +2234,19 @@ async fn summarize_batch<C: SummaryCaller>(
     generation_cap: u32,
     started: Instant,
     timeout: Duration,
-) -> anyhow::Result<SummaryTurn> {
+) -> Result<SummaryTurn, SummaryFailure> {
     let mut attempt = 1_u32;
     loop {
         let elapsed = started.elapsed();
-        anyhow::ensure!(
-            elapsed < timeout,
-            "summary exceeded the {} second deadline before step {step}",
-            timeout.as_secs()
-        );
+        if elapsed >= timeout {
+            return Err(SummaryFailure::new(
+                SummaryFailureClass::Timeout,
+                format!(
+                    "summary exceeded the {} second deadline before step {step}",
+                    timeout.as_secs()
+                ),
+            ));
+        }
         let budget = timeout.saturating_sub(elapsed) / (SUMMARY_ATTEMPTS_PER_BATCH + 1 - attempt);
         match tokio::time::timeout(
             budget,
@@ -2062,7 +2259,11 @@ async fn summarize_batch<C: SummaryCaller>(
         )
         .await
         {
-            Ok(result) => return result,
+            Ok(result) => {
+                return result.map_err(|error| {
+                    SummaryFailure::new(SummaryFailureClass::ProviderError, error)
+                });
+            },
             Err(_) if attempt < SUMMARY_ATTEMPTS_PER_BATCH => {
                 tracing::warn!(
                     target: "cake",
@@ -2073,10 +2274,15 @@ async fn summarize_batch<C: SummaryCaller>(
                 );
                 attempt += 1;
             },
-            Err(error) => anyhow::bail!(
-                "summary step {step} exceeded the remaining deadline after \
-                 {SUMMARY_ATTEMPTS_PER_BATCH} attempts: {error}"
-            ),
+            Err(error) => {
+                return Err(SummaryFailure::new(
+                    SummaryFailureClass::Timeout,
+                    format!(
+                        "summary step {step} exceeded the remaining deadline after \
+                         {SUMMARY_ATTEMPTS_PER_BATCH} attempts: {error}"
+                    ),
+                ));
+            },
         }
     }
 }
