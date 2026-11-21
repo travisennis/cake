@@ -149,9 +149,14 @@ lint-module-size:
 lint-domain-glossary:
     python3 scripts/lint-domain-glossary.py
 
+# Enforce the comment ban and ratchet. Rationale belongs in docs/adr/; doc
+# comments and `// SAFETY:` blocks are exempt because tooling consumes them.
+lint-comments:
+    @python3 scripts/lint-comments.py
+
 # Run the local gate for code changes: formatting, complexity, strict Clippy,
-# and the import, dependency-direction, module-size, and glossary lints.
-check: rust-version-check fmt-check cc-check _clippy-strict lint-imports lint-deps lint-module-size lint-domain-glossary
+# the import, dependency-direction, module-size, glossary, and comment lints.
+check: rust-version-check fmt-check cc-check _clippy-strict lint-imports lint-deps lint-module-size lint-domain-glossary lint-comments
     echo "Local checks passed!"
 
 # Run the pre-push gate: the local code gate plus the documentation checks.
