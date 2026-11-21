@@ -998,9 +998,8 @@ impl Agent {
     /// optional separate summarizer configuration.
     ///
     /// `summarizer` selects the provider, credentials, model, and effort for
-    /// checkpoint summaries. `None` uses the conversation configuration, as
-    /// [`Self::with_compaction_policy`] does. Only `max_output_tokens` changes
-    /// for the summary request.
+    /// checkpoint summaries. `None` uses the conversation configuration. Only
+    /// `max_output_tokens` changes for the summary request.
     ///
     /// # Errors
     ///
@@ -1331,8 +1330,8 @@ impl Agent {
     /// Emit the repair outputs synthesized while restoring history.
     ///
     /// A restored conversation can contain a function call whose output the
-    /// previous process never persisted. [`Self::with_history`] closes each
-    /// such call in memory; this appends the same items to the session file so
+    /// previous process never persisted. Restoring history closes each such
+    /// call in memory; this appends the same items to the session file so
     /// later restores read a well-formed history. No-op for a fresh session or
     /// a restored one whose calls are all matched.
     pub fn emit_history_repair_records(&mut self) -> anyhow::Result<()> {

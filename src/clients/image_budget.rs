@@ -560,9 +560,9 @@ impl RequestImagePlan<'_> {
 
 /// Prune a request projection and return the plan that produced it.
 ///
-/// The history follows the same admission rules as [`prune_request`]. The plan
-/// and owner list let an accepted response record which image-bearing source
-/// records it actually sent.
+/// The history follows the standard admission rules. The plan and owner list
+/// let an accepted response record which image-bearing source records it
+/// actually sent.
 ///
 /// # Errors
 ///
