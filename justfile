@@ -149,7 +149,7 @@ lint-module-size:
 lint-domain-glossary:
     python3 scripts/lint-domain-glossary.py
 
-# Enforce the comment ban and ratchet. Rationale belongs in docs/adr/; doc
+# Enforce the comment ban and ratchet. Rationale belongs in the commit message; doc
 # comments and `// SAFETY:` blocks are exempt because tooling consumes them.
 lint-comments:
     @python3 scripts/lint-comments.py

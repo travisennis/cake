@@ -55,7 +55,7 @@ labels:
     description: Local development environment and tooling
   - name: area:docs
     color: "d4c5f9"
-    description: Documentation (living docs, runbooks, ADRs)
+    description: Documentation (living docs, runbooks)
   - name: area:exit_code
     color: "d4c5f9"
     description: Exit codes and process behavior

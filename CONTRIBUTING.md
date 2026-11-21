@@ -89,7 +89,7 @@ If an applicable check cannot run, report the exact reason and the narrower chec
 - Use `#[expect(..., reason = "...")]` only for intentional, explained lint exceptions.
 - Keep imports at module scope unless conditional compilation makes that impossible.
 - Use absolute `crate::` imports in production code; verified by `just lint-imports`.
-- Do not add ordinary comments to Rust production sources. Rationale belongs in [docs/adr/](docs/adr/), the only sanctioned home for a decision; `just lint-comments` enforces the ban against `ci/comment-baseline.json`. Doc comments and `// SAFETY:` blocks are exempt because clap and clippy consume them. Extend an existing record when the decision belongs to the same subsystem, and lower the ratchet after a cleanup rather than raising it.
+- Do not add ordinary comments to Rust production sources. Put the rationale in the commit message, pull request body, or existing authority document for the surface; do not create an ADR or other new durable record. `just lint-comments` enforces the ban against `ci/comment-baseline.json`. Doc comments and `// SAFETY:` blocks are exempt because clap and clippy consume them. Lower the ratchet after a cleanup rather than raising it.
 - Preserve public behavior during refactors unless the task explicitly changes it.
 - Spawn `git` through `config::git::command`. Git exports `GIT_DIR` and its siblings into hooks and everything they spawn, so a command that inherits them operates on the exporting repository rather than the directory it was given.
 

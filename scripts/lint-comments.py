@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Enforce the ban on ordinary comments in `src/`.
 
-Rationale belongs in `docs/adr/`, not beside the code. Two kinds of comment
+Rationale belongs in the commit message, not beside the code. Two kinds of comment
 stay because tooling consumes them:
 
 - Doc comments (`///`, `//!`), which rustdoc and clap render. The CLI derives
@@ -240,8 +240,8 @@ def write_baseline(path: str, found: dict[str, list[Comment]]) -> int:
                 file=sys.stderr,
             )
         print(
-            "The ratchet records cleanup, not new comments. Record the rationale "
-            "in docs/adr/ instead, or change the lint's exemptions deliberately.",
+            "The ratchet records cleanup, not new comments. Put the rationale in "
+            "the commit message instead, or change the lint's exemptions deliberately.",
             file=sys.stderr,
         )
         return 1
@@ -296,7 +296,7 @@ def gate(root: str, baseline_path: str, found: dict[str, list[Comment]]) -> int:
     )
     if failed:
         print(
-            "Move the rationale into docs/adr/ and delete the comment. "
+            "Move the rationale into the commit message and delete the comment. "
             "Doc comments and `// SAFETY:` blocks are exempt.",
             file=sys.stderr,
         )

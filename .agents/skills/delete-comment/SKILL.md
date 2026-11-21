@@ -1,11 +1,11 @@
 ---
 name: delete-comment
-description: Audit comments in Rust production sources, classify each as tautology, excuse, stale, or decision, delete the first three, file issues for excuses, and move decisions into docs/adr. Preserves doc comments and `// SAFETY:` blocks, then lowers the comment-lint ratchet.
+description: Audit comments in Rust production sources, classify each as tautology, excuse, stale, or decision, delete the first three, file issues for excuses, and carry decisions into the commit message. Preserves doc comments and `// SAFETY:` blocks, then lowers the comment-lint ratchet.
 ---
 
 # Delete Comment
 
-Use this skill when asked to purge comments, audit comment quality, or repeat the cleanup that landed with [ADR 0001](../../../docs/adr/0001-comments-are-banned.md). The end state is the same every time: code holds behavior, `docs/adr/` holds rationale, and `scripts/lint-comments.py` holds the ratchet.
+Use this skill when asked to purge comments or audit comment quality. The end state is the same every time: code holds behavior, the commit message and existing authority documents hold rationale, and `scripts/lint-comments.py` holds the ratchet.
 
 ## Scope
 
@@ -18,7 +18,7 @@ Never delete or rewrite these, whatever the request says, unless the user explic
 
 If the user asks to purge doc comments too, confirm separately: inventory them, identify every one clap consumes, and treat the rest as a documentation change rather than a comment cleanup. Do not touch docs as a side effect of an ordinary-comment pass.
 
-Scripts, Markdown, and shell are out of scope. This skill changes Rust sources and `docs/adr/` only.
+Scripts, Markdown, and shell are out of scope. This skill changes Rust sources only; it creates no new records.
 
 ## Procedure
 
@@ -39,7 +39,7 @@ Read every listed comment plus enough surrounding code to judge it. A comment's 
   | **Tautology**       | Repeats what the next line, type, or identifier already says. Section banners and labels beside a literal.                                                                          | Delete.                                               |
   | **Stale**           | Describes removed code, a previous implementation, line numbers, milestones, issue numbers that no longer resolve to the reasoning, or a process artifact ("this change's budget"). | Delete. Verify the replacement behavior exists first. |
   | **Excuse**          | Grants permission for a shortcut: "dummy value", "for now", "keeps the complexity baseline", "the fallback covers future early returns", "might have issues".                       | Delete, then file an issue to remove the shortcut.    |
-  | **Decision Record** | States a non-obvious choice and what breaks if it is reversed: ordering, fail-closed behavior, compatibility, safety.                                                               | Move to the matching ADR, then delete.                |
+  | **Decision Record** | States a non-obvious choice and what breaks if it is reversed: ordering, fail-closed behavior, compatibility, safety.                                                               | Put it in the commit body, then delete.               |
 
 Tie-break: if deleting the comment would make a future editor likely to undo a deliberate choice, it is a decision record. If the code alone still teaches the choice, it is a tautology.
 
@@ -63,19 +63,9 @@ gh issue create \
 
 Use only labels from `.github/labels.yml`; inspect the file rather than inventing a name. Reference the issue from the commit body that deletes the comment, so the audit trail connects the shortcut to its removal. Never leave an excuse comment in place because filing felt heavy: delete it and file, or keep it and say why it is a decision instead.
 
-### 5. Move decisions into ADRs
+### 5. Carry decisions into the commit message
 
-Search `docs/adr/` for the subsystem before writing. The index is in [README.md](../../../docs/adr/README.md):
-
-  | Subsystem                                                       | Record |
-  | --------------------------------------------------------------- | ------ |
-  | CLI, startup, interrupts, exit classes, prompts, logging        | 0002   |
-  | Agent loop, providers, compaction, retries, MCP                 | 0003   |
-  | Tools, command execution, file mutation, truncation, scheduling | 0004   |
-  | Sandbox, grants, platform confinement, worktrees-as-grants      | 0005   |
-  | Settings, sessions, hooks, gates, skills, telemetry             | 0006   |
-
-A decision belongs to exactly one record. Extend the existing record when the choice touches the same boundary; create a new record only for a new boundary, and add it to the index. Name modules and symbols, never line numbers: line numbers go stale the moment the code moves. State the choice and the failure it prevents, not a transcript of the comment. If the comment names a bug or pull request that still explains the choice, keep the reference.
+Do not create an ADR or any other new record. Before committing, put each decision in the commit body: the choice, the failure it prevents, and the condition that would reverse it. Name modules and symbols, never line numbers: line numbers go stale the moment the code moves. If the decision changes a documented contract, update that surface's existing authority document; if it needs discussion, open an issue and link it from the commit. The rationale then lives in git history and the issue tracker, where it is versioned and searchable, without a new file to maintain.
 
 ### 6. Lower the ratchet
 
@@ -83,7 +73,7 @@ A decision belongs to exactly one record. Extend the existing record when the ch
 python3 scripts/lint-comments.py --write-baseline
 ```
 
-The baseline must fall or stay flat. The writer refuses a count above the existing entry, so a raise cannot be committed accidentally. Raising an entry to admit a new comment is not the escape hatch: either the sentence is a decision that belongs in an ADR, or it should not exist. If a legitimate exception appears, the right change is an exemption in `scripts/lint-comments.py` with a stated reason.
+The baseline must fall or stay flat. The writer refuses a count above the existing entry, so a raise cannot be committed accidentally. Raising an entry to admit a new comment is not the escape hatch: either the sentence is a decision that belongs in the commit message, or it should not exist. If a legitimate exception appears, the right change is an exemption in `scripts/lint-comments.py` with a stated reason.
 
 ### 7. Verify
 
@@ -97,12 +87,14 @@ Comments do not change behavior, so a release build is not required unless the p
 
 ### 8. Commit and hand off
 
-Use a `chore` commit, or the type that matches the work if the pass is part of a larger change. The body should state the counts: comments deleted by category, decisions moved, issues filed. If the pass leaves comments behind deliberately, say why and ensure the baseline records them.
+Use a `chore` commit, or the type that matches the work if the pass is part of a larger change. The body should state the counts: comments deleted by category, decisions recorded, issues filed. If the pass leaves comments behind deliberately, say why and ensure the baseline records them.
 
 ## Failure modes
 
 - Deleting a comment that documents an external protocol or a user-visible string. Those are contracts, not commentary: move them to the authority document instead.
 - Treating a `// SAFETY:` continuation line as an ordinary comment and breaking Clippy.
+- Moving a decision into a new ADR or other durable record, which recreates the process the repository removed.
+- Deleting a decision comment without putting its rationale in the commit body, which loses the invariant.
 - Rewriting a comment instead of recording the decision, which produces a better-worded tautology.
 - Filing an issue that names no acceptance condition, so the shortcut cannot be closed.
 - Running the pass across worktrees concurrently without partitioning files.
