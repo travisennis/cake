@@ -48,7 +48,7 @@ use crate::types::session::{FunctionCallOutputData, MessageData, ReasoningData};
 use crate::types::{ConversationItem, ImagePart, ReportedUsage, Role, Usage, UsagePresence};
 
 /// Version of the summary instruction and transcript format below.
-pub const SUMMARY_INSTRUCTION_VERSION: u32 = 1;
+pub const SUMMARY_INSTRUCTION_VERSION: u32 = 2;
 
 /// Maximum serialized bytes of one summary prompt.
 pub const MAX_SUMMARY_PROMPT_BYTES: usize = 1024 * 1024;
@@ -1628,24 +1628,26 @@ The summary will replace the retired conversation in future context. Write a fac
 self-contained handoff for another model that must continue the work. Include: the \
 goal, the user's constraints and preferences, what was actually done, decisions and \
 why, verification results, artifacts (paths, identifiers, commands), and the next \
-steps. Use the labeled source roles. Do not invent facts, do not claim unverified \
-work succeeded, and explicitly label omitted non-text content or truncated output. \
-Return only the summary text.";
+steps. Use the labeled source roles, but write prose: do not reproduce transcript \
+labels or tool-call syntax. Do not invent facts, do not claim unverified work succeeded, \
+and explicitly label omitted non-text content or truncated output. Return only the summary \
+text.";
 
 /// The corrective instruction sent once after a response contains tool-call markup.
 const SUMMARY_CORRECTION: &str = "\
 A previous attempt to summarize this batch was rejected because it contained tool-call \
 syntax instead of summary prose. Regenerate the summary for this batch as factual prose \
-only. Do not emit tool calls, transcript labels such as [tool call ...] or [tool result ...], \
-XML or DSML tool tags, JSON function-call objects, or any other executable syntax. Do not \
-continue the conversation, call a tool, or execute anything. Return only the summary text.";
+only. Do not emit tool calls, transcript labels such as TOOL CALL or TOOL RESULT, bracketed \
+tool-call labels, XML or DSML tool tags, JSON function-call objects, or any other executable \
+syntax. Do not continue the conversation, call a tool, or execute anything. Return only the \
+summary text.";
 
 /// Serialize one retained record as labeled summary data.
 fn format_summary_record(record: &RetainedRecord, output_limit: usize) -> String {
     match &record.record {
         RetainedConversationRecord::Message(data) => format_message(data),
         RetainedConversationRecord::FunctionCall(data) => format!(
-            "[tool call {} ({})]\n{}",
+            "TOOL CALL {} ({})\n{}",
             data.name, data.call_id, data.arguments
         ),
         RetainedConversationRecord::FunctionCallOutput(data) => {
@@ -1673,7 +1675,7 @@ fn format_message(data: &MessageData) -> String {
 
 fn format_summary_output(data: &FunctionCallOutputData, output_limit: usize) -> String {
     let output = excerpt_text(&data.output, output_limit);
-    let mut text = format!("[tool result {}]\n{}", data.call_id, output);
+    let mut text = format!("TOOL RESULT {}\n{}", data.call_id, output);
     append_image_labels(&mut text, &data.images);
     text
 }
@@ -1935,12 +1937,27 @@ const TOOL_CALL_MARKUP: &[&str] = &[
     "[tool_result",
 ];
 
+/// Transcript labels that must not begin a summary line.
+const SUMMARY_TRANSCRIPT_LABELS: &[&str] = &["TOOL CALL", "TOOL RESULT"];
+
 /// Whether summary prose contains tool-call syntax copied from a transcript.
 fn contains_tool_call_markup(text: &str) -> bool {
     let lowercase = text.to_ascii_lowercase();
     TOOL_CALL_MARKUP
         .iter()
         .any(|marker| lowercase.contains(marker))
+        || contains_transcript_label(text)
+}
+
+/// Whether a summary line begins with a transcript label.
+fn contains_transcript_label(text: &str) -> bool {
+    text.lines().any(|line| {
+        let line = line.trim_start();
+        SUMMARY_TRANSCRIPT_LABELS.iter().any(|label| {
+            line.strip_prefix(label)
+                .is_some_and(|rest| matches!(rest.chars().next(), None | Some(' ' | ':' | '(')))
+        })
+    })
 }
 
 /// Extract the final assistant text and reject every unusable turn.
