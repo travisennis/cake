@@ -35,11 +35,9 @@ pub enum Error {
 ///
 /// Log files are retained for up to 7 days.
 pub fn configure(log_path: &Path) -> Result<(), Error> {
-    // Default to INFO level for cake, but allow RUST_LOG to override
     let env_filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("cake=info"));
 
-    // Daily rotation with 7-day retention
     let file_appender = RollingFileAppender::builder()
         .rotation(Rotation::DAILY)
         .filename_prefix("cake")

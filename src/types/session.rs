@@ -598,10 +598,6 @@ pub struct HookEventData {
     pub stderr: String,
 }
 
-// =============================================================================
-// Session Record Enum (for unified JSONL schema)
-// =============================================================================
-
 /// A single line in an append-only JSONL session file.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -940,8 +936,6 @@ fn session_record_from_stream_metadata(record: StreamRecord) -> SessionRecord {
         StreamRecord::CompactionStart(d) => SessionRecord::CompactionStart(d),
         StreamRecord::CompactionEnd(d) => SessionRecord::CompactionEnd(d),
         StreamRecord::TurnUsage(d) => SessionRecord::TurnUsage(d),
-        // `replay_error` is emitted only by `cake replay`, which never writes
-        // to a session file; there is no persisted counterpart.
         StreamRecord::ReplayError { .. } => {
             unreachable!("replay_error stream records are never persisted to a session file")
         },

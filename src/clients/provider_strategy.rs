@@ -60,9 +60,6 @@ impl<'a> ProviderStrategy<'a> {
     pub(super) fn responses_tool_strict(&self) -> Option<bool> {
         let base_url = &self.config.model_config.base_url;
         let url = reqwest::Url::parse(base_url).ok()?;
-        // Unlike Chat Completions, Responses may normalize an omitted strict
-        // setting. Explicitly opt out to preserve toolbox optionality, matching
-        // Codex's function tools, without changing other compatible providers.
         (url.host_str() == Some("api.openai.com")
             || crate::auth::is_chatgpt_codex_backend(base_url))
         .then_some(false)
@@ -77,15 +74,8 @@ impl<'a> ProviderStrategy<'a> {
     }
 
     pub(super) fn transform_chat_messages(messages: &mut Vec<ChatMessage<'_>>) {
-        // Demote developer messages to user role for Chat Completions
-        // providers that don't support the `developer` role.
         demote_developer_to_user(messages);
 
-        // Backfill a placeholder into assistant tool-call messages that lack
-        // reasoning content. Reasoning models (Kimi, DeepSeek, and others) in
-        // thinking mode require the field to round-trip, and provider-side
-        // routing can open the gap mid-session without cake's knowledge. The
-        // placeholder is a no-op for providers that ignore the field.
         for msg in messages.iter_mut() {
             if msg.role == Role::Assistant
                 && msg.tool_calls.is_some()

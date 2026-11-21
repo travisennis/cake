@@ -568,10 +568,6 @@ impl Serialize for Limit {
     {
         match self.0 {
             Some(value) => serializer.serialize_u32(value),
-            // Serialize the sentinel back to its written form so the settings
-            // validation round trip keeps the key present; otherwise an
-            // explicit `"unlimited"` would surface as a false unknown-key
-            // warning.
             None => serializer.serialize_str("unlimited"),
         }
     }
@@ -1712,8 +1708,6 @@ impl SettingsLoader {
                 SettingsError::IoError(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
             })?
             .to_string();
-        // Parse twice: once as a raw document to compare against, and once into
-        // the typed [`Settings`], which silently drops unrecognized keys.
         let original: toml::Value = toml::from_str(&content)?;
         let settings: Settings = toml::from_str(&content)?;
         let round_trip = toml::Value::try_from(&settings)?;
@@ -2041,8 +2035,6 @@ impl SettingsLoader {
         for dir in &settings.directories {
             acc.directories.insert(expand_home_str(dir));
         }
-        // `unwrap_or_default` keeps this function at baseline complexity: an
-        // absent `[sandbox]` section contributes no grants.
         let sandbox = settings.sandbox.clone().unwrap_or_default();
         acc.sandbox_read_only
             .extend(sandbox.read_only.iter().map(|p| expand_home_str(p)));
@@ -2278,9 +2270,6 @@ impl SettingsLoader {
             enabled,
             acc,
         );
-        // The allowlist is a union across precedence levels: every explicit
-        // entry in any settings file is honored. An absent key contributes
-        // nothing, matching the other list-valued settings.
         acc.judge_allowlist.extend(allowlist.unwrap_or_default());
         Self::merge_typesafe_settings(typesafe, acc);
     }
@@ -2354,10 +2343,8 @@ impl SettingsLoader {
     ) -> Result<(), SettingsError> {
         let definitions = Self::expand_model_variants(definitions)?;
 
-        // First, check for duplicates within the same file
         let mut seen: HashSet<&str> = HashSet::new();
         for def in &definitions {
-            // Validate name format
             if let Err(e) = ModelDefinition::validate_name(&def.name) {
                 return Err(SettingsError::InvalidModelName {
                     name: def.name.clone(),
@@ -2365,9 +2352,6 @@ impl SettingsLoader {
                 });
             }
 
-            // A configured endpoint is part of provider identity and is
-            // persisted in session metadata, so it must be a real URL with no
-            // embedded userinfo credential.
             if let Err(reason) = crate::config::model::canonicalize_base_url(&def.base_url) {
                 return Err(SettingsError::InvalidModelBaseUrl {
                     name: def.name.clone(),
@@ -2375,9 +2359,6 @@ impl SettingsLoader {
                 });
             }
 
-            // `api_key_env` is persisted verbatim in the session provider
-            // identity, so reject a pasted value or other non-variable text
-            // before it can reach a snapshot or a mismatch diagnostic.
             if !is_valid_api_key_env(&def.api_key_env) {
                 return Err(SettingsError::InvalidModelApiKeyEnv {
                     name: def.name.clone(),
@@ -2387,7 +2368,6 @@ impl SettingsLoader {
                 });
             }
 
-            // Check for duplicates within this file
             if !seen.insert(def.name.as_str()) {
                 return Err(SettingsError::DuplicateModelName {
                     name: def.name.clone(),
@@ -2395,7 +2375,6 @@ impl SettingsLoader {
             }
         }
 
-        // Now add all models to the map (overwriting any existing entries)
         for def in definitions {
             let name = def.name.clone();
             map.insert(name, def);
@@ -2420,8 +2399,6 @@ impl SettingsLoader {
                 expanded.push(def);
                 continue;
             };
-            // Push the base first so name validation reports it before any
-            // generated variant, then clone it as the template for variants.
             let template = def.clone();
             expanded.push(def);
             let mut seen = HashSet::new();
@@ -2479,7 +2456,6 @@ struct SettingsAccumulator {
     gates: crate::config::gates::GateConfiguration,
     models: HashMap<String, ModelDefinition>,
     default_model: Option<String>,
-    // Ordered sets preserve deduplication while making resolved grants stable.
     directories: BTreeSet<String>,
     sandbox_read_only: BTreeSet<String>,
     sandbox_writable: BTreeSet<String>,
@@ -2526,8 +2502,6 @@ impl SettingsAccumulator {
             .as_ref()
             .is_some_and(|bash| bash.judge.is_some())
         {
-            // A profile-only TypeSafe overlay is still a legacy judge table for
-            // migration purposes, even when no lower-precedence file has one.
             self.gates.legacy_present = true;
         }
         if let Some(bash) = &settings.tools.bash
@@ -2573,8 +2547,6 @@ impl SettingsAccumulator {
         if overlay.enabled.is_some() {
             self.tools_enabled.clone_from(&overlay.enabled);
         }
-        // Unconditional: `merge_typesafe_settings` is a no-op on `None`, and
-        // this function's change-risk budget allows no new branch.
         let profile_typesafe = overlay
             .bash
             .as_ref()
@@ -2700,8 +2672,6 @@ fn find_unknown_keys(
             for (index, (value, round_trip_value)) in
                 original.iter().zip(round_trip.iter()).enumerate()
             {
-                // Name `[[models]]` entries by their `name` field instead of
-                // their array index so warnings read like the settings file.
                 let label = value
                     .as_table()
                     .and_then(|table| table.get("name"))

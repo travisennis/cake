@@ -70,7 +70,6 @@ impl CmdRunner for SessionsCommand {
         data_dir: &DataDir,
         _options: &CommandRunOptions<'_>,
     ) -> anyhow::Result<()> {
-        // CmdRunner is asynchronous, although this command has no async work.
         std::future::ready(()).await;
         match &self.command {
             SessionsSubcommand::List { json } => list_sessions_command(data_dir, *json),
@@ -172,8 +171,6 @@ fn list_sessions(data_dir: &DataDir, working_dir: &Path) -> anyhow::Result<Sessi
         }
     }
 
-    // Sort newest first, with the session id as the tiebreaker so two sessions
-    // written in the same second always list in the same order.
     listing.sessions.sort_by(|left, right| {
         right
             .timestamp
@@ -218,7 +215,6 @@ fn read_session_info(path: &Path, working_dir: &Path) -> anyhow::Result<Option<S
         return Ok(None);
     }
 
-    // Scan subsequent lines for the first user message to get the first prompt.
     let first_prompt = find_first_user_prompt(&mut reader);
 
     Ok(Some(SessionInfo {
@@ -263,14 +259,11 @@ fn find_first_user_prompt(reader: &mut std::io::BufReader<std::fs::File>) -> Opt
             continue;
         }
 
-        // Quick check: is this a message record with role "user"?
-        // We use serde_json::Value to avoid needing the full SessionRecord deserialization.
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed)
             && value.get("type").and_then(|v| v.as_str()) == Some("message")
             && value.get("role").and_then(|v| v.as_str()) == Some("user")
             && let Some(content) = value.get("content").and_then(|v| v.as_str())
         {
-            // Return the first line of the content
             let first_line = content.lines().next().unwrap_or(content).to_string();
             return Some(first_line);
         }

@@ -902,10 +902,6 @@ async fn run_command_hook(
         },
     };
 
-    // Record the child PID and install a drop guard that kills the entire
-    // hook process tree on any non-successful exit (timeout, cancellation,
-    // early error return).  The guard is defused on the success path so
-    // normally completed hooks are not affected.
     let child_id = child.id();
     #[expect(
         clippy::used_underscore_binding,
@@ -915,20 +911,12 @@ async fn run_command_hook(
 
     if let Some(mut stdin) = child.stdin.take() {
         let input = serde_json::to_vec(&payload).unwrap_or_default();
-        // Feed stdin from a detached task so a hook that never reads stdin
-        // cannot block the call. Write errors are ignored because exit status
-        // is authoritative and the enclosing timeout bounds the writer.
         tokio::spawn(async move {
             _ = stdin.write_all(&input).await;
             _ = stdin.shutdown().await;
         });
     }
 
-    // The timeout bounds the whole read and wait, like the previous
-    // `wait_with_output` call. `wait_for_hook_output` reads both streams with
-    // bounded buffers, so a hook that emits more than `output_limit` cannot
-    // exhaust memory: each stream buffers at most `output_limit` bytes and
-    // only counts the overflow.
     let timeout_result = timeout(
         command.timeout,
         wait_for_hook_output(&mut child, output_limit),
@@ -937,15 +925,10 @@ async fn run_command_hook(
     let (stdout_captured, stdout_total, stderr_captured, stderr_total, status) =
         match timeout_result {
             Ok(Ok(output)) => {
-                // Hook completed normally — defuse the guard so it does not
-                // kill background descendants on drop.
                 _guard.defuse();
                 output
             },
             Ok(Err(error)) => {
-                // The child has already exited (wait succeeded), so there is
-                // nothing left in the process group; defuse to avoid a harmless
-                // ESRCH.
                 _guard.defuse();
                 return InvocationOutcome {
                     command,
@@ -960,11 +943,6 @@ async fn run_command_hook(
             },
             Err(_) => {
                 let timeout_secs = command.timeout.as_secs();
-                // Guard fires on return, killing the hook process tree:
-                // kill_on_drop(true) will already have sent SIGKILL to the
-                // immediate child (the shell) when the read future was dropped;
-                // the guard sends SIGKILL to the process group to reach any
-                // descendants.
                 return InvocationOutcome {
                     command,
                     exit_code: None,
@@ -1074,8 +1052,6 @@ fn shell_command(command: &str) -> Command {
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg(command);
         cmd.kill_on_drop(true);
-        // Place the entire hook process tree in its own process group so
-        // the timeout path can kill all descendants, not just the shell.
         cmd.as_std_mut().process_group(0);
         cmd
     }
@@ -1218,7 +1194,6 @@ where
     };
     let mut captured = Vec::new();
     let mut total = 0usize;
-    // Heap-allocated so the future stays small (clippy::large_futures).
     let mut tmp = vec![0u8; 8192];
     loop {
         let n = stream.read(&mut tmp).await?;

@@ -49,9 +49,6 @@ pub fn toolbox_tool_entry(tool: ToolboxTool, session_id: uuid::Uuid) -> ToolEntr
     let replay = tool.replay;
     let tool = Arc::new(tool);
     let session_id = session_id.to_string();
-    // Toolbox executors repair arguments before parsing (#185) but are never
-    // read-safe: they run as unsandboxed external processes and may mutate
-    // host state, so they are dropped under the read-only sandbox policy.
     ToolEntry::new(definition, move |context, _call_id, arguments| {
         let tool = Arc::clone(&tool);
         let session_id = session_id.clone();
@@ -94,8 +91,6 @@ async fn execute_toolbox_tool(
         )
     })?;
 
-    // Kill the whole process group on timeout, output cap, cancellation, or
-    // any early error so descendants cannot outlive cake's reported result.
     let mut guard = ToolboxProcessGuard::new(child.id());
 
     feed_toolbox_stdin(&mut child, stdin_payload);
@@ -106,9 +101,6 @@ async fn execute_toolbox_tool(
     )
     .await?;
 
-    // A normally completed tool no longer needs the drop guard. Keep it
-    // armed after an output-cap kill so it also terminates descendants that
-    // survived the direct child's kill and reap.
     guard.defuse_if_completed(status.is_some());
 
     finish_toolbox_result(&tool.registered_name, &streams, status)
@@ -168,8 +160,6 @@ fn finish_toolbox_result(
 ) -> Result<ToolResult, ToolError> {
     let stderr = String::from_utf8_lossy(&streams.stderr);
     if !stderr.trim().is_empty() {
-        // Tool diagnostics go to cake's log file, not the model (the
-        // describe/execute protocol reserves stdout for tool output).
         warn!(
             target: "cake",
             "toolbox tool '{}' stderr: {}",
@@ -192,8 +182,6 @@ fn finish_toolbox_result(
         )));
     }
 
-    // A capped tool was killed after partial output; that is an output
-    // truncation compensation even though the result is an error.
     let mut compensation_events = Vec::new();
     crate::clients::tools::push_output_truncation_event_if(
         &mut compensation_events,

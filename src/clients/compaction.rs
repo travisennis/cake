@@ -503,10 +503,6 @@ fn segment_exchanges(source: &[RetainedRecord], start: usize) -> anyhow::Result<
             RetainedConversationRecord::Message(_)
             | RetainedConversationRecord::Reasoning(_)
             | RetainedConversationRecord::FunctionCall(_) => {
-                // One assistant response: every consecutive assistant item,
-                // then the outputs that close its calls. A user, developer, or
-                // system message starts its own exchange, so an answer never
-                // shares an exchange with the input that follows it.
                 while index < source.len()
                     && (matches!(
                         &source[index].record,
@@ -715,9 +711,6 @@ fn clear_stale_exact_pin(
         return Ok(());
     }
     if record.source_task.is_none() {
-        // The pin owner is unknown. Clearing the pin would let selection retire
-        // content the active checkpoint promised to keep, so treat the pin as
-        // current until the record's ownership can be established.
         return Ok(());
     }
     if matches!(pin, PinReason::SkillInstructions { .. }) {
@@ -2031,8 +2024,6 @@ pub async fn summarize<C: SummaryCaller>(
         bytes.len()
     );
 
-    // The serialized summary reservation was measured before generation; the
-    // final record above is the authoritative post-generation check.
     Ok(checkpoint)
 }
 

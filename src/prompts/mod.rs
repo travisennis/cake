@@ -281,26 +281,22 @@ pub fn resolve_system_prompt_with_mcp(
     has_skill_search: bool,
     include_project_prompt: bool,
 ) -> String {
-    // 1. --system-prompt CLI flag
     if let Some(path) = cli_system_prompt
         && let Some(prompt) = read_prompt_override(path, PromptSource::Cli)
     {
         return prompt;
     }
 
-    // 2. Project-level file: .cake/system.md
     if include_project_prompt && let Some(prompt) = read_project_prompt(working_dir) {
         return prompt;
     }
 
-    // 3. Settings system_prompt path
     if let Some(path) = settings_system_prompt
         && let Some(prompt) = read_prompt_override(path, PromptSource::Settings)
     {
         return prompt;
     }
 
-    // 4. User-level file: ~/.config/cake/system.md
     let user_path = config_dir.join("system.md");
     if user_path.exists()
         && let Some(prompt) = read_prompt_override(&user_path, PromptSource::User)
@@ -482,9 +478,6 @@ pub fn build_initial_prompt_messages_with_mcp(
     if let Some(reader) = SkillReader::resolve(enabled_tools)
         && !skill_catalog.skills.is_empty()
     {
-        // Omission is allowed only when the run can search the complete
-        // catalog. Without SkillSearch the catalog stays complete and the
-        // over-budget warning names the missing search surface.
         let search_available = skill_search_available;
         let render = skill_catalog.to_prompt_xml_with_budget(skill_budget, search_available);
         let metrics = render.metrics();
@@ -538,7 +531,6 @@ pub fn build_initial_prompt_messages_with_mcp(
 /// Format AGENTS.md files into a Project Context section.
 /// Returns an empty string if no files have non-empty content.
 fn format_agents_context(agents_files: &[AgentsFile]) -> String {
-    // Filter to only files with non-empty content
     let non_empty_files: Vec<_> = agents_files
         .iter()
         .filter(|f| !f.content.trim().is_empty())

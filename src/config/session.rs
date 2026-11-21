@@ -74,10 +74,6 @@ impl WriterState {
     fn fail(&mut self, error: &anyhow::Error) {
         self.failure.get_or_insert_with(|| format!("{error:#}"));
         if let Some(buffer) = self.buffer.take() {
-            // `into_parts` detaches the buffer instead of flushing it on drop:
-            // a failed writer must not append a partial record later. The
-            // locked file stays owned by the shared state until every clone
-            // drops, so no other writer can acquire the session lock meanwhile.
             let (file, unwritten) = buffer.into_parts();
             drop(unwritten);
             self.locked_file = Some(file);
@@ -129,8 +125,6 @@ impl SessionWriter {
         checkpoint.validate_structure()?;
         self.write(|buffer| {
             let externalized = self.blobs.externalize_checkpoint(checkpoint)?;
-            // Serialize while the mutex is held: the plan requires a failure
-            // before serialization completion to fail the shared writer.
             let bytes = externalized.to_record_bytes()?;
             buffer
                 .write_all(&bytes)

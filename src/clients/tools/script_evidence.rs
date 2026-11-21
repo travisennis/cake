@@ -26,7 +26,6 @@ pub(super) fn collect(
     let candidate = context.cwd.join(&reference);
     let candidate = candidate.to_str().ok_or("script path is not UTF-8")?;
     let path = validate_path_in_cwd(context, candidate)?;
-    // A UTF-8 symlink name can resolve to a non-UTF-8 canonical path.
     let path_text = path
         .to_str()
         .ok_or("canonical script path is not UTF-8")?

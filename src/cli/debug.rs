@@ -208,7 +208,6 @@ Examples:
 
 impl CmdRunner for DebugCommand {
     async fn run(&self, data_dir: &DataDir, options: &CommandRunOptions<'_>) -> anyhow::Result<()> {
-        // CmdRunner is asynchronous, although some commands have no async work.
         std::future::ready(()).await;
         match &self.command {
             DebugSubcommand::Config {

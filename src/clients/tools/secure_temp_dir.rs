@@ -36,22 +36,13 @@ use std::sync::OnceLock;
 pub(super) fn secure_temp_dir() -> std::io::Result<&'static Path> {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
 
-    // Fast path: already initialised this session.
     if let Some(dir) = DIR.get() {
-        // Revalidate: a temp cleaner or attacker may have removed, replaced,
-        // or changed the directory since the last call.  Using only `exists()`
-        // is insufficient because a symlink replacement would pass the check.
-        // Full validation (non-following metadata, ownership, permissions)
-        // ensures the path is still a secure directory before reuse.
         ensure_secure_temp_dir(dir)?;
         return Ok(dir.as_path());
     }
 
-    // Create the secure temp directory (may fail with io::Error).
     let dir = create_secure_temp_dir()?;
 
-    // Cache it.  If another thread beat us, theirs is fine too — the
-    // extra directory is unused and will be cleaned up naturally.
     Ok(DIR.get_or_init(|| dir).as_path())
 }
 
@@ -62,10 +53,6 @@ pub(super) fn secure_temp_dir() -> std::io::Result<&'static Path> {
 /// `<temp_dir>/cake`.
 #[cfg(unix)]
 fn create_secure_temp_dir() -> std::io::Result<PathBuf> {
-    // Generate an unguessable directory name using 64 bits of randomness
-    // from a UUID.  An attacker on a shared sticky-bit temp directory like
-    // `/tmp` cannot pre-create the full path because they cannot predict
-    // the random suffix.
     let random_part = uuid::Uuid::new_v4().as_u128();
     let suffix = format!("{:016x}", (random_part >> 64) as u64);
 
@@ -75,7 +62,6 @@ fn create_secure_temp_dir() -> std::io::Result<PathBuf> {
 
     std::fs::create_dir_all(&dir)?;
 
-    // Delegate to the shared validator which enforces ownership and mode.
     ensure_secure_temp_dir(&dir)?;
 
     Ok(dir)
@@ -99,13 +85,10 @@ fn ensure_secure_temp_dir(dir: &Path) -> std::io::Result<()> {
 
     match std::fs::symlink_metadata(dir) {
         Ok(md) if md.file_type().is_symlink() => {
-            // Attacker replaced our directory with a symlink — remove it
-            // and create a real directory in its place.
             std::fs::remove_file(dir)?;
             std::fs::create_dir_all(dir)?;
         },
         Ok(md) if md.is_dir() => {
-            // Real directory exists — validate ownership.
             if md.uid() != uid {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
@@ -116,7 +99,6 @@ fn ensure_secure_temp_dir(dir: &Path) -> std::io::Result<()> {
                     ),
                 ));
             }
-            // Fix permissions if they drifted.
             let mut perms = md.permissions();
             if perms.mode() & 0o777 != 0o700 {
                 perms.set_mode(0o700);
@@ -125,21 +107,17 @@ fn ensure_secure_temp_dir(dir: &Path) -> std::io::Result<()> {
             return Ok(());
         },
         Ok(_) => {
-            // Exists but is neither a symlink nor a directory.
             return Err(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
                 format!("'{}' exists but is not a directory", dir.display()),
             ));
         },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // Directory vanished — recreate it.
             std::fs::create_dir_all(dir)?;
         },
         Err(e) => return Err(e),
     }
 
-    // Set permissions on a freshly created path (symlink was removed or
-    // directory was recreated from scratch).
     let md = std::fs::symlink_metadata(dir)?;
     let mut perms = md.permissions();
     perms.set_mode(0o700);

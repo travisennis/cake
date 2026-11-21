@@ -48,7 +48,6 @@ pub struct DoctorCommand {
 
 impl CmdRunner for DoctorCommand {
     async fn run(&self, data_dir: &DataDir, options: &CommandRunOptions<'_>) -> anyhow::Result<()> {
-        // CmdRunner is asynchronous, although this command has no async work.
         std::future::ready(()).await;
         run_doctor(self.json, data_dir, options)
     }
@@ -141,8 +140,6 @@ fn run_doctor(
         .map_err(|error| anyhow::anyhow!("Failed to get current directory: {error}"))?;
     let sources = settings_sources(&current_dir, options.project_config_mode);
     let load = load_settings_for_doctor(json_output, &sources, &current_dir, options)?;
-    // The configured grants do not depend on the skill catalog, so this
-    // resolves them without reading a skill file.
     let report = grants::build_report(
         None,
         &[],

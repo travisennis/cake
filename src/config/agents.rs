@@ -45,7 +45,6 @@ pub struct AgentsFile {
 pub fn read_agents_files(working_dir: &Path) -> Vec<AgentsFile> {
     let mut files = Vec::new();
 
-    // User-level AGENTS.md: ~/.cake/AGENTS.md
     if let Some(home) = dirs::home_dir() {
         let user_agents_path = home.join(".cake").join("AGENTS.md");
         if let Ok(content) = fs::read_to_string(&user_agents_path) {
@@ -56,7 +55,6 @@ pub fn read_agents_files(working_dir: &Path) -> Vec<AgentsFile> {
         }
     }
 
-    // XDG config AGENTS.md: ~/.config/AGENTS.md (or $XDG_CONFIG_HOME/AGENTS.md)
     let xdg_agents_path = super::config_dir().join("AGENTS.md");
     if let Ok(content) = fs::read_to_string(&xdg_agents_path) {
         let display_path = if std::env::var("XDG_CONFIG_HOME").is_ok_and(|d| !d.is_empty()) {
@@ -70,7 +68,6 @@ pub fn read_agents_files(working_dir: &Path) -> Vec<AgentsFile> {
         });
     }
 
-    // Project-level AGENTS.md: ./AGENTS.md
     let project_agents_path = working_dir.join("AGENTS.md");
     if let Ok(content) = fs::read_to_string(&project_agents_path) {
         files.push(AgentsFile {

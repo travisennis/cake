@@ -132,7 +132,6 @@ impl CmdRunner for McpCommand {
         _data_dir: &DataDir,
         options: &CommandRunOptions<'_>,
     ) -> anyhow::Result<()> {
-        // CmdRunner is asynchronous, although this command has no async work.
         std::future::ready(()).await;
         match &self.command {
             McpSubcommand::List { json } => list_command(*json, options),

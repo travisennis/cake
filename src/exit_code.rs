@@ -68,25 +68,20 @@ pub fn classify_to_u8(err: &anyhow::Error) -> u8 {
         return code;
     }
 
-    // Walk the error chain for reqwest::Error and string-based patterns.
     for cause in err.chain() {
         if let Some(code) = classify_error_cause(cause) {
             return code;
         }
     }
 
-    // Default: agent/tool error
     code::AGENT_ERROR
 }
 
 fn classify_typed_error(err: &anyhow::Error) -> Option<u8> {
-    // Check for structured ApiError first — this gives us reliable status codes.
     if let Some(api_err) = err.downcast_ref::<ApiError>() {
         return Some(classify_api_error_status(api_err.status));
     }
 
-    // A no-data stall is a request timeout, so it shares the API-error class
-    // with client-side reqwest timeouts and provider 408s.
     if err
         .downcast_ref::<crate::clients::response_stall::ResponseStall>()
         .is_some()
@@ -94,15 +89,10 @@ fn classify_typed_error(err: &anyhow::Error) -> Option<u8> {
         return Some(code::API_ERROR);
     }
 
-    // Typed output-schema errors: pre-run schema file problems are input
-    // errors; a run that cannot satisfy the schema is an agent error.
     if let Some(schema_err) = err.downcast_ref::<crate::config::OutputSchemaError>() {
         return Some(classify_schema_error(schema_err));
     }
 
-    // Settings load and parse failures are configuration defects: the file the
-    // user supplied is the input cake rejected, so they are input errors rather
-    // than agent errors.
     if let Some(settings_err) = err.downcast_ref::<SettingsError>() {
         return Some(classify_settings_error(settings_err));
     }
@@ -111,10 +101,6 @@ fn classify_typed_error(err: &anyhow::Error) -> Option<u8> {
         return Some(class);
     }
 
-    // A gate pipeline failure carries the protocol's failure class: provider
-    // failures are API errors, configuration failures are input errors, and
-    // every other gate failure is an agent error. This preserves the exit
-    // classes callers saw for the former in-process judge.
     if let Some(gate_err) = err.downcast_ref::<crate::gates::composer::GatePipelineError>() {
         return Some(classify_gate_class(&gate_err.class()));
     }
@@ -123,9 +109,6 @@ fn classify_typed_error(err: &anyhow::Error) -> Option<u8> {
         return Some(code::INPUT_ERROR);
     }
 
-    // Commands with a documented structured failure mapping own their exit
-    // classes: `cake replay`, `cake debug session`, and `cake sessions
-    // checkpoint`.
     if let Some(class) = classify_cli_command_error(err) {
         return Some(class);
     }
@@ -294,8 +277,6 @@ fn classify_error_cause(cause: &(dyn std::error::Error + 'static)) -> Option<u8>
         return Some(code::INPUT_ERROR);
     }
 
-    // These cover network/connection errors that appear as string messages
-    // rather than typed reqwest errors (e.g. when re-wrapped by anyhow).
     if is_api_network_error(&msg) {
         return Some(code::API_ERROR);
     }
@@ -312,18 +293,14 @@ pub fn classify(err: &anyhow::Error) -> ExitCode {
 
 /// Check if a `reqwest::Error` represents an API-level failure.
 fn is_reqwest_api_error(req_err: &reqwest::Error) -> bool {
-    // Status-classified failures defer to `classify_api_error_status`, so the
-    // status policy (auth, rate limit, request timeout) lives in one place.
     if let Some(status) = req_err.status()
         && classify_api_error_status(status.as_u16()) == code::API_ERROR
     {
         return true;
     }
-    // Connection failures
     if req_err.is_connect() {
         return true;
     }
-    // Timeouts
     if req_err.is_timeout() {
         return true;
     }

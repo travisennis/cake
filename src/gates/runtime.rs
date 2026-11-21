@@ -186,7 +186,6 @@ fn selected_model(
     let Some(model) = default else {
         return Ok(None);
     };
-    // Subscription credentials never cross the process boundary.
     if crate::auth::is_chatgpt_codex_backend(&model.base_url) {
         return Ok(None);
     }

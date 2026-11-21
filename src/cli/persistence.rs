@@ -140,9 +140,6 @@ fn create_seeded_session_file(
     }
 
     let blob_dir = blob_source.map(|_| data_dir.session_blob_dir(session.id));
-    // Capture this before linking; only a directory this fork creates is
-    // removed on failure. A pre-existing directory may hold another writer's
-    // data and is left in place.
     let created_blob_dir = blob_dir.as_deref().filter(|path| {
         matches!(
             fs::symlink_metadata(path),

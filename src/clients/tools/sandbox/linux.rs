@@ -59,11 +59,8 @@ impl LandlockSandbox {
             .create()
             .map_err(|e| format!("Failed to create Landlock ruleset: {e}"))?;
 
-        // Resolve path existence and open the rule FDs before fork. The
-        // resulting RulesetCreated owns everything the child needs.
         let paths = Self::prepare_rule_paths(config);
 
-        // Add read-write rules for cwd and temp dirs.
         let rw_access = AccessFs::from_all(abi);
         for path in &paths.writable {
             ruleset = ruleset
@@ -71,11 +68,6 @@ impl LandlockSandbox {
                 .map_err(|e| format!("Failed to add rw rule for {}: {e}", path.display()))?;
         }
 
-        // Add read-and-execute rules for system paths, configured read-only
-        // paths, skill paths, and writable paths demoted by read-only policy.
-        // Execute is included so scripts and binaries can run while Landlock
-        // still denies mutation, matching macOS Seatbelt's file-read* plus
-        // global process-exec rules.
         let read_execute_access = AccessFs::ReadFile | AccessFs::ReadDir | AccessFs::Execute;
         for path in &paths.read_execute {
             ruleset = ruleset

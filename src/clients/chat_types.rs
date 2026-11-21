@@ -4,10 +4,6 @@ use std::borrow::Cow;
 use crate::config::ReasoningEffort;
 use crate::types::{ImagePart, Role};
 
-// =============================================================================
-// Chat Completions API Request DTOs (serialization only - can borrow)
-// =============================================================================
-
 #[derive(Serialize)]
 pub(super) struct ChatRequest<'a> {
     pub(super) model: &'a str,
@@ -150,10 +146,6 @@ pub(super) struct ChatFunctionCallRef<'a> {
     pub(super) name: Cow<'a, str>,
     pub(super) arguments: Cow<'a, str>,
 }
-
-// =============================================================================
-// Chat Completions API Response DTOs (deserialization - owned types)
-// =============================================================================
 
 #[derive(Deserialize, Debug)]
 pub(super) struct ChatResponse {

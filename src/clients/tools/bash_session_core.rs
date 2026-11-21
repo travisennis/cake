@@ -509,8 +509,6 @@ async fn run_process(
                 drop(result);
                 capture_finished = true;
             },
-            // Observe the direct shell independently of pipe EOF. Descendants may
-            // inherit a captured pipe and keep it open after the shell exits.
             result = child.wait() => {
                 break (result.ok().and_then(|status| status.code()).unwrap_or(-1), None);
             },
@@ -528,9 +526,6 @@ async fn run_process(
             },
         }
     };
-    // The guard retained the process-group ID from before the direct child was
-    // reaped. Drop it before draining output so descendants holding a pipe are
-    // stopped first, even when the shell itself exited normally.
     drop(guard);
     if !capture_finished {
         drop(tokio::time::timeout(CAPTURE_DRAIN_TIMEOUT, &mut capture).await);

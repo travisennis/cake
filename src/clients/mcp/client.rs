@@ -773,9 +773,6 @@ fn handle_server_request(transport: &Arc<Transport>, message: &Value) {
 fn handle_notification(transport: &Arc<Transport>, message: &Value) {
     match message.get("method").and_then(Value::as_str) {
         Some("notifications/tools/list_changed") => {
-            // Modern notifications name the subscription they arrived on. A
-            // notification for a subscription this client did not open cannot
-            // be trusted as belonging to this connection's tool stream.
             if let Some(id) = subscription_id(message)
                 && !transport.has_subscription(id)
             {
@@ -861,8 +858,6 @@ async fn handle_response(transport: &Arc<Transport>, message: &Value) {
         );
         return;
     };
-    // A `subscriptions/listen` response reports graceful closure, not a
-    // request result. It never has a pending sender.
     if transport.remove_subscription(id) {
         match response_outcome(transport, message) {
             Ok(_) => debug!(
@@ -879,7 +874,6 @@ async fn handle_response(transport: &Arc<Transport>, message: &Value) {
         return;
     }
     let Some(sender) = transport.pending.lock().await.remove(&id) else {
-        // A response that arrives after its request timed out is harmless.
         return;
     };
     _ = sender.send(response_outcome(transport, message));

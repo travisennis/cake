@@ -124,8 +124,6 @@ impl GateConfiguration {
                 })
                 .collect();
         }
-        // Keep explicit legacy tuning, including allowlists, while moving its
-        // execution to the plugin. No credential or policy is copied into Cake.
         let mut settings = GateSettings {
             command: Some("cake-safety-judge".into()),
             models: Some(vec![

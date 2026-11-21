@@ -203,10 +203,6 @@ impl GateProcess {
         };
         match timeout(deadline, read).await {
             Ok(Ok(describe)) => {
-                // `describe` is a one-shot process whose stdout may have been
-                // closed by a descendant after the direct child exited. The
-                // group still needs the forceful cleanup, and the later serve
-                // process is a different group.
                 terminate_process_group(&mut child, pgid).await;
                 self.describe = Some(describe.clone());
                 Ok(describe)
@@ -254,9 +250,6 @@ impl GateProcess {
         };
         match timeout(deadline, handshake).await {
             Ok(Ok(ready)) => {
-                // A restart's ready handshake does not reset the breaker: a
-                // gate that crashes on every check would otherwise restart and
-                // handshake forever. A completed check resets the count.
                 self.child = Some(GateChild {
                     child,
                     stdin,
@@ -343,9 +336,6 @@ impl GateProcess {
         let direct_exited = timeout(SHUTDOWN_WAIT, gate_child.child.wait())
             .await
             .is_ok();
-        // The direct child exiting does not mean the process group is gone: a
-        // gate may have spawned descendants. Always signal the group so those
-        // descendants cannot outlive the run.
         signal_process_group(gate_child.pgid, SIGTERM);
         if !direct_exited {
             drop(timeout(KILL_WAIT, gate_child.child.wait()).await);
@@ -675,9 +665,6 @@ async fn read_frame_line<R: AsyncBufRead + Unpin>(
 async fn terminate_process_group(child: &mut Child, pgid: Option<u32>) {
     signal_process_group(pgid, SIGTERM);
     drop(timeout(KILL_WAIT, child.wait()).await);
-    // The direct child may exit while a descendant keeps the group alive. The
-    // forceful phase always follows the cooperative one, independent of the
-    // direct child's exit status.
     signal_process_group(pgid, SIGKILL);
     drop(timeout(KILL_WAIT, child.wait()).await);
 }

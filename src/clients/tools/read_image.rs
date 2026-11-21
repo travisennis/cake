@@ -13,10 +13,6 @@ use crate::clients::tools::{
 };
 use crate::types::ImagePart;
 
-// =============================================================================
-// ReadImage Tool Definition
-// =============================================================================
-
 /// Returns the `ReadImage` tool definition.
 pub(super) fn read_image_tool() -> super::Tool {
     super::Tool {
@@ -35,10 +31,6 @@ pub(super) fn read_image_tool() -> super::Tool {
         }),
     }
 }
-
-// =============================================================================
-// ReadImage Execution
-// =============================================================================
 
 /// Arguments for the `ReadImage` tool.
 #[derive(Deserialize)]
@@ -75,8 +67,6 @@ pub(super) fn execute_read_image(
 
     let path = validate_path_in_cwd(context, &args.path)?;
 
-    // Reject directories, pipes, sockets, and other objects before the
-    // blocking open; a named pipe with no writer never returns from it.
     validate_regular_file(&path)?;
 
     let bytes = read_bounded(&path, context.limits.read_image_max_bytes)?;

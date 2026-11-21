@@ -11,10 +11,6 @@ use std::collections::HashSet;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
-// =============================================================================
-// Core Types
-// =============================================================================
-
 /// A discovered skill with parsed metadata.
 ///
 /// Skills are loaded from `SKILL.md` files found in skill root subdirectories.
@@ -96,10 +92,6 @@ pub struct SkillCatalog {
     /// Diagnostics from discovery/parsing
     pub diagnostics: Vec<SkillDiagnostic>,
 }
-
-// =============================================================================
-// Skill Parsing
-// =============================================================================
 
 /// Parsed YAML frontmatter from a SKILL.md file.
 #[derive(Debug, serde::Deserialize)]
@@ -202,20 +194,13 @@ impl Skill {
         yaml_text: &str,
         path: &Path,
     ) -> Result<(String, String), SkillDiagnostic> {
-        // Parse as YAML first
         let frontmatter: SkillFrontmatter = match serde_saphyr::from_str(yaml_text) {
             Ok(fm) => fm,
             Err(_e) => {
-                // Try fallback: the YAML might have issues like unquoted colons in values
-                // Retry with a more lenient approach
                 return Self::parse_frontmatter_fallback(yaml_text, path);
             },
         };
 
-        // serde_saphyr keeps the trailing newline of a block scalar (`|` or `>`)
-        // even when the frontmatter has no final line break. Trim trailing
-        // whitespace so catalog and prompt rendering stay byte-identical to the
-        // previous parser's output.
         let name = frontmatter
             .name
             .map(|name| name.trim_end().to_string())
@@ -255,9 +240,7 @@ impl Skill {
                 continue;
             }
 
-            // Check if this is a new key (starts with non-whitespace and contains :)
             if !trimmed.starts_with(' ') && !trimmed.starts_with('\t') {
-                // Save previous key-value pair
                 if let Some(key) = current_key.take() {
                     let value = current_value.trim().to_string();
                     if key == "name" {
@@ -267,7 +250,6 @@ impl Skill {
                     }
                 }
 
-                // Parse new key
                 if let Some((key, value_after)) = trimmed.split_once(':') {
                     let key = key.trim().to_string();
                     let value_after = value_after.trim().to_string();
@@ -275,13 +257,11 @@ impl Skill {
                     current_value = value_after;
                 }
             } else {
-                // Continuation of previous value (multiline)
                 current_value.push('\n');
                 current_value.push_str(trimmed);
             }
         }
 
-        // Save the last key-value pair
         if let Some(key) = current_key {
             let value = current_value.trim().to_string();
             if key == "name" {
@@ -306,10 +286,6 @@ impl Skill {
         Ok((name, description))
     }
 }
-
-// =============================================================================
-// Skill Catalog
-// =============================================================================
 
 /// Compiled default for the rendered skill catalog, in Unicode scalar
 /// characters.
@@ -611,10 +587,6 @@ fn xml_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-// =============================================================================
-// Skill Discovery
-// =============================================================================
-
 /// Directories to skip during skill discovery.
 const EXCLUDED_DIRS: &[&str] = &[".git", "node_modules", "target"];
 
@@ -677,10 +649,8 @@ fn discover_skills_inner(
     let mut catalog = SkillCatalog::empty();
     let mut scanned_dirs = 0;
 
-    // Scan paths: project first, configured paths next, then user.
     let project_skills_dir = working_dir.join(".agents").join("skills");
 
-    // Collect project skills first
     let mut project_skill_names = HashSet::new();
     if project_skills_dir.exists() && project_skills_dir.is_dir() {
         scan_directory(
@@ -725,7 +695,6 @@ fn discover_skills_inner(
         }
     }
 
-    // Filter out configured skills that collide with project skills.
     catalog.skills.retain(|s| {
         if s.scope == SkillScope::Configured && project_skill_names.contains(&s.name) {
             catalog.diagnostics.push(SkillDiagnostic {
@@ -742,7 +711,6 @@ fn discover_skills_inner(
         }
     });
 
-    // Then collect user skills (skip if name collision with project)
     if let Some(user_dir) = user_skills_dir
         && user_dir.exists()
         && user_dir.is_dir()
@@ -757,7 +725,6 @@ fn discover_skills_inner(
             0,
         );
 
-        // Filter out user skills that collide with project skills
         catalog.skills.retain(|s| {
             if s.scope == SkillScope::User
                 && (project_skill_names.contains(&s.name)
@@ -831,12 +798,10 @@ fn scan_directory(
 
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
-        // Skip excluded directories
         if EXCLUDED_DIRS.contains(&name) {
             continue;
         }
 
-        // Check if this directory contains a SKILL.md
         let skill_md = path.join("SKILL.md");
         if skill_md.exists() && skill_md.is_file() {
             match Skill::parse(&skill_md, scope) {
@@ -861,14 +826,9 @@ fn scan_directory(
             }
         }
 
-        // Recurse into subdirectories
         scan_directory(&path, scope, catalog, names_seen, scanned_dirs, depth + 1);
     }
 }
-
-// =============================================================================
-// Skill Configuration
-// =============================================================================
 
 /// Resolved skill configuration from CLI and settings.
 #[derive(Debug, Clone, PartialEq, Eq)]

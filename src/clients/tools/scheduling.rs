@@ -68,8 +68,6 @@ pub fn schedule_tool_calls(
     {
         let (target, serialized) = match resolved_target {
             Some((path, touch)) => {
-                // Mutations always serialize with themselves; a read joins the
-                // group only when the turn also mutates its path.
                 let serialized = touch == PathTouch::Mutate || mutated.contains(&path);
                 (Some(path), serialized)
             },
@@ -130,8 +128,6 @@ fn resolve_scheduling_targets(
         .any(|(_, touch)| *touch == PathTouch::Mutate);
 
     if mutation_resolved {
-        // A mutation resolved, so a same-path read must join its group;
-        // resolve the remaining calls against the same grant table.
         for (slot, (_, name, plan)) in resolved.iter_mut().zip(tool_plans) {
             if slot.is_none()
                 && let ToolHookPlan::Execute { arguments, .. } = plan

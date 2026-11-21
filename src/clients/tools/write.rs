@@ -2,10 +2,6 @@ use crate::clients::tools::ToolContext;
 use crate::clients::tools::file_replace::replace_file;
 use serde::Deserialize;
 
-// =============================================================================
-// Write Tool Definition
-// =============================================================================
-
 /// Returns the Write tool definition
 pub(super) fn write_tool() -> super::Tool {
     super::Tool {
@@ -28,10 +24,6 @@ pub(super) fn write_tool() -> super::Tool {
         }),
     }
 }
-
-// =============================================================================
-// Write Execution
-// =============================================================================
 
 /// Arguments for the Write tool
 #[derive(Debug, Deserialize)]
@@ -67,16 +59,10 @@ pub(super) fn execute_write(
         super::format_json_parse_error(&repaired, &e, "write", expected_write_arguments_shape())
     })?;
 
-    // Validate path is within working directory
     let path = super::resolve_path_for_write_scheduling(context, &args.path)?;
 
-    // Check if file exists to determine if it's a create or overwrite.
-    // This must use the validated (normalised) path so that writes to
-    // files that exist only after normalisation are correctly reported
-    // as overwrites.
     let file_existed = path.exists();
 
-    // Create parent directories if they don't exist
     if let Some(parent) = path.parent()
         && !parent.exists()
     {
@@ -84,8 +70,6 @@ pub(super) fn execute_write(
             .map_err(|e| format!("Failed to create directories '{}': {e}", parent.display()))?;
     }
 
-    // Publish the complete replacement through a staged sibling so a failed
-    // preparation leaves an existing file untouched.
     replace_file(&path, args.content.as_bytes())
         .map_err(|e| format!("Failed to write file '{}': {e}", path.display()))?;
 

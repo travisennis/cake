@@ -257,8 +257,6 @@ fn classify_response(
     termination: Option<&ProviderTermination>,
     usage: Option<ReportedUsage>,
 ) -> TerminationVerdict {
-    // A partial usage object does not prove which counters the provider
-    // reported, so neither comparison may trust it.
     let complete_usage = usage
         .filter(|reported| reported.presence == UsagePresence::Complete)
         .map(|reported| reported.usage);

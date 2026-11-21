@@ -420,9 +420,6 @@ fn ensure_dir_with(
     tighten_existing: bool,
     set_mode: impl FnOnce(&Path) -> std::io::Result<()>,
 ) -> Result<(), DataDirError> {
-    // `lstat` follows a symlink when the path ends in a separator, so check a
-    // lexically normalized path. Otherwise `CAKE_DATA_DIR=/tmp/link/` would
-    // pass the symlink check and resolve through the link.
     let checked = path.components().collect::<PathBuf>();
     match fs::symlink_metadata(&checked) {
         Ok(metadata) if metadata.file_type().is_symlink() => Err(DataDirError::Symlinked {

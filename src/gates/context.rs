@@ -25,7 +25,6 @@ fn find_git_head(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
             return Some(dot_git.join("HEAD"));
         }
         if meta.is_file() {
-            // Linked-worktree/submodule marker: `gitdir: <path>`.
             let target = std::fs::read_to_string(&dot_git).ok()?;
             let target = target.trim().strip_prefix("gitdir:")?.trim();
             let git_dir = if std::path::Path::new(target).is_absolute() {

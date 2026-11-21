@@ -1036,11 +1036,6 @@ impl SharedSessionTelemetryWriter {
         let mut state = match self.state.lock() {
             Ok(state) => state,
             Err(poisoned) => {
-                // A panic poisoned the lock while it held a writer that may
-                // have left a partial NDJSON line. Recover the state so the
-                // mutex stays the single availability authority, then fail-stop:
-                // never write after a partial line. Exactly one caller observes
-                // `Failed`; later callers observe `Disabled`.
                 let mut state = poisoned.into_inner();
                 if !matches!(&*state, TelemetryWriterState::Disabled) {
                     *state = TelemetryWriterState::Disabled;

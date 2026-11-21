@@ -99,7 +99,6 @@ impl ReplayError {
 
 impl CmdRunner for ReplayCommand {
     async fn run(&self, data_dir: &DataDir, options: &CommandRunOptions<'_>) -> anyhow::Result<()> {
-        // CmdRunner is asynchronous, although this command has no async work.
         std::future::ready(()).await;
         if options.output_format != OutputFormat::StreamJson {
             return Err(fail(ReplayError::OutputFormat));
@@ -109,10 +108,6 @@ impl CmdRunner for ReplayCommand {
             return Err(fail(ReplayError::InvalidUuid(self.uuid.clone())));
         };
 
-        // No `exists()` pre-check: `Path::exists` reports `false` for
-        // permission-denied paths, which would misclassify them as
-        // `session_not_found`. `load_records` distinguishes missing files from
-        // permission failures via `File::open`'s error kind.
         let path = data_dir.session_path(uuid);
         let mut records = load_records(&path, uuid).map_err(fail)?;
         data_dir
@@ -129,12 +124,6 @@ impl CmdRunner for ReplayCommand {
 }
 
 fn emit_records(records: Vec<SessionRecord>) -> anyhow::Result<()> {
-    // Replay mirrors the live stream vocabulary and preserves physical record
-    // order. Main-agent `turn_usage` records are emitted verbatim, including
-    // records written before the optional context-budget fields existed.
-    // Compaction-purpose usage stays session/telemetry audit data and is
-    // omitted, matching the live stream. References are stripped after
-    // hydration so stream consumers never see the blob shape.
     for record in records {
         if let SessionRecord::TurnUsage(data) = &record
             && data.purpose == Some(crate::types::TurnUsagePurpose::Compaction)
@@ -177,9 +166,6 @@ fn emit(record: &StreamRecord) -> anyhow::Result<()> {
 /// [`crate::config::session::Session::load`]; any other malformed line is a
 /// [`ReplayError::Corrupt`] failure.
 fn load_records(path: &Path, session_id: Uuid) -> Result<Vec<SessionRecord>, ReplayError> {
-    // Replay reads the file through the shared framing codec. Open errors are
-    // mapped here; mid-read errors surface during framing and are mapped to
-    // `Corrupt` by `next_record`.
     let file = fs::File::open(path).map_err(|error| match error.kind() {
         std::io::ErrorKind::PermissionDenied => ReplayError::Permission(session_id.to_string()),
         std::io::ErrorKind::NotFound => ReplayError::MissingSession(session_id.to_string()),
@@ -212,8 +198,6 @@ fn load_records(path: &Path, session_id: Uuid) -> Result<Vec<SessionRecord>, Rep
     while let Some(line) = next_record()? {
         match parse_record(&line.text, &session_id) {
             Ok(record) => records.push(record),
-            // A writer interrupted mid-record leaves a partial final line
-            // without a trailing newline; tolerate it like `Session::load`.
             Err(error) if line.partial_tail => {
                 tracing::warn!(
                     "Ignoring partial final session record in {}: {error}",

@@ -21,10 +21,6 @@ use crate::types::{
     ReportedUsage, Role, Usage, UsagePresence,
 };
 
-// =============================================================================
-// Chat Completions API Backend
-// =============================================================================
-
 /// Send a request to the Chat Completions API, returning the raw HTTP response.
 ///
 /// # Errors
@@ -156,8 +152,6 @@ async fn read_chat_response(
     let bytes = match read_body(&mut response, model, stall_window).await {
         BodyReadOutcome::Complete(bytes) => bytes,
         BodyReadOutcome::Stalled(stalled) => {
-            // A complete JSON body that arrived just before the stall is still
-            // usable; a truncated one keeps the bounded preview on the error.
             if let Ok(chat_response) = serde_json::from_slice::<ChatResponse>(&stalled.bytes) {
                 return Ok(chat_response);
             }
@@ -370,10 +364,6 @@ impl<'a> ChatMessageBuilder<'a> {
     }
 
     fn push_item(&mut self, item: &'a ConversationItem) {
-        // A turn's tool messages must stay adjacent to the assistant's tool
-        // call, so the synthetic image messages queued by an earlier tool
-        // output are emitted only once the run of tool outputs ends. Every arm
-        // but the tool output flushes the queue first.
         match item {
             ConversationItem::Message {
                 role,
@@ -454,9 +444,6 @@ impl<'a> ChatMessageBuilder<'a> {
             },
         };
 
-        // Backward merge: when a FunctionCall immediately follows an assistant
-        // message, attach the tool call to that message. This handles the new
-        // [Message(assistant), FunctionCall] conversation ordering.
         if let Some(last) = self.messages.last_mut()
             && last.role == Role::Assistant
         {
@@ -488,10 +475,6 @@ impl<'a> ChatMessageBuilder<'a> {
             tool_call_id: Some(Cow::Borrowed(call_id)),
         });
 
-        // A tool-role message's content is text only, so an image result is
-        // carried by a synthetic user message. It is queued rather than pushed
-        // so every tool message of this turn stays adjacent to the assistant's
-        // tool call; the queue flushes once the run of tool messages ends.
         self.queue_image_result_message(output, images);
     }
 
@@ -618,8 +601,6 @@ fn parse_choices(response: &ChatResponse) -> anyhow::Result<Vec<ConversationItem
         });
     }
 
-    // Extract text content first so that `stream-json` events match the
-    // canonical Responses API ordering: [reasoning, message, function_call].
     if let Some(content) = &message.content
         && !content.is_empty()
     {
@@ -633,7 +614,6 @@ fn parse_choices(response: &ChatResponse) -> anyhow::Result<Vec<ConversationItem
         });
     }
 
-    // Extract tool calls (may coexist with text content)
     if let Some(tool_calls) = &message.tool_calls {
         for tc in tool_calls {
             items.push(ConversationItem::FunctionCall {
@@ -646,9 +626,6 @@ fn parse_choices(response: &ChatResponse) -> anyhow::Result<Vec<ConversationItem
         }
     }
 
-    // If we got tool calls but no text content, that's fine — the agent loop
-    // will execute the tools and continue. But if we got neither, add an
-    // empty assistant message so the caller knows the model responded.
     if items.is_empty() {
         warn!(
             target: "cake",

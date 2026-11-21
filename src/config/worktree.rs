@@ -67,7 +67,6 @@ fn find_repo_root(from: &Path) -> anyhow::Result<PathBuf> {
 
 /// Get the default remote branch (e.g., origin/main).
 fn default_remote_branch(repo_root: &Path) -> anyhow::Result<String> {
-    // Try origin/HEAD first
     let output = git::command(repo_root)
         .args(["symbolic-ref", "refs/remotes/origin/HEAD"])
         .output()
@@ -78,13 +77,11 @@ fn default_remote_branch(repo_root: &Path) -> anyhow::Result<String> {
             .context("Invalid UTF-8")?
             .trim()
             .to_string();
-        // Strip "refs/remotes/" prefix
         if let Some(branch) = full_ref.strip_prefix("refs/remotes/") {
             return Ok(branch.to_string());
         }
     }
 
-    // Fallback: try common defaults
     for candidate in &["origin/main", "origin/master"] {
         let check = git::command(repo_root)
             .args(["rev-parse", "--verify", candidate])
@@ -96,7 +93,6 @@ fn default_remote_branch(repo_root: &Path) -> anyhow::Result<String> {
         }
     }
 
-    // Last resort: use HEAD
     Ok("HEAD".to_string())
 }
 
@@ -149,11 +145,6 @@ pub fn create(from: &Path, name: Option<&str>) -> anyhow::Result<Worktree> {
         return Err(anyhow!("Failed to create worktree: {stderr}"));
     }
 
-    // Copy files listed in .worktreeinclude from the source to the new
-    // worktree. Everything after a successful `git worktree add` is part of
-    // one transaction: if a later step fails, roll back the registration,
-    // branch, and directory this call just created so a reported setup failure
-    // does not leave a partial worktree behind.
     copy_includes_or_rollback(&repo_root, &wt_name, &branch, &wt_path)?;
 
     Ok(Worktree {
@@ -203,13 +194,8 @@ fn rollback_create(
 ) -> anyhow::Result<()> {
     let mut errors: Vec<String> = Vec::new();
 
-    // Deregister and remove the linked worktree; `git worktree remove` also
-    // deletes the on-disk directory, so a success removes the path too.
     deregister_rollback_worktree(repo_root, wt_name, wt_path, &mut errors);
-    // Delete the branch this call created. Absence is treated as already gone.
     delete_rollback_branch(repo_root, branch, &mut errors);
-    // If the directory still exists after git's removal, remove it directly:
-    // `create` verified the path was absent, so it is ours.
     remove_rollback_dir(wt_path, &mut errors);
 
     if errors.is_empty() {
@@ -283,7 +269,6 @@ fn remove_rollback_dir(wt_path: &Path, errors: &mut Vec<String>) {
 
 /// Check if a worktree has uncommitted changes or commits ahead of its start point.
 pub fn has_changes(wt_path: &Path) -> anyhow::Result<bool> {
-    // Check for uncommitted changes (staged or unstaged)
     let status = git::command(wt_path)
         .args(["status", "--porcelain"])
         .output()
@@ -298,12 +283,10 @@ pub fn has_changes(wt_path: &Path) -> anyhow::Result<bool> {
         return Ok(true);
     }
 
-    // Check for commits not on the default remote branch
     let log = git::command(wt_path)
         .args(["log", "--oneline", "@{upstream}..HEAD"])
         .output();
 
-    // If upstream doesn't exist, check if there are any commits at all
     match log {
         Ok(output) if output.status.success() => {
             let log_output = String::from_utf8_lossy(&output.stdout);
@@ -329,7 +312,6 @@ pub fn remove(from: &Path, name: &str, force: bool) -> anyhow::Result<()> {
 
     info!("Removing worktree '{name}' at {}", wt_path.display());
 
-    // Remove the worktree
     let mut args = vec!["worktree", "remove"];
     if force {
         args.push("--force");
@@ -347,7 +329,6 @@ pub fn remove(from: &Path, name: &str, force: bool) -> anyhow::Result<()> {
         return Err(anyhow!("Failed to remove worktree: {stderr}"));
     }
 
-    // Delete the branch
     let branch_flag = if force { "-D" } else { "-d" };
     let branch_output = git::command(&repo_root)
         .args(["branch", branch_flag, &branch])
@@ -356,7 +337,6 @@ pub fn remove(from: &Path, name: &str, force: bool) -> anyhow::Result<()> {
 
     if !branch_output.status.success() {
         let stderr = String::from_utf8_lossy(&branch_output.stderr);
-        // Don't fail if branch was already deleted
         if !stderr.contains("not found") {
             tracing::warn!("Failed to delete branch '{branch}': {stderr}");
         }
@@ -364,8 +344,6 @@ pub fn remove(from: &Path, name: &str, force: bool) -> anyhow::Result<()> {
 
     Ok(())
 }
-
-// ── .worktreeinclude support ──────────────────────────────────────────────
 
 /// The name of the control file that lists files to copy into new worktrees.
 const WORKTREE_INCLUDE_FILENAME: &str = ".worktreeinclude";
@@ -445,9 +423,6 @@ fn collect_matching_entry(
 ) -> anyhow::Result<()> {
     let path = entry.path();
 
-    // Use the non-following file type: `path.is_dir()` / `path.is_file()`
-    // follow symlinks, which would let a symlink cycle recurse without
-    // bound and let symlinks escape the repository. Skip symlinks entirely.
     let file_type = entry
         .file_type()
         .with_context(|| format!("Failed to stat {}", path.display()))?;
@@ -478,11 +453,9 @@ fn collect_matching_directory(
     dest_root: &Path,
     copied: &mut usize,
 ) -> anyhow::Result<()> {
-    // Skip internal git and cake directories.
     if name == ".git" || name == ".cake" {
         return Ok(());
     }
-    // Prune directories whose contents cannot match any pattern.
     let relative_dir = path.strip_prefix(base).with_context(|| {
         format!(
             "path {} is not under base {}",
@@ -549,7 +522,6 @@ fn glob_match_bytes(pattern: &[u8], path: &[u8]) -> bool {
     visited.insert((0, 0));
 
     while let Some((pi, si)) = stack.pop() {
-        // Pattern exhausted: match only if path is also exhausted.
         if pi >= pattern.len() {
             if si >= path.len() {
                 return true;
@@ -634,16 +606,13 @@ fn enqueue_double_star(
     stack: &mut Vec<MatchPosition>,
 ) {
     let (pi, si) = pos;
-    // Skip past `**` and an optional following `/`.
     let rest = if pi + 2 < pattern.len() && pattern[pi + 2] == b'/' {
         pi + 3
     } else {
         pi + 2
     };
 
-    // Option A: ** matches nothing, continue with rest.
     queue_position((rest, si), visited, stack);
-    // Option B: ** matches one char, stay on **.
     if si < path.len() {
         queue_position((pi, si + 1), visited, stack);
     }
@@ -660,9 +629,7 @@ fn enqueue_star(
     stack: &mut Vec<MatchPosition>,
 ) {
     let (pi, si) = pos;
-    // Option A: * matches nothing.
     queue_position((pi + 1, si), visited, stack);
-    // Option B: * matches one char (non-/), stay on *.
     if si < path.len() && path[si] != b'/' {
         queue_position((pi, si + 1), visited, stack);
     }
@@ -708,8 +675,6 @@ fn pattern_could_match_under(pattern: &str, dir_relative: &str) -> bool {
         return true;
     }
 
-    // Patterns starting with `**` (no preceding `/`) can match at any depth
-    // because `**` crosses `/`.  This includes `**`, `**/...`, `**.env`, etc.
     if pattern.starts_with("**") {
         return true;
     }
@@ -717,34 +682,25 @@ fn pattern_could_match_under(pattern: &str, dir_relative: &str) -> bool {
     let pattern_segments: Vec<&str> = pattern.split('/').collect();
     let dir_segments: Vec<&str> = dir_relative.split('/').filter(|s| !s.is_empty()).collect();
 
-    // For fixed-depth patterns (no `**` in any segment), the pattern must
-    // have more segments than the directory to allow for a filename.
-    // For patterns with `**`, the pattern can expand to any depth.
     let has_doublestar = pattern_segments.iter().any(|s| s.contains("**"));
     if !has_doublestar && pattern_segments.len() <= dir_segments.len() {
         return false;
     }
 
-    // Every non-wildcard prefix segment must match corresponding dir segment.
     for (i, dir_seg) in dir_segments.iter().enumerate() {
         let pat_seg = pattern_segments[i];
-        // `**` embedded in a segment (e.g., `**.json`, `config/**`) matches
-        // any number of remaining dir segments plus a filename.
         if pat_seg.contains("**") {
             return true;
         }
-        // A single `*` segment matches any single directory component.
         if pat_seg == "*" {
             continue;
         }
-        // Wildcard segment: check if it could match the directory name.
         if pat_seg.contains('*') || pat_seg.contains('?') {
             if !glob_match(pat_seg, dir_seg) {
                 return false;
             }
             continue;
         }
-        // Pure literal comparison.
         if pat_seg != *dir_seg {
             return false;
         }

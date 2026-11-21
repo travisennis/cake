@@ -65,10 +65,6 @@ impl HookEvent {
     }
 
     pub const fn as_str(self) -> &'static str {
-        // The discriminant comparison stands in for `==`: `PartialEq::eq` is not
-        // `const`, so `self == event` cannot be used in a `const fn`. `HookEvent`
-        // declares no explicit discriminants, so each variant's discriminant is
-        // unique and identifies it here.
         let mut index = 0;
         while index < HOOK_EVENT_NAMES.len() {
             let (event, name) = HOOK_EVENT_NAMES[index];

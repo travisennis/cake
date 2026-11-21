@@ -282,10 +282,6 @@ fn append_checkpoint(
         summary_time_ms: payload.summary_time_ms,
     };
 
-    // Externalize before measuring: a checkpoint whose inline payloads would
-    // exceed the record ceiling is accepted when its references fit. The
-    // writer re-externalizes and re-verifies under its lock, and repeats the
-    // validation as the M1 durability contract.
     let blobs = data_dir.session_blob_store(requested);
     let checkpoint = blobs.externalize_checkpoint(&checkpoint).map_err(|error| {
         CheckpointError::input(format!("checkpoint payload was rejected: {error:#}"))

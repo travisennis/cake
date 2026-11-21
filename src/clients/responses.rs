@@ -22,10 +22,6 @@ use crate::types::{
     ReasoningSummary, ReportedUsage, Role, Usage, UsagePresence,
 };
 
-// =============================================================================
-// Responses API Backend
-// =============================================================================
-
 /// Send a request to the Responses API, returning the raw HTTP response.
 ///
 /// # Errors
@@ -216,18 +212,10 @@ pub(super) async fn parse_response(
     let mut response = response;
     match read_body(&mut response, model, stall_window).await {
         BodyReadOutcome::Complete(bytes) => parse_body_bytes(&bytes, is_sse),
-        BodyReadOutcome::Stalled(stalled) => {
-            // A stream that already delivered its terminal event (or a complete
-            // JSON body) before the stall is still usable; anything else fails
-            // with the stall error and a bounded preview of what arrived.
-            match parse_body_bytes(&stalled.bytes, is_sse) {
-                Ok(turn) => Ok(turn),
-                // A terminal `response.failed` event already arrived before the
-                // stall. Keep its typed provider metadata and retry
-                // classification instead of replacing it with a generic stall.
-                Err(error) if error.downcast_ref::<ResponsesStreamFailed>().is_some() => Err(error),
-                Err(_) => Err(stalled.stall.with_preview(&stalled.bytes).into()),
-            }
+        BodyReadOutcome::Stalled(stalled) => match parse_body_bytes(&stalled.bytes, is_sse) {
+            Ok(turn) => Ok(turn),
+            Err(error) if error.downcast_ref::<ResponsesStreamFailed>().is_some() => Err(error),
+            Err(_) => Err(stalled.stall.with_preview(&stalled.bytes).into()),
         },
         BodyReadOutcome::Failed(failed) => Err(failed.error),
     }
@@ -613,9 +601,6 @@ fn apply_response_failed(event: &serde_json::Value) -> anyhow::Result<()> {
         .and_then(|usage| serde_json::from_value::<ApiUsage>(usage).ok())
         .map(|usage| map_usage(&usage, response_id));
 
-    // Return a typed error so the agent runner can downcast it, classify
-    // retryability from the bounded metadata, and carry structured diagnostics
-    // to telemetry instead of a flattened string.
     Err(anyhow::Error::new(ResponsesStreamFailed {
         metadata,
         reported_usage,
@@ -1003,17 +988,9 @@ impl<'a> ResponsesApiInputItem<'a> {
                 } else {
                     "input_text"
                 };
-                // Provider quirk: the Responses API requires an `annotations`
-                // field (even if empty) on assistant `output_text` content
-                // blocks. Non-assistant `input_text` blocks must omit it.
-                // Removing the empty array would send malformed assistant
-                // turns to the provider.
                 let annotations =
                     matches!(role, Role::Assistant).then(Vec::<serde_json::Value>::new);
 
-                // A message that carries images leads with its text block and
-                // follows with one inline image block per image, so a user
-                // message can hand pixels to the provider directly.
                 let images = if include_images {
                     images.as_slice()
                 } else {
@@ -1068,27 +1045,19 @@ impl<'a> ResponsesApiInputItem<'a> {
                 encrypted_content,
                 content,
                 ..
-            } => {
-                // When `summary` is `None`, we produce an empty array (`"summary": []`)
-                // rather than omitting the field. This maps the domain type's `Option`
-                // into the API DTO's non-optional `Vec`. The Responses API accepts
-                // `"summary": []` equivalently to an absent field — it is treated as
-                // "no summaries to echo". This behavior predates `summary` becoming
-                // optional and has been in production use without issues.
-                Self::Reasoning {
-                    id,
-                    summary: summary
-                        .as_deref()
-                        .unwrap_or_default()
-                        .iter()
-                        .map(|text| ResponsesReasoningSummary {
-                            summary_type: &text.summary_type,
-                            text: &text.text,
-                        })
-                        .collect(),
-                    encrypted_content: encrypted_content.as_deref(),
-                    content: content.as_deref(),
-                }
+            } => Self::Reasoning {
+                id,
+                summary: summary
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|text| ResponsesReasoningSummary {
+                        summary_type: &text.summary_type,
+                        text: &text.text,
+                    })
+                    .collect(),
+                encrypted_content: encrypted_content.as_deref(),
+                content: content.as_deref(),
             },
         }
     }
@@ -1274,9 +1243,6 @@ fn parse_function_call_output(
         return Err(malformed_function_call_error(api_response, output, index));
     }
 
-    // Normalize missing, empty, or whitespace-only arguments to "{}" — some
-    // providers send none or an empty string for parameterless tool calls.
-    // Established toolbox parse_arguments already does the same normalization.
     let arguments = output
         .arguments
         .as_deref()

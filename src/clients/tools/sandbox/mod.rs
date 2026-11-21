@@ -16,10 +16,6 @@ use crate::clients::tools::ToolContext;
 mod grants_report;
 pub use grants_report::{GrantReport, GrantReportInputs};
 
-// =============================================================================
-// Platform-specific implementations
-// =============================================================================
-
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
@@ -29,10 +25,6 @@ pub(super) use macos::MacOsSandbox;
 mod linux;
 #[cfg(target_os = "linux")]
 pub(super) use linux::LandlockSandbox;
-
-//=============================================================================
-// Sandbox Policy
-//=============================================================================
 
 /// The filesystem sandbox policy applied to model-generated shell commands.
 ///
@@ -136,10 +128,6 @@ pub fn resolve_sandbox_policy_with_source(
 pub fn resolve_sandbox_policy(cli: Option<SandboxPolicy>) -> SandboxPolicy {
     resolve_sandbox_policy_with_source(cli).0
 }
-
-// =============================================================================
-// Core Types
-// =============================================================================
 
 #[derive(Clone, Debug)]
 pub(super) struct SandboxConfig {
@@ -490,10 +478,6 @@ impl PathGrants {
                 PathBuf::from("/sbin"),
                 PathBuf::from("/Library"),
                 PathBuf::from("/System/Library"),
-                // macOS exposes command-line shims and sealed-system content
-                // through Cryptex paths. npm's script runner may touch this
-                // path while resolving its shell, even when the final shell is
-                // /bin/sh.
                 PathBuf::from("/System/Cryptexes"),
                 PathBuf::from("/Applications"),
                 PathBuf::from("/opt/homebrew"),
@@ -523,7 +507,6 @@ impl PathGrants {
             ]);
         }
 
-        // Git configuration (read-only).
         if let Some(home) = home {
             paths.extend([home.join(".config/git"), home.join(".gitattributes")]);
         }
@@ -571,9 +554,6 @@ impl SandboxConfig {
             user_grants: grants.user_grants.clone(),
         };
 
-        // On unsupported platforms, no sandbox strategy reads the config
-        // fields. Explicit reads prevent dead_code warnings without relying
-        // on #[expect(dead_code)], which is reserved for serde fields.
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         {
             let _ = &config.writable;
@@ -609,7 +589,6 @@ impl PathGrants {
         reason = "toolchain path discovery covers many language ecosystems"
     )]
     fn extend_with_toolchain_paths(writable: &mut Vec<PathBuf>, home: &Path) {
-        // Rust: cargo + rustup (env var overrides honored).
         let cargo_home =
             std::env::var_os("CARGO_HOME").map_or_else(|| home.join(".cargo"), PathBuf::from);
         let rustup_home =
@@ -622,24 +601,17 @@ impl PathGrants {
             home.join(".cache/sccache"),
         ]);
 
-        // Pre-commit hook caches.
         writable.push(home.join(".cache/prek"));
 
-        // SCM CLIs: gh and glab. This shared list is the only owner; platform
-        // strategies translate these paths like every other filesystem grant.
         writable.extend(SCM_CLI_PATHS.iter().map(|path| home.join(path)));
 
-        // Cross-language runtime managers.
         writable.extend([
-            // mise
             home.join(".config/mise"),
             home.join(".local/share/mise"),
             home.join(".local/state/mise"),
             home.join(".cache/mise"),
             home.join(".mise.toml"),
-            // volta
             home.join(".volta"),
-            // asdf
             home.join(".asdf"),
             home.join(".config/asdf"),
             home.join(".local/share/asdf"),
@@ -647,57 +619,44 @@ impl PathGrants {
             home.join(".cache/asdf"),
             home.join(".asdfrc"),
             home.join(".tool-versions"),
-            // proto
             home.join(".proto"),
             home.join(".prototools"),
-            // pkgx
             home.join(".pkgx"),
             home.join(".local/share/pkgx"),
             home.join(".cache/pkgx"),
         ]);
 
-        // Node.js ecosystem.
         writable.extend([
-            // version managers
             home.join(".nvm"),
             home.join(".fnm"),
             home.join(".local/share/fnm"),
             home.join(".local/state/fnm"),
             home.join(".local/state/fnm_multishells"),
             home.join(".cache/fnm"),
-            // npm
             home.join(".npm"),
             home.join(".config/npm"),
             home.join(".cache/npm"),
             home.join(".cache/node"),
             home.join(".npmrc"),
-            // configstore (used by npm and many node CLIs)
             home.join(".config/configstore"),
-            // node-gyp
             home.join(".node-gyp"),
             home.join(".cache/node-gyp"),
-            // pnpm
             home.join(".config/pnpm"),
             home.join(".pnpm-state"),
             home.join(".pnpm-store"),
             home.join(".local/share/pnpm"),
             home.join(".local/state/pnpm"),
-            // yarn (classic + modern)
             home.join(".yarn"),
             home.join(".yarnrc"),
             home.join(".yarnrc.yml"),
             home.join(".config/yarn"),
             home.join(".cache/yarn"),
-            // corepack
             home.join(".cache/node/corepack"),
-            // turborepo
             home.join(".cache/turbo"),
-            // browser automation / test runners (Linux/XDG locations)
             home.join(".cache/puppeteer"),
             home.join(".cache/prisma"),
         ]);
 
-        // Bun.
         writable.extend([
             home.join(".bun"),
             home.join(".cache/bun"),
@@ -707,10 +666,8 @@ impl PathGrants {
             home.join(".config/bunfig.toml"),
         ]);
 
-        // Deno.
         writable.extend([home.join(".deno"), home.join(".cache/deno")]);
 
-        // Go (env var overrides honored).
         let gopath = std::env::var_os("GOPATH").map_or_else(|| home.join("go"), PathBuf::from);
         writable.push(gopath);
         let gomodcache = std::env::var_os("GOMODCACHE").map(PathBuf::from);
@@ -731,7 +688,6 @@ impl PathGrants {
             home.join(".cache/gopls"),
         ]);
 
-        // Java / JVM toolchains (Maven, Gradle, SBT, Coursier, jenv, sdkman).
         writable.extend([
             home.join(".m2"),
             home.join(".gradle"),
@@ -745,7 +701,6 @@ impl PathGrants {
             home.join(".mavenrc"),
         ]);
 
-        // Python: uv, pip, pipx, poetry, pdm, conda, hatch, ruff, mypy, jupyter, pyenv, etc.
         writable.extend([
             home.join(".local/bin/uv"),
             home.join(".local/bin/uvx"),
@@ -771,18 +726,15 @@ impl PathGrants {
             home.join(".pyenv"),
             home.join(".pypirc"),
             home.join(".python_history"),
-            // conda / miniconda / miniforge
             home.join(".conda"),
             home.join("miniconda3"),
             home.join("miniforge3"),
             home.join(".condarc"),
-            // hatch
             home.join(".cache/hatch"),
             home.join(".config/hatch"),
             home.join(".local/share/hatch"),
         ]);
 
-        // Ruby: rbenv, rvm, gem, bundler, etc.
         writable.extend([
             home.join(".rbenv"),
             home.join(".rvm"),
@@ -798,7 +750,6 @@ impl PathGrants {
             home.join(".pry_history"),
         ]);
 
-        // Perl: perlbrew, plenv, cpan(m), local::lib.
         writable.extend([
             home.join(".perlbrew"),
             home.join(".plenv"),
@@ -810,7 +761,6 @@ impl PathGrants {
             home.join(".cpanrc"),
         ]);
 
-        // PHP / Composer.
         writable.extend([
             home.join(".composer"),
             home.join(".config/composer"),
@@ -822,22 +772,16 @@ impl PathGrants {
             home.join(".pearrc"),
         ]);
 
-        // macOS-specific cache and application-support locations under ~/Library.
         #[cfg(target_os = "macos")]
         writable.extend([
-            // Rust
             home.join("Library/Caches/cargo"),
-            // sccache's default disk cache on macOS (config lives in
-            // Library/Application Support/Mozilla.sccache below).
             home.join("Library/Caches/Mozilla.sccache"),
             home.join("Library/Caches/sccache"),
             home.join("Library/Application Support/Mozilla.sccache"),
-            // Runtime managers
             home.join("Library/Caches/mise"),
             home.join("Library/Caches/asdf"),
             home.join("Library/Caches/pkgx"),
             home.join("Library/Packages"),
-            // Node.js ecosystem
             home.join("Library/Caches/fnm"),
             home.join("Library/Application Support/fnm"),
             home.join("Library/Caches/npm"),
@@ -853,26 +797,18 @@ impl PathGrants {
             home.join("Library/Caches/checkpoint-nodejs"),
             home.join("Library/Caches/turbo"),
             home.join("Library/Application Support/turborepo"),
-            // Bun
             home.join("Library/Caches/bun"),
-            // Deno
             home.join("Library/Caches/deno"),
-            // Go
             home.join("Library/Caches/go-build"),
             home.join("Library/Caches/golangci-lint"),
-            // Java
             home.join("Library/Java"),
             home.join("Library/Application Support/Coursier"),
             home.join("Library/Caches/Coursier"),
-            // Python
             home.join("Library/Caches/uv"),
             home.join("Library/Caches/pip"),
             home.join("Library/Caches/pypoetry"),
-            // Ruby
             home.join("Library/Caches/bundle"),
-            // Perl
             home.join("Library/Caches/cpanm"),
-            // PHP
             home.join("Library/Caches/composer"),
         ]);
     }
@@ -1044,7 +980,6 @@ pub(super) trait SandboxStrategy: Send + Sync {
 /// The exception is a macOS process already constrained by Seatbelt, where
 /// applying a nested profile is not permitted and the inherited sandbox remains
 /// the enforcement boundary.
-// Linux detection is infallible, but macOS and unsupported platforms can fail closed.
 #[cfg_attr(
     target_os = "linux",
     expect(
@@ -1164,14 +1099,12 @@ pub fn resolve_linked_worktree_dirs(cwd: &Path) -> Vec<PathBuf> {
         },
     };
 
-    // Parse the gitdir: line (must be absolute or relative to the .git file's directory)
     let gitdir_line = content.lines().find(|line| {
         let trimmed = line.trim();
         trimmed.starts_with("gitdir:")
     });
 
     let gitdir_raw = if let Some(line) = gitdir_line {
-        // Extract everything after "gitdir:" and trim whitespace
         let path_str = line
             .strip_prefix("gitdir: ")
             .or_else(|| line.strip_prefix("gitdir:"))
@@ -1192,14 +1125,12 @@ pub fn resolve_linked_worktree_dirs(cwd: &Path) -> Vec<PathBuf> {
         return Vec::new();
     };
 
-    // Resolve relative paths against the workspace (the .git file's directory)
     let gitdir_path = if Path::new(&gitdir_raw).is_relative() {
         cwd.join(&gitdir_raw)
     } else {
         PathBuf::from(&gitdir_raw)
     };
 
-    // Canonicalize to resolve any symlinks /.. components
     let per_worktree_dir = match gitdir_path.canonicalize() {
         Ok(p) => p,
         Err(e) => {
@@ -1213,8 +1144,6 @@ pub fn resolve_linked_worktree_dirs(cwd: &Path) -> Vec<PathBuf> {
         },
     };
 
-    // Determine the common git dir from commondir if present, or derive it
-    // from the per-worktree path structure.
     let Some(common_dir) = resolve_worktree_commondir(&per_worktree_dir) else {
         tracing::warn!(
             "Cannot determine common git directory for linked worktree at {} (from .git file at {}). \
@@ -1264,7 +1193,6 @@ fn resolve_worktree_commondir(worktree_gitdir: &Path) -> Option<PathBuf> {
     }
 
     let resolved = if Path::new(commondir_path).is_relative() {
-        // commondir is relative to the per-worktree gitdir
         worktree_gitdir.join(commondir_path)
     } else {
         PathBuf::from(commondir_path)

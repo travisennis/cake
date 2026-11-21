@@ -194,9 +194,6 @@ impl Agent {
     /// Returns an error if the API request fails, the response cannot be parsed,
     /// or a tool execution fails critically.
     pub async fn send(&mut self, content: String) -> anyhow::Result<String> {
-        // Items at or after this index belong to the current invocation; a
-        // resumed session's prior tasks must never contribute to this task's
-        // partial result.
         let invocation_start = self.conversation.history().len();
         let task_id = self.task_id.to_string();
         let user_item = self.conversation.push_user_message(content, Some(&task_id));
@@ -207,29 +204,16 @@ impl Agent {
             task_id,
         );
 
-        // Output-schema correction state: when the final message fails
-        // validation, the loop re-enters with tools disabled for at most
-        // MAX_SCHEMA_CORRECTION_TURNS corrective turns.
         let mut corrections_used: u32 = 0;
         let mut turn_mode = TurnMode::Normal;
         let mut semantic_recovery_used = false;
         let mut pressure_guard = PressureRecoveryGuard::default();
 
-        // Agent loop: continue until model stops making tool calls
         loop {
-            // Stop before starting another turn when a user-configured
-            // limit has already been consumed (for example after a
-            // schema-correction continue).
             self.enforce_limits(0, invocation_start)?;
 
-            // A server may have changed its tool surface since the previous
-            // turn. Reconcile before the request so it carries one coherent
-            // tool set; tool calls from the just-finished turn already ran.
             self.refresh_changed_mcp_tools().await;
 
-            // Replace retired history before the request is built. Recovery
-            // and schema-correction modes are part of the same invocation, so
-            // their synthetic context stays pinned.
             self.maybe_compact_before_request(turn_mode, &mut compaction)
                 .await?;
 
@@ -247,10 +231,6 @@ impl Agent {
                 ..
             } = turn;
 
-            // The provider accepted this response, so every image the request
-            // emitted reached it. A discarded response never reaches this
-            // point; an image-recovery retry replaces the plan, so a rejected
-            // attempt cannot consume pixels.
             self.conversation.mark_images_consumed(&consumed_sources);
 
             let function_calls = self.process_completed_turn(items, turn_mode)?;
@@ -293,9 +273,6 @@ impl Agent {
                 },
             };
 
-            // Classify before persisting or streaming the turn's items and
-            // before dispatching any returned tools, so a discarded response
-            // leaves no trace beyond the usage its attempt already settled.
             let verdict = termination::classify(
                 self.intended_limits(),
                 TurnEvidence::Response {
@@ -304,9 +281,6 @@ impl Agent {
                 },
             );
             if let Some(pressure) = verdict.pressure {
-                // The discarded response never also receives a semantic
-                // continuation. One recovery per invocation is shared by the
-                // HTTP overflow and in-band Responses failure paths.
                 tracing::info!(
                     target: "cake",
                     pressure = ?pressure,
@@ -376,12 +350,9 @@ impl Agent {
         items: Vec<ConversationItem>,
         turn_mode: TurnMode,
     ) -> anyhow::Result<Vec<FunctionCall>> {
-        // Count every completed API turn unconditionally. Usage is settled by
-        // AgentRunner before it classifies or retries the provider attempt.
         self.turn_count += 1;
         self.log_context_budget();
 
-        // Extract owned function call data before moving items into history.
         let function_calls = Self::function_calls_from_items(&items);
         let replay_eligible = !turn_mode.tools_disabled();
         let source_task = self.task_id.to_string();
@@ -486,12 +457,6 @@ impl Agent {
         provider_turn_start: usize,
         verdict: &TerminationVerdict,
     ) -> anyhow::Result<()> {
-        // Correction turns offer no tools, so any function calls here come
-        // from a misbehaving provider. Do not execute them; treat the turn
-        // as a failed validation attempt.
-        // Append synthetic FunctionCallOutput items for every unexecuted call
-        // so the history stays well-formed for both the Responses API and
-        // Chat Completions backends.
         for (call_id, name, _) in function_calls {
             let output =
                 format!("not executed: correction turn offers no tools for {name}({call_id})");
@@ -520,10 +485,6 @@ impl Agent {
         function_calls: Vec<FunctionCall>,
         invocation_start: usize,
     ) -> anyhow::Result<()> {
-        // Stop before executing a turn's tool calls when the turn
-        // already consumed the turn budget or the batch would exceed the
-        // tool-call budget: executing them could never lead to a final
-        // answer within the configured limits.
         self.enforce_limits(function_calls.len(), invocation_start)?;
         let results = self.execute_function_calls(function_calls).await?;
         self.record_tool_results(results)?;
@@ -635,8 +596,6 @@ impl Agent {
                 .enumerate()
                 .map(|(index, (call_id, name, arguments))| {
                     let hook_runner = hook_runner.clone();
-                    // The registry entry declares whether the executor repairs
-                    // arguments, so the hook sees exactly what will run (#277).
                     let repairs_arguments = self.tools.repairs_arguments(&name);
                     async move {
                         let result = if let Some(runner) = hook_runner {
@@ -657,8 +616,6 @@ impl Agent {
             .buffer_unordered(MAX_CONCURRENT_AGENT_OPERATIONS)
             .collect::<Vec<_>>()
             .await;
-        // Planning may complete out of order, but the first error and every
-        // successful plan must retain the model's issue order.
         pre_results.sort_unstable_by_key(|(index, _)| *index);
         let mut tool_plans = Vec::with_capacity(pre_results.len());
         for (_, result) in pre_results {
@@ -769,23 +726,13 @@ impl Agent {
                         result.output,
                         result.images,
                     ),
-                    Err(error) => {
-                        // Tool errors carry the events observed while the tool
-                        // failed (e.g. a judge block verdict or fail-closed
-                        // denial), so they still reach session telemetry.
-                        (
-                            error.compensation_events,
-                            Vec::new(),
-                            format!("Error: {}", error.message),
-                            Vec::new(),
-                        )
-                    },
+                    Err(error) => (
+                        error.compensation_events,
+                        Vec::new(),
+                        format!("Error: {}", error.message),
+                        Vec::new(),
+                    ),
                 };
-                // Classify argument-driven compensations centrally: the
-                // repair pass and Edit parse are the source of truth, and the
-                // events survive calls that fail after a repair. Unregistered
-                // tools never reached an argument parser, so they cannot
-                // carry argument compensations.
                 let registered = self.tools.has(&name);
                 compensation_events.extend(argument_compensation_events(
                     &name,
@@ -1099,13 +1046,6 @@ impl Agent {
         let config = &self.config;
         let session_id = self.session_id;
         let task_id = self.task_id;
-        // Requests use the projection, never the raw vector: raw offsets keep
-        // their meaning for attribution while a checkpoint may replace retired
-        // history here. Image admission is request-only, happens before the
-        // first attempt so every retry of this turn sees the same projection,
-        // and never changes an image an earlier request already sent, which is
-        // what keeps each request a prefix-extension of the last one. A
-        // text-only model never receives images, so it does not plan them.
         let history = self.conversation.request_context();
         let mut consumed_sources = Vec::new();
         let history = if self.config.model_config.supports_images {
@@ -1262,10 +1202,6 @@ fn is_native_constraint_rejection(error: &anyhow::Error) -> bool {
     error
         .downcast_ref::<crate::exit_code::ApiError>()
         .is_some_and(|api_error| {
-            // A typed input overflow is also a 400, but it is not a rejected
-            // constraint: retrying without the schema cannot make the input fit
-            // and would spend a second request before the compaction owner sees
-            // the verdict.
             api_error.status == 400
                 && api_error.input_overflow.is_none()
                 && api_error.body_read_failure.is_none()

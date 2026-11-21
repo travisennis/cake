@@ -39,10 +39,6 @@ impl MacOsSandbox {
 
     fn profile_probe() -> &'static SandboxProfileProbe {
         static PROBE: OnceLock<SandboxProfileProbe> = OnceLock::new();
-        // Seatbelt profile applicability is a property of this process context:
-        // an already-sandboxed cake process cannot become unsandboxed later in
-        // the same run. Cache the probe so every Bash command does not pay for
-        // a sandbox-exec subprocess before doing real work.
         PROBE.get_or_init(Self::probe_can_apply_profile)
     }
 
@@ -174,7 +170,6 @@ impl MacOsSandbox {
             profile.allow_prefix("file-read*", home.join(".gitignore"));
             profile.allow_subpath("file-read*", home.join(".config/git"));
             profile.allow_literal("file-read*", home.join(".gitattributes"));
-            // Allow reading .ssh directory itself (for listing)
             profile.allow_literal("file-read*", home.join(".ssh"));
             profile.allow_literal("file-read*", home.join(".ssh/config"));
             profile.allow_literal("file-read*", home.join(".ssh/known_hosts"));
@@ -192,15 +187,10 @@ impl MacOsSandbox {
     /// which is what path traversal needs.
     fn append_ssh_agent_rules(profile: &mut SeatbeltProfileBuilder) {
         profile.comment("SSH agent sockets (for git push over SSH)");
-        // Conventional temporary agent layouts. Both patterns are end-anchored
-        // and require the agent socket file name, so a sibling file in the same
-        // directory, including one that shares the directory prefix, stays
-        // denied.
         profile.allow_regex(
             "file-read* file-write*",
             "^/tmp/ssh-[A-Za-z0-9]+/agent\\.[0-9]+$",
         );
-        // On macOS, launchd-managed ssh-agent uses /private/tmp
         profile.allow_regex(
             "file-read* file-write*",
             "^/private/tmp/ssh-[A-Za-z0-9]+/agent\\.[0-9]+$",
@@ -209,10 +199,6 @@ impl MacOsSandbox {
             "file-read* file-write*",
             "^/private/tmp/com\\.apple\\.launchd\\..*/Listeners$",
         );
-        // A command reaches its agent only through the socket SSH_AUTH_SOCK
-        // names, such as ~/.ssh/agent/s.XXXX (the macOS default) or
-        // ~/.1password/agent.sock. Grant that socket in both the spelling the
-        // variable uses and its resolved form, plus traversal for its parent.
         if let Some(sock_path) = ssh_auth_sock_path() {
             for path in resolved_path_variants(&sock_path) {
                 profile.allow_literal("file-read* file-write*", &path);
@@ -239,11 +225,6 @@ impl MacOsSandbox {
         profile.allow_subpath("file-read*", "/Library/Keychains");
         profile.allow_subpath("file-read*", "/System/Library/Keychains");
         if let Some(home) = home_dir() {
-            // DangerFullAccess never applies a profile. Keep its generated-profile
-            // representation writable so this helper retains explicit policy semantics
-            // if it is inspected independently of the Bash execution path.
-            // Known-path access still needs read permission on the two parent
-            // directories so tools can traverse HOME/Library/Keychains.
             profile.allow_literal("file-read*", &home);
             profile.allow_literal("file-read*", home.join("Library"));
             let access = if policy == SandboxPolicy::DangerFullAccess {
@@ -263,33 +244,28 @@ impl MacOsSandbox {
         profile.deny_default();
         profile.blank();
 
-        // Process execution (fork/exec needed for bash and subcommands)
         profile.comment("Allow process execution");
         profile.allow("process-fork");
         profile.allow("process-exec");
         profile.allow("pseudo-tty");
         profile.blank();
 
-        // Process introspection scoped to same sandbox
         profile.comment("Allow process introspection within same sandbox");
         profile.allow_with_target("process-info*", "same-sandbox");
         profile.allow_with_target("signal", "same-sandbox");
         profile.allow_with_target("mach-priv-task-port", "same-sandbox");
         profile.blank();
 
-        // Mach services (required for dyld, DNS, system frameworks, etc.)
         profile.comment("Allow mach lookups (needed for basic process operation)");
         profile.allow("mach-lookup");
         profile.blank();
 
         Self::append_interactive_rules(&mut profile, config.policy);
 
-        // Sysctl reads (needed by many tools)
         profile.comment("Allow sysctl reads");
         profile.allow("sysctl-read");
         profile.blank();
 
-        // System socket (needed for kernel event monitoring by network stack)
         profile.comment("Allow system sockets and shared memory");
         profile.allow("system-socket");
         profile.allow_raw(
@@ -297,18 +273,14 @@ impl MacOsSandbox {
         );
         profile.blank();
 
-        // Network access (sandbox only restricts filesystem, not network)
         profile.comment("Allow network access");
         profile.allow("network*");
         profile.blank();
 
-        // Root directory literal (dyld needs to traverse root)
         profile.comment("Allow reading root directory (needed by dyld)");
         profile.allow_literal("file-read*", "/");
         profile.blank();
 
-        // Ancestor directory literals for all writable and read-and-execute paths.
-        // Agents and tools call readdir() and stat() on ancestors to traverse paths.
         profile.comment("Allow reading ancestor directories of allowed paths");
         let mut ancestor_set = std::collections::BTreeSet::new();
         for path in config.writable.iter().chain(&config.read_execute) {
@@ -325,7 +297,6 @@ impl MacOsSandbox {
         }
         profile.blank();
 
-        // Read-write access for working directory and temp dirs
         if !config.writable.is_empty() {
             profile.comment("Read-write access: working directory, temp dirs, and toolchains");
             for path in &config.writable {
@@ -334,9 +305,6 @@ impl MacOsSandbox {
             profile.blank();
         }
 
-        // Read and execute access for system paths, configured read-only paths,
-        // skill paths, and paths demoted by read-only policy. The global
-        // process-exec rule above supplies execution authority.
         if !config.read_execute.is_empty() {
             profile.comment("Read and execute access: read-only paths");
             for path in &config.read_execute {
@@ -350,11 +318,9 @@ impl MacOsSandbox {
         Self::append_keychain_rules(&mut profile, config.policy);
         Self::append_device_rules(&mut profile);
 
-        // Allow file-ioctl scoped to terminal devices
         profile.comment("Allow file-ioctl for terminal operations");
         profile.allow("file-ioctl");
 
-        // Allow file locking (needed by cargo and other build tools)
         profile.comment("Allow file locking (needed by cargo and other build tools)");
         profile.allow("file-lock");
 
@@ -431,13 +397,9 @@ impl SandboxStrategy for MacOsSandbox {
         let profile = Self::generate_profile(config);
         tracing::debug!("Generated sandbox profile:\n{profile}");
 
-        // Write profile to temp file — keep alive via SandboxGuard so
-        // sandbox-exec can read it at spawn time, then clean up
-        // deterministically when the guard is dropped after execution.
         let temp_file = Self::write_profile_to_temp(&profile)?;
         let profile_path = temp_file.path().to_path_buf();
 
-        // Get the original command arguments
         let original_args: Vec<String> = command
             .as_std()
             .get_args()
@@ -450,12 +412,10 @@ impl SandboxStrategy for MacOsSandbox {
             .map(|(key, value)| (key.to_os_string(), value.map(OsStr::to_os_string)))
             .collect();
 
-        // Reconfigure the command to use sandbox-exec
         *command = tokio::process::Command::new("/usr/bin/sandbox-exec");
 
         command.arg("-f").arg(&profile_path);
 
-        // Add the original program (bash) and its arguments
         command.arg("bash");
         for arg in original_args {
             command.arg(arg);
@@ -465,9 +425,6 @@ impl SandboxStrategy for MacOsSandbox {
             command.current_dir(cwd);
         }
 
-        // `Command` has no API to transfer the configured environment to a new
-        // command, so reproduce every explicit set and removal. Without this,
-        // replacing the command drops values such as `AI_AGENT=cake`.
         for (key, value) in original_env {
             match value {
                 Some(value) => {
@@ -479,7 +436,6 @@ impl SandboxStrategy for MacOsSandbox {
             }
         }
 
-        // Re-apply stdio configuration
         command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -487,8 +443,6 @@ impl SandboxStrategy for MacOsSandbox {
 
         tracing::debug!("Sandboxed command configured with deny-default profile");
 
-        // Return the temp file in a guard so it stays alive through spawn
-        // and is cleaned up when dropped.
         Ok(SandboxGuard::new(temp_file))
     }
 }

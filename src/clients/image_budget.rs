@@ -235,10 +235,6 @@ pub fn has_transparency(image: &image::DynamicImage) -> bool {
     image.to_rgba8().pixels().any(|pixel| pixel.0[3] < u8::MAX)
 }
 
-// =============================================================================
-// Request image planner
-// =============================================================================
-
 /// One image in request source order, borrowed from the conversation.
 #[derive(Debug)]
 pub struct ImageSlot<'a> {

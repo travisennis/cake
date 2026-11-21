@@ -90,8 +90,6 @@ Examples:
         .args(["resume", "fork", "no_session"])
         .multiple(false)
 ))]
-// Clap derives one `bool` per flag; grouping the no-* switches into enums
-// would change the CLI shape that consumers depend on.
 #[expect(
     clippy::struct_excessive_bools,
     reason = "command-line flags are inherently boolean"
@@ -284,7 +282,7 @@ struct RunResources {
 
 impl CodingAssistant {
     /// Maximum size in bytes for stdin input before it is rejected.
-    const MAX_STDIN_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
+    const MAX_STDIN_SIZE: u64 = 10 * 1024 * 1024;
 
     /// Maximum number of `Stop`-hook follow-up turns one invocation may run.
     const MAX_STOP_FOLLOW_UPS: u32 = 1;
@@ -307,8 +305,6 @@ impl CodingAssistant {
             return Ok(None);
         }
 
-        // Input is connected to a pipe, so cake cannot continue until the
-        // writer finishes. Report the wait rather than an unexplained pause.
         program_status::report(
             State::Blocked(BlockedKind::Question),
             Some("Waiting for prompt input on stdin"),
@@ -326,7 +322,6 @@ impl CodingAssistant {
             );
         }
 
-        // The wait is over; the run is working again.
         program_status::report(State::Working, None);
 
         if buf.is_empty() {
@@ -386,7 +381,6 @@ impl CodingAssistant {
             },
         };
 
-        // Validate model name format
         if let Err(e) = ModelDefinition::validate_name(model_name) {
             anyhow::bail!(
                 "Invalid model name '{model_name}': {e}. Model names must contain only lowercase letters, numbers, and hyphens."
@@ -458,9 +452,6 @@ impl CodingAssistant {
         session_config: Option<&str>,
     ) -> anyhow::Result<(ModelConfig, String)> {
         let (config, config_name) = self.resolve_configured_model(models, default_model)?;
-        // Check the stored entry before resolving credentials: resolving a
-        // Codex-backend entry reads the local auth file, which must not mask
-        // a mismatch (or be required to report one).
         if let Some(stored_config) = session_config
             && stored_config != config_name
         {
@@ -590,8 +581,6 @@ impl CodingAssistant {
                     base_dir.join(&path)
                 };
                 if path_to_check.exists() && path_to_check.is_dir() {
-                    // Canonicalize to produce a stable absolute path that
-                    // remains valid even if the process cwd changes later.
                     Some(std::fs::canonicalize(&path_to_check).unwrap_or(path_to_check))
                 } else {
                     tracing::warn!(
@@ -606,18 +595,11 @@ impl CodingAssistant {
     fn prepare_run(&self, project_config_mode: ProjectConfigMode) -> anyhow::Result<PreparedRun> {
         let original_dir = std::env::current_dir()?;
         let additional_dirs = self.resolve_additional_dirs(&original_dir);
-        // Validate stdin/content and the output schema before creating the
-        // worktree so that input errors don't leave a stale registered
-        // worktree.
         let inputs = self.validate_run_inputs(&original_dir)?;
 
-        // Set up the worktree after input validation (if requested).
         let worktree = self.setup_worktree(&original_dir)?;
         let current_dir = std::env::current_dir()
             .map_err(|e| anyhow::anyhow!("Failed to get current directory: {e}"))?;
-        // Keep configured relative paths anchored to the invocation directory,
-        // but discover the project-local toolbox from the active directory so
-        // --worktree selects that worktree's `.cake/tools`.
         let mut toolbox_dirs = crate::config::toolbox::toolbox_directories(
             std::env::var(crate::config::toolbox::TOOLBOX_ENV_VAR)
                 .ok()
@@ -628,19 +610,12 @@ impl CodingAssistant {
             &current_dir,
         );
         if project_config_mode == ProjectConfigMode::Ignore {
-            // `--no-project-config` must not be re-enabled by an explicit
-            // `--toolbox` or `CAKE_TOOLBOX` entry pointing at either checkout's
-            // `.cake/` directory.
             toolbox_dirs = crate::config::toolbox::filter_project_toolbox_dirs(
                 toolbox_dirs,
                 &[&original_dir, &current_dir],
             );
         }
 
-        // Explicit MCP config paths stay anchored to the invocation directory,
-        // like `--toolbox` and other relative CLI inputs. `--no-project-config`
-        // also filters any explicit path inside a checkout's `.cake/` tree so a
-        // wrapper cannot re-enable project server definitions.
         let mut mcp_config_paths: Vec<PathBuf> = self
             .mcp_config
             .iter()
@@ -739,9 +714,6 @@ impl CodingAssistant {
         let trust = load.trust;
         let project_hook_files = load.hook_files;
         let project_mcp_bytes = load.mcp_config_bytes;
-        // Settings files with unrecognized keys load normally but silently
-        // drop those keys; surface them on stderr so a typo like `temparature`
-        // is seen instead of quietly ignored.
         loaded.print_warnings();
         let agents_files = read_agents_files(current_dir);
 
@@ -751,9 +723,6 @@ impl CodingAssistant {
             &loaded.skills,
         );
 
-        // CLI tool selection replaces the settings chain, so resolve it once
-        // and carry the effective list on `RunResources`; both the session
-        // builder and the unavailable-name warning read the same value.
         let tools_enabled = SettingsLoader::resolve_tools_config(
             self.no_tools,
             self.tools.as_deref(),
@@ -796,14 +765,6 @@ impl CodingAssistant {
         )
         .with_limits(loaded.limits.tool_limits);
 
-        // Early detection of linked worktree issues: warn at session start if
-        // the gitdir cannot be resolved. This fires before any Bash tool call,
-        // so the user sees the warning early rather than when git first fails.
-        //
-        // resolve_linked_worktree_dirs logs detailed warnings via tracing::warn!
-        // (file-only). If resolution fails (returns empty when .git is a file),
-        // also emit a user-visible stderr message since the tracing output is not
-        // shown in the terminal.
         let linked_dirs = resolve_linked_worktree_dirs(current_dir);
         if linked_dirs.is_empty() && current_dir.join(".git").is_file() {
             eprintln!(
@@ -815,23 +776,12 @@ impl CodingAssistant {
 
         Self::log_skill_diagnostics(&skill_catalog);
 
-        // Discover and describe user-defined toolbox tools. Configured
-        // directories retain invocation-directory anchoring, while the
-        // project-local directory follows the active worktree. Broken tools
-        // are skipped with a warning inside load_toolbox_tools; they never
-        // block startup. Under the read-only sandbox policy, toolbox
-        // executables are never run at all: even the describe action
-        // executes user code outside the OS sandbox and could mutate the
-        // workspace.
         let toolbox_tools = if sandbox_policy == SandboxPolicy::ReadOnly {
             Vec::new()
         } else {
             crate::config::toolbox::load_toolbox_tools(toolbox_dirs).await
         };
 
-        // MCP servers are trusted executables, like toolbox tools, so they are
-        // never started under the read-only policy. Discovery still validates
-        // an explicit config path there, so a typo is not silently ignored.
         let mcp_servers = if sandbox_policy == SandboxPolicy::ReadOnly {
             if !mcp_config_paths.is_empty() {
                 eprintln!("note: MCP servers are not started under the read-only sandbox policy");
@@ -1185,9 +1135,6 @@ impl CodingAssistant {
             if let Some(writer) = &session_writer {
                 let session_record = SessionRecord::from(record.clone());
                 if let Err(error) = writer.append_record(&session_record) {
-                    // A terminally failed writer rejects this append, and the
-                    // hook lifecycle still completes: hook audit records are
-                    // best-effort and must never reopen a failed session file.
                     tracing::warn!(
                         target: "cake::hooks",
                         error = %error,
@@ -1319,12 +1266,8 @@ impl CodingAssistant {
                 break result;
             };
 
-            // The user has already seen this answer; show it now rather than
-            // after the follow-up turn finishes.
             if let Err(error) = output.render_intermediate(text, Self::STOP_FOLLOW_UP_MARKER) {
                 if CliOutputSink::is_closed_output(&error) {
-                    // The consumer stopped reading. Close the invocation without
-                    // spending a follow-up turn.
                     break result;
                 }
                 return Err(error);
@@ -1343,9 +1286,6 @@ impl CodingAssistant {
 
         Self::handle_agent_turn_result(client, hook_runner, &result, duration_ms).await?;
 
-        // Cut-offs stay Err so each render mode and the telemetry summary
-        // report them as failures; the TaskOutcome::CutOff record was already
-        // emitted by handle_agent_turn_result.
         Ok(TurnResult {
             result,
             duration_ms,
@@ -1400,9 +1340,6 @@ impl CodingAssistant {
             client.append_output_schema_context();
             client.emit_prompt_context_records()?;
             client.emit_task_start_record()?;
-            // After task_start so the invocation's first record still opens the
-            // stream, and before send() so the repaired history is what the
-            // provider receives.
             client.emit_history_repair_records()?;
             Ok(())
         }
@@ -1434,9 +1371,6 @@ impl CodingAssistant {
                 if let Some(cutoff) = error.downcast_ref::<CutOffError>() {
                     Self::emit_cut_off_agent_turn(client, hook_runner, cutoff, duration_ms).await?;
                 } else {
-                    // Limit-exceeded errors are classified by
-                    // `task_outcome_for_error`, which emits the distinct
-                    // `limit_exceeded` outcome and runs the error hook.
                     Self::emit_failed_agent_turn(client, hook_runner, error, duration_ms).await?;
                 }
             },
@@ -1469,10 +1403,6 @@ impl CodingAssistant {
     ) -> anyhow::Result<()> {
         Self::run_error_hook(hook_runner, error).await;
         Self::run_session_end_hook(hook_runner, SessionEndReason::Error).await;
-        // The failure that ended the task is the primary diagnostic. A failed
-        // session writer rejects the completion record too (its state is
-        // terminal), and reporting that rejection instead would hide the
-        // original cause, such as a checkpoint that could not be committed.
         Self::append_task_completion(client, Self::task_outcome_for_error(error), duration_ms);
         Ok(())
     }
@@ -1483,11 +1413,8 @@ impl CodingAssistant {
         cutoff: &CutOffError,
         duration_ms: u64,
     ) -> anyhow::Result<()> {
-        // A cut-off cannot continue, so the hook sees a zero budget.
         Self::run_stop_hook(hook_runner, &cutoff.detail, 0, 0).await;
         Self::run_session_end_hook(hook_runner, SessionEndReason::Error).await;
-        // A failed writer must not replace the cut-off diagnostic with a second
-        // append error, for the same reason as `emit_failed_agent_turn`.
         Self::append_task_completion(
             client,
             TaskOutcome::CutOff {
@@ -1726,19 +1653,10 @@ impl CmdRunner for CodingAssistant {
         let output = self.output_sink();
         let mut client = output.attach_callbacks(client);
 
-        // The agent turn is about to run; everything before this was setup.
         program_status::report(State::Working, None);
 
-        // Install the interrupt listeners before the turn starts. Tokio
-        // registers a signal's OS handler on the first poll of its listener,
-        // so creating them lazily in the `select!` would leave a window where
-        // an interrupt kills the process outright instead of closing the task
-        // with an interrupted TaskComplete record.
         let mut interrupts = InterruptListeners::install();
 
-        // Race interrupt signals (Ctrl-C, and SIGTERM on Unix) against the
-        // agent turn so we can emit a clean TaskComplete record even when
-        // interrupted.
         let interrupted = AtomicBool::new(false);
         let turn_start = Instant::now();
 
@@ -1758,18 +1676,12 @@ impl CmdRunner for CodingAssistant {
                 Ok(t) => t,
                 Err(e) => {
                     Self::restore_post_turn_signal_state();
-                    // The turn began and failed before it produced a result ---
-                    // a session-start hook that failed, or a completion record
-                    // that could not be written. Report the failure instead of
-                    // leaving the terminal on `working` until the process exits.
                     program_status::report(State::Error, Some(&sink_safe_error_text(&e)));
                     return Err(e);
                 },
             },
             () = interrupts.wait() => {
                 interrupted.store(true, Ordering::SeqCst);
-                // Dummy value — the flag check below short-circuits
-                // before `turn` is used when interrupted is true.
                 TurnResult {
                     result: Ok(String::new()),
                     duration_ms: 0,
@@ -1782,11 +1694,8 @@ impl CmdRunner for CodingAssistant {
             return Self::handle_interrupt(&mut client, hook_runner.as_ref(), turn_start).await;
         }
 
-        // The turn is over; a SIGTERM during rendering or teardown should
-        // terminate the process as it did before SIGTERM was intercepted.
         Self::restore_post_turn_signal_state();
 
-        // The agent turn completed normally.
         client.emit_session_summary_telemetry(
             turn.result.is_ok(),
             turn.duration_ms,
@@ -1801,8 +1710,6 @@ impl CmdRunner for CodingAssistant {
             &session,
             run_mode.persists_session(),
         )?;
-
-        // Worktree cleanup is handled by WorktreeGuard's Drop.
 
         Ok(())
     }
@@ -1850,19 +1757,11 @@ impl CodingAssistant {
         hook_runner: Option<&Arc<HookRunner>>,
         turn_start: Instant,
     ) -> anyhow::Result<()> {
-        // Listen for a second interrupt that force-exits immediately in
-        // case the graceful shutdown hangs. Once a SIGTERM handler is
-        // installed the default termination is gone, so a second SIGTERM
-        // must be handled explicitly alongside Ctrl-C. The handle is left
-        // to detach: the listener stays alive as the hard escape hatch
-        // while cleanup runs, and the runtime tears it down at exit.
         let _second_interrupt = tokio::spawn(async {
             InterruptListeners::install().wait().await;
             std::process::exit(exit_code::code::INTERRUPTED.into());
         });
 
-        // The protocol asks for `idle` when the user interrupts or cancels a
-        // program, rather than an `error` the process did not hit itself.
         program_status::report(State::Idle, Some("Interrupted by user"));
 
         let elapsed: u64 = turn_start
@@ -1873,8 +1772,6 @@ impl CodingAssistant {
 
         Self::run_session_end_hook(hook_runner, SessionEndReason::Interrupted).await;
 
-        // Emit a TaskComplete record with interrupted outcome so the
-        // session file always has a matching end for the TaskStart.
         if let Err(e) = client.emit_task_complete_record(TaskOutcome::Interrupted, elapsed) {
             tracing::warn!(
                 target: "cake",
@@ -1882,15 +1779,11 @@ impl CodingAssistant {
             );
         }
 
-        // Write the telemetry summary with success=false.
         client.emit_session_summary_telemetry(
             false,
             elapsed,
             Some("Interrupted by user".to_string()),
         );
-
-        // Keep the second-interrupt listener alive through cleanup, which
-        // runs via WorktreeGuard's Drop when `prepared` goes out of scope.
 
         Err(Interrupted.into())
     }
@@ -1932,8 +1825,6 @@ impl InterruptListeners {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{SignalKind, signal};
-            // A failed registration leaves that signal's default disposition
-            // in place; `wait` falls back to the portable Ctrl-C listener.
             Self {
                 sigint: signal(SignalKind::interrupt()).ok(),
                 sigterm: signal(SignalKind::terminate()).ok(),
@@ -1967,8 +1858,6 @@ impl InterruptListeners {
                 (None, Some(sigterm)) => {
                     sigterm.recv().await;
                 },
-                // Both registrations failed; Ctrl-C alone still enters the
-                // graceful interruption path through the portable listener.
                 (None, None) => {
                     let _ = tokio::signal::ctrl_c().await.ok();
                 },
@@ -2004,7 +1893,6 @@ impl Drop for WorktreeGuard {
     fn drop(&mut self) {
         let Some(ref wt) = self.inner else { return };
 
-        // Restore the original working directory first.
         if let Err(e) = std::env::set_current_dir(&self.original_dir) {
             tracing::warn!(
                 "Failed to restore original directory '{}': {e}",
@@ -2058,10 +1946,6 @@ async fn main() -> std::process::ExitCode {
     let args = match CodingAssistant::try_parse() {
         Ok(a) => a,
         Err(e) => {
-            // Print the clap error (includes --help and --version output).
-            // For --help/--version, clap returns exit_code() == 0 and the
-            // formatted output goes to stdout. For actual errors (bad flags,
-            // missing required args), it goes to stderr with exit_code() != 0.
             #[expect(
                 clippy::unused_result_ok,
                 reason = "best-effort error printing; we already exit non-zero"

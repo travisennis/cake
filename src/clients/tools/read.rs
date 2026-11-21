@@ -10,10 +10,6 @@ use crate::clients::tools::{
 use crate::config::settings::ToolLimits;
 use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
 
-// =============================================================================
-// Read Tool Definition
-// =============================================================================
-
 /// Returns the Read tool definition
 pub(super) fn read_tool() -> super::Tool {
     super::Tool {
@@ -42,10 +38,6 @@ pub(super) fn read_tool() -> super::Tool {
         }),
     }
 }
-
-// =============================================================================
-// Read Execution
-// =============================================================================
 
 /// Arguments for the Read tool
 #[derive(Deserialize)]
@@ -86,14 +78,10 @@ pub(super) fn execute_read(
     let args: ReadArgs =
         serde_json::from_str(arguments).map_err(|e| format!("Invalid read arguments: {e}"))?;
 
-    // Validate and canonicalize the path
     let path = validate_path_in_cwd(context, &args.path)?;
 
-    // Reject directories, pipes, sockets, and other objects before the
-    // blocking open; a named pipe with no writer never returns from it.
     validate_regular_file(&path)?;
 
-    // Handle file
     let outcome = read_file(&path, args.start_line, args.end_line, &context.limits)
         .map_err(|error| append_image_hint(error, &path))?;
     context.record_read(&path, outcome.observation);
@@ -130,10 +118,7 @@ const fn end_requested_line(
 ) -> usize {
     match (end_line, window) {
         (Some(end), _) => end.saturating_sub(1),
-        (None, Some(window)) if start_line.is_some() => {
-            // Window of `window` lines starting from start_line
-            start.saturating_add(window - 1)
-        },
+        (None, Some(window)) if start_line.is_some() => start.saturating_add(window - 1),
         (None, Some(window)) => window.saturating_sub(1),
         (None, None) => usize::MAX,
     }
@@ -153,17 +138,6 @@ const EXTRA_LINES_TO_COUNT: usize = 1000;
 /// adding a second file pass. The line scanner may consume more to finish a
 /// line or to count the footer.
 const BINARY_DETECTION_BYTES: usize = 8192;
-
-// Maximum bytes of one line delivered to the model.
-//
-// A longer line is held only up to this cap plus room for its trailing
-// newline; the rest is consumed and discarded, so memory grows with the cap,
-// not with the longest line (a newline-free 50 MB line no longer allocates
-// the whole line). The displayed prefix ends with a
-// `... (line truncated to N bytes)` marker. The cap is configurable via the
-// `read_max_line_bytes` `[limits]` key (compiled default 10,000); `"unlimited"`
-// re-enables the pre-#362 whole-line-in-memory behavior. `read-description.txt`
-// documents the config and must change with it.
 
 /// Read and format a file with range metadata.
 fn read_file(
@@ -196,7 +170,6 @@ fn read_file(
         ));
     }
 
-    // Default line range (1-indexed from caller, convert to 0-indexed).
     let start = start_value - 1;
     let end_requested =
         end_requested_line(start, start_line, end_line, limits.read_default_end_line);
@@ -242,7 +215,6 @@ fn read_from_reader<R: BufRead>(
         ));
     }
 
-    // An unlimited budget accumulates the whole file by design.
     let max_bytes = limits.read_max_output_bytes;
 
     let mut builder = BodyBuilder::new(max_bytes, line_cap);
@@ -257,7 +229,7 @@ fn read_from_reader<R: BufRead>(
             .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?
         else {
             exact = true;
-            break; // EOF
+            break;
         };
 
         reject_binary_line(&line, path)?;
@@ -267,7 +239,7 @@ fn read_from_reader<R: BufRead>(
         total_lines += 1;
 
         if i < start {
-            continue; // line_buf reused, no allocation
+            continue;
         }
 
         if let Some(attempted_len) = builder.push(i, end_requested, &line) {
@@ -275,8 +247,6 @@ fn read_from_reader<R: BufRead>(
             break;
         }
 
-        // Stop once the window is satisfied and a bounded number of lines
-        // past the last emitted line has been counted for the footer.
         if past_counting_budget(builder.last_emitted, i, scanned_bytes) {
             break;
         }
@@ -431,14 +401,10 @@ fn read_line_bounded<'a, R: BufRead>(
     cap: usize,
 ) -> Result<Option<BoundedLine<'a>>, std::io::Error> {
     buf.clear();
-    // Room for the content plus the trailing newline, so a line of exactly
-    // `cap` bytes (with or without a CRLF ending) is delivered without a
-    // marker. `scan_line` reports EOF without distinguishing a final
-    // unterminated line, so only an empty buffer means truly nothing read.
     let (terminated, contains_null_byte, bytes_consumed) =
         scan_line(reader, buf, cap.saturating_add(2))?;
     if !terminated && buf.is_empty() {
-        return Ok(None); // EOF before any byte
+        return Ok(None);
     }
 
     let content = strip_line_ending(buf.as_slice());
@@ -478,7 +444,7 @@ fn scan_line<R: BufRead>(
     loop {
         let available = reader.fill_buf()?;
         if available.is_empty() {
-            return Ok((false, has_null_byte, bytes_consumed)); // EOF
+            return Ok((false, has_null_byte, bytes_consumed));
         }
         let (take, done) = available
             .iter()

@@ -123,7 +123,6 @@ impl<'a, F: FnMut(AgentRunnerTelemetryEvent)> InFlightAttempt<'a, F> {
             closed: false,
         };
         attempt.report_in_flight();
-        // Keep provider timing separate from the synchronous telemetry write.
         let operation_start = Instant::now();
         attempt.total_start = operation_start;
         attempt.request_start = operation_start;
@@ -149,15 +148,11 @@ impl<'a, F: FnMut(AgentRunnerTelemetryEvent)> InFlightAttempt<'a, F> {
         self.request_ms = Some(request_ms);
         self.status_code = Some(status_code);
         self.phase = ApiAttemptPhase::ReadingBody;
-        // The phase record is synchronous so it must be removed from the
-        // provider's total duration as well as from body parsing time.
         let telemetry_start = Instant::now();
         self.report_in_flight();
         if let Some(total_start) = self.total_start.checked_add(telemetry_start.elapsed()) {
             self.total_start = total_start;
         }
-        // The body timer begins after the phase update has been persisted, so
-        // telemetry I/O is not attributed to provider response parsing.
         self.parse_start = Some(Instant::now());
     }
 
@@ -314,10 +309,6 @@ impl AgentRunner {
             context_overflow_retry_used: false,
         };
         let mut disable_connection_reuse = false;
-        // Start from the persistent pooled client. Stale-connection recovery
-        // swaps in a temporary no-reuse client local to this turn, so
-        // `self.client` keeps normal pooling whether this turn retries
-        // successfully or fails, and later turns observe the pooled client.
         let mut client = self.client.clone();
 
         loop {
@@ -446,8 +437,6 @@ impl AgentRunner {
             .err()
             .and_then(|error| error.downcast_ref::<ResponsesStreamFailed>());
         let terminal_class = accepted_body_terminal_class(&parse_result);
-        // The recorded class selects the recovery path, so telemetry and
-        // behavior can never disagree about the failure's nature.
         let body_read_transport = terminal_class == ApiAttemptTerminalClass::Transport;
         let provider_request_id = parse_result
             .as_ref()
@@ -520,10 +509,6 @@ impl AgentRunner {
 
         match parse_result {
             Ok(turn) => AttemptResult::Completed(turn),
-            // A reset, broken pipe, or truncated body read after the headers
-            // were accepted is the same transient transport class the request
-            // phase already recovers from, so it takes the same bounded
-            // retry rather than the body-parse terminal path.
             Err(parse_error) if body_read_transport => {
                 self.schedule_transport_retry(
                     parse_error,
@@ -846,8 +831,6 @@ impl AgentRunner {
         ) {
             retry::RetryDecision::Retry { status } => {
                 if retry::should_disable_connection_reuse(&error) && !*disable_connection_reuse {
-                    // Only this turn's remaining attempts use the no-reuse
-                    // client; `self.client` is untouched.
                     *client = build_http_client(true);
                     *disable_connection_reuse = true;
                 }
@@ -1035,9 +1018,6 @@ fn with_body_read_detail(
 ) -> HttpFailure {
     match body_read_failure {
         Some(body_read_failure) => {
-            // Keep the read cause first so a large provider body cannot push the
-            // cause out of a bounded sink, and avoid repeating the body's
-            // preview when the body itself is already retained.
             let detail = if failure.body.is_empty() {
                 body_read_failure.terminal_detail()
             } else {
@@ -1061,10 +1041,6 @@ fn api_error_from_failure(
 ) -> crate::exit_code::ApiError {
     debug!(target: "cake", "{}", failure.body);
 
-    // The terminal error carries the classifier's verdict so a compaction owner
-    // can act on a genuine input overflow without re-parsing the body. The
-    // retry loop's behavior is unchanged: an overflow whose input
-    // fits was already retried with a reduced allowance above.
     let verdict = termination::classify(
         IntendedLimits::default(),
         TurnEvidence::HttpFailure {

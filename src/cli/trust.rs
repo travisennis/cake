@@ -55,7 +55,6 @@ impl CmdRunner for TrustCommand {
         _data_dir: &DataDir,
         _options: &CommandRunOptions<'_>,
     ) -> anyhow::Result<()> {
-        // CmdRunner is asynchronous, although this command has no async work.
         std::future::ready(()).await;
         let current_dir = std::env::current_dir()
             .map_err(|error| anyhow::anyhow!("Failed to get current directory: {error}"))?;

@@ -759,8 +759,6 @@ impl ProjectConfigSnapshot {
         let project_root = match canonical_project_root(project_dir) {
             Ok(root) => root,
             Err(TrustError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
-                // A missing project directory has no configuration to trust;
-                // a caller may probe a path before it exists.
                 project_dir.to_path_buf()
             },
             Err(error) => return Err(error.into()),
@@ -1110,9 +1108,6 @@ fn visit_directory(
     relative: &str,
 ) -> Result<(), TrustError> {
     if relative == ".cake/worktrees" {
-        // Worktrees are generated checkouts, never project configuration.
-        // Hashing them would be slow and would make trust depend on unrelated
-        // working trees.
         return Ok(());
     }
     if is_authority_file(relative) {

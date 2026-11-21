@@ -20,18 +20,15 @@
 /// complete repaired payload must parse, otherwise callers receive the original
 /// payload and their normal parse error.
 pub fn repair_json_args(payload: &str) -> String {
-    // Fast path: if already valid, return as-is
     if serde_json::from_str::<serde_json::Value>(payload).is_ok() {
         return payload.to_string();
     }
 
-    // Escape raw control characters inside string literals
     let control_fixed = escape_control_chars_in_strings(payload);
     if serde_json::from_str::<serde_json::Value>(&control_fixed).is_ok() {
         return control_fixed;
     }
 
-    // Unrepairable — return original so caller gets the same error
     payload.to_string()
 }
 
@@ -60,22 +57,18 @@ fn escape_control_chars_in_strings(payload: &str) -> String {
                 escaped = false;
                 result.push(ch);
             },
-            ch if in_string && (ch as u32) <= 0x1F => {
-                // Raw control character inside a string — replace with escape
-                match ch {
-                    '\t' => result.push_str("\\t"),
-                    '\n' => result.push_str("\\n"),
-                    '\r' => result.push_str("\\r"),
-                    other => {
-                        use std::fmt::Write as _;
-                        // Format as \u00XX for other control chars
-                        #[expect(
-                            clippy::let_underscore_must_use,
-                            reason = "write! to String cannot fail"
-                        )]
-                        let _ = write!(result, "\\u{:04x}", other as u32);
-                    },
-                }
+            ch if in_string && (ch as u32) <= 0x1F => match ch {
+                '\t' => result.push_str("\\t"),
+                '\n' => result.push_str("\\n"),
+                '\r' => result.push_str("\\r"),
+                other => {
+                    use std::fmt::Write as _;
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "write! to String cannot fail"
+                    )]
+                    let _ = write!(result, "\\u{:04x}", other as u32);
+                },
             },
             _ => {
                 result.push(ch);

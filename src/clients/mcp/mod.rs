@@ -139,9 +139,6 @@ pub async fn connect_server(
     let client = McpClient::start(config, cwd)?;
     match client.handshake().await {
         Ok(protocol) => {
-            // Subscribe before the initial listing: a change that lands during
-            // startup is then counted and refreshed instead of being lost
-            // between the listing and the subscription.
             if let Err(error) = client.subscribe_tools_list_changed() {
                 warn!(
                     target: "cake",

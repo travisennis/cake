@@ -46,8 +46,6 @@ pub(in crate::clients) fn mcp_tool_entry(
     let server = server.to_string();
     let tool_name = tool.name.clone();
     let registered_name = tool.registered_name.clone();
-    // MCP arguments are JSON. Apply the same conservative repair pass as the
-    // other external-tool protocols before parsing.
     ToolEntry::new(definition, move |context, _call_id, arguments| {
         let client = Arc::clone(&client);
         let server = server.clone();

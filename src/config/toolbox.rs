@@ -135,10 +135,6 @@ pub fn toolbox_directories(
             }
         })
         .chain(std::iter::once(project_dir.join(".cake").join("tools")))
-        // Automatic project-local discovery can duplicate an explicitly
-        // configured directory (the documented `CAKE_TOOLBOX=.cake/tools`
-        // setup is one example). Avoid running an unsandboxed describe action
-        // twice while retaining the first source's precedence.
         .filter(|dir| seen.insert(toolbox_directory_identity(dir)))
         .collect()
 }
@@ -166,9 +162,6 @@ pub fn filter_project_toolbox_dirs(dirs: Vec<PathBuf>, project_roots: &[&Path]) 
         .collect();
     dirs.into_iter()
         .filter(|dir| {
-            // The lexical check catches an explicit `.cake/tools` path that is
-            // itself a symlink; the canonical check catches a directory that
-            // resolves into another root's `.cake/` tree.
             let lexical_project_path = cake_roots.iter().any(|root| dir.starts_with(root));
             let identity = toolbox_directory_identity(dir);
             let canonical_project_path = canonical_cake_roots
@@ -221,7 +214,6 @@ fn should_skip_file(filename: &str, path: &Path) -> bool {
     {
         return true;
     }
-    // Follows symlinks, so a symlink to an executable file is accepted.
     let Ok(metadata) = std::fs::metadata(path) else {
         return true;
     };
@@ -299,18 +291,11 @@ async fn describe_entry(entry: &ToolboxEntry) -> Result<ToolboxTool, String> {
         .spawn()
         .map_err(|e| format!("failed to run describe: {e}"))?;
 
-    // Kills the whole process group on every path where the tool did not
-    // exit on its own (timeout, output cap, read errors), so descendants a
-    // describe script spawned cannot outlive the scan.
     let mut guard = ToolboxProcessGuard::new(child.id());
 
     let mut stdout = child.stdout.take().ok_or("failed to capture stdout")?;
     let mut stderr = child.stderr.take().ok_or("failed to capture stderr")?;
 
-    // Bounded reads keep a broken tool that streams endless output (e.g.
-    // `yes`) from exhausting memory before the timeout fires; the timeout
-    // envelope also covers reaping, and on expiry the dropped child is
-    // killed via kill_on_drop (with the guard reaching its descendants).
     let (streams, status) = tokio::time::timeout(DESCRIBE_TIMEOUT, async {
         let streams = read_streams_bounded(
             &mut stdout,
@@ -335,8 +320,6 @@ async fn describe_entry(entry: &ToolboxEntry) -> Result<ToolboxTool, String> {
     .await
     .map_err(|_elapsed| format!("describe timed out after {}s", DESCRIBE_TIMEOUT.as_secs()))??;
 
-    // The tool exited on its own; anything it deliberately left running is
-    // its business.
     guard.defuse();
 
     if !status.success() {
@@ -460,7 +443,6 @@ pub async fn read_streams_bounded(
 
     let mut out_buf: Vec<u8> = Vec::new();
     let mut err_buf: Vec<u8> = Vec::new();
-    // Heap-allocated so the future stays small (clippy::large_futures).
     let mut tmp_out = vec![0u8; 8192];
     let mut tmp_err = vec![0u8; 8192];
     let mut out_open = true;

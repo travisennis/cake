@@ -146,8 +146,6 @@ fn resolve_bash_cwd(
             requested.display()
         ));
     }
-    // `DangerFullAccess` applies no sandbox, so a grant check would be stricter
-    // than the policy in force.
     let admitted = context.sandbox_policy() == super::sandbox::SandboxPolicy::DangerFullAccess
         || canonical.starts_with(&workspace)
         || config.is_path_selectable(&canonical);
@@ -180,10 +178,6 @@ fn parse_bash_call(
     let cwd = resolve_bash_cwd(context, &config, args.cwd.as_deref())?;
     Ok((args, cwd, config))
 }
-
-// =============================================================================
-// Bash Tool Definition
-// =============================================================================
 
 /// Returns the Bash tool definition
 pub(super) fn bash_tool() -> super::Tool {
@@ -219,10 +213,6 @@ pub(super) fn bash_tool() -> super::Tool {
         }),
     }
 }
-
-// =============================================================================
-// Bash Execution
-// =============================================================================
 
 /// Detect if a failed sandboxed command looks like a sandbox-related permission failure.
 ///
@@ -465,8 +455,6 @@ fn resolve_path_token(
     if token.contains('/') {
         return existing_ref(cwd.join(token), operation);
     }
-    // Bare word: a command name resolves via `PATH` as an executable; otherwise
-    // fall back to a path relative to the working directory as a file argument.
     if in_command_position && let Some(found) = lookup_executable_in_path(token) {
         return Some(SandboxPathRef {
             path: found,
@@ -597,7 +585,6 @@ fn is_binary_data(data: &[u8]) -> bool {
         return false;
     }
 
-    // Count null bytes - even a few null bytes strongly indicate binary
     let mut null_count: usize = 0;
     for &b in data {
         if b == 0 {
@@ -608,26 +595,20 @@ fn is_binary_data(data: &[u8]) -> bool {
         return true;
     }
 
-    // Count non-printable characters (excluding common whitespace: \t, \n, \r)
     let mut non_printable_count: usize = 0;
     for &b in data {
-        // Allow tabs, newlines, and carriage returns
         if matches!(b, b'\t' | b'\n' | b'\r') {
             continue;
         }
-        // Allow printable ASCII (32-126)
         if (32..=126).contains(&b) {
             continue;
         }
-        // Allow high bytes that could be valid UTF-8 continuation/start bytes
-        // (we'll let the UTF-8 check below catch actual invalid sequences)
         if b >= 128 {
             continue;
         }
         non_printable_count += 1;
     }
 
-    // If more than 30% of the data is non-printable, it's likely binary
     non_printable_count * 100 > data.len() * BINARY_RATIO_THRESHOLD_PERCENT
 }
 
@@ -675,10 +656,6 @@ fn format_kib_tenths(size_bytes: usize) -> String {
     )
 }
 
-// =============================================================================
-// Secure temp directory for Bash overflow / binary output artifacts
-// =============================================================================
-
 /// Return a secure per-user temporary directory for Bash output files,
 /// creating it on first call and caching the path for the lifetime of the
 /// process.
@@ -699,12 +676,8 @@ fn handle_binary_output(
     let size_bytes = data.len();
     let size_kb = format_kib_tenths(size_bytes);
 
-    // Try to detect MIME type using the `file` command if available
     let mime_type = detect_mime_type(data);
 
-    // Try to save binary data to a secure temp file.
-    // Fail closed: if the directory cannot be created, report the error
-    // rather than writing to an unvalidated shared path.
     let footer = format_metadata_suffix(exit_code, elapsed_ms, warn_exit_zero_stderr);
 
     let tmp_path = match bash_temp_output_dir() {
@@ -847,28 +820,15 @@ fn signal_process_group(pgid: Option<u32>, signal: libc::c_int) {
 /// [`TERMINATE_REAP_TIMEOUT`]. Both phases are bounded.
 #[cfg(unix)]
 pub(super) async fn terminate_process_group_gracefully(child: &mut Child, grace: Duration) {
-    // Capture the group id before waiting: `Child::id()` is `None` once the
-    // child has been reaped, so resolving the group after the cooperative
-    // window would silently skip the forceful phase whenever the direct child
-    // exits on `SIGTERM` and leaves a descendant behind.
     let pgid = child.id();
     signal_process_group(pgid, libc::SIGTERM);
-    // Cooperative phase: a bounded window for the child to exit on its own.
-    // The status is discarded here whether the child exited or the window
-    // lapsed; a survivor is force-killed below.
     drop(timeout(grace, child.wait()).await);
-    // Forceful phase: kill the captured group, so a descendant that ignored
-    // SIGTERM does not survive the direct child that did not.
     signal_process_group(pgid, libc::SIGKILL);
-    // Reap the child under a bound. Its status is intentionally discarded:
-    // the timed-out run reports the timeout error, not an exit code.
     drop(timeout(TERMINATE_REAP_TIMEOUT, child.wait()).await);
 }
 
 #[cfg(not(unix))]
 pub(super) async fn terminate_process_group_gracefully(child: &mut Child, _grace: Duration) {
-    // Non-Unix has no cooperative signal: force-kill the direct child now,
-    // then reap under the same bound as the Unix path.
     drop(child.start_kill());
     drop(timeout(TERMINATE_REAP_TIMEOUT, child.wait()).await);
 }
@@ -921,7 +881,6 @@ fn prepare_bash_command(
 ) -> Result<PreparedBashCommand, super::ToolError> {
     let use_sandbox = args.policy != super::sandbox::SandboxPolicy::DangerFullAccess;
 
-    // Create command with proper stdio configuration
     let mut command = Command::new("bash");
     command
         .arg("-c")
@@ -932,7 +891,6 @@ fn prepare_bash_command(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
-    // Apply sandbox if enabled.
     let sandbox_guard = if use_sandbox {
         if let Some(strategy) = super::sandbox::detect_platform()
             .map_err(|e| gate_tool_error(gate_events.to_vec(), e))?
@@ -950,10 +908,6 @@ fn prepare_bash_command(
         None
     };
 
-    // Sandbox application may replace the Command (macOS wraps it with
-    // sandbox-exec), so scrub after application. These variables can redirect
-    // Git away from the Bash working directory and must not escape into the
-    // child, regardless of the selected sandbox policy.
     scrub_ambient_git_environment(&mut command);
 
     Ok(PreparedBashCommand {
@@ -998,7 +952,6 @@ fn compose_text_output(
     if output.is_empty() {
         String::new()
     } else if hit_cap {
-        // `hit_cap` is only set when a read cap exists.
         let cap = read_cap.unwrap_or_default();
         format!("{output}\n[... output truncated at {cap} bytes ...]")
     } else if success {
@@ -1131,7 +1084,6 @@ async fn start_session(
     call_id: Option<String>,
     reservation: &SessionReservation,
 ) -> Result<(GatePreflight, bool), super::ToolError> {
-    // Reserve before the gate check. The exact normalized text evaluated is executed.
     let preflight = bash_gate_preflight(context, args, cwd, call_id).await?;
     let events = &preflight.compensation_events;
     let PreparedBashCommand {
@@ -1368,12 +1320,8 @@ async fn bash_gate_preflight(
     cwd: &Path,
     call_id: Option<String>,
 ) -> Result<GatePreflight, super::ToolError> {
-    // The transcript call id links this Bash call to the gate request and the
-    // recorded events. The events digest it at construction, so the raw
-    // identifier never reaches telemetry.
     let raw_call_id = call_id.as_deref();
 
-    // Empty commands have nothing to evaluate; `bash -c ""` is harmless.
     if args.command.trim().is_empty() {
         return Ok(GatePreflight {
             warnings: Vec::new(),
@@ -1477,9 +1425,6 @@ fn legacy_verdict_event(
             .and_then(|stage| stage.code.as_deref());
         (decision, code, outcome.overridden)
     } else {
-        // An allowlist override removes the block from authorization, so the
-        // composer reports no deciding verdict. The block was still observed
-        // and overridden, and the legacy event must keep that record.
         let stage = overridden_block(outcome)?;
         (GateDecision::Block, stage.code.as_deref(), true)
     };
@@ -1513,8 +1458,6 @@ fn gate_request(
     let evidence = if collect_evidence {
         crate::clients::tools::script_evidence::collect(context, &args.command)
             .map_err(|detail| {
-                // Collection happens before the gate request is sent, so the
-                // block reuses the fail-closed prefix and keeps its own wording.
                 super::ToolError {
                     message: format!(
                         "BLOCKED\n\nReferenced script evidence could not be collected, so the command was not executed and no gate request was sent. {detail}\nUse an existing readable regular UTF-8 script within the configured Read grants (at most 32 KiB), or inline the intended command."
@@ -1549,7 +1492,6 @@ fn gate_request(
 /// The note never claims a gate inspected the contents: a configured gate may
 /// decide from command text alone or may not use the evidence at all.
 fn script_evidence_note(path: &str) -> String {
-    // JSON escaping keeps model-supplied paths from injecting control characters.
     let path = serde_json::json!(path);
     format!(
         "Referenced script {path} was collected as untrusted evidence for the configured policy gate (dependencies and later changes not covered)."
@@ -1632,9 +1574,6 @@ pub(super) fn truncate_output(
     let total_bytes = output.len();
     let total_lines = output.lines().count();
 
-    // Try to write the full output to a secure temp file so the agent can
-    // search it.  Fail closed: if the directory cannot be created or the
-    // write fails, fall back to the inline truncated result.
     let write_result = spill_output(output);
 
     match write_result {
@@ -1655,7 +1594,6 @@ pub(super) fn truncate_output(
             )
         },
         Err(e) => {
-            // Could not write — fall back to a truncated inline result.
             debug!("Failed to write overflow output to temp file: {e}");
 
             let half = max_bytes / 2;

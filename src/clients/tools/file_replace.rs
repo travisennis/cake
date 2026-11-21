@@ -275,8 +275,6 @@ impl StageFile {
 
 impl Drop for StageFile {
     fn drop(&mut self) {
-        // Explicit failure paths report cleanup failures. This fallback covers
-        // panics and any future early return that bypasses failure_message.
         drop(self.cleanup());
     }
 }

@@ -877,8 +877,6 @@ impl BlobStore {
     }
 
     fn checked_root(&self) -> PathBuf {
-        // A trailing separator would make `symlink_metadata` follow a final
-        // symlink on Unix, so all operations use the normalized form.
         self.root.components().collect()
     }
 
@@ -1762,8 +1760,6 @@ fn apply_temp_file_options(options: &mut OpenOptions) {
 fn apply_no_follow(options: &mut OpenOptions) {
     use std::os::unix::fs::OpenOptionsExt as _;
 
-    // `O_NONBLOCK` closes the race where a regular target is replaced by a
-    // FIFO after the metadata check; the post-open shape check still rejects it.
     options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
 }
 

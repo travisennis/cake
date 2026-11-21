@@ -129,8 +129,6 @@ fn execute(
         ));
     }
     let limit = args.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
-    // Rank the whole catalog before applying the result limit: an active tool
-    // may outrank a new one, and hiding the new match would be misleading.
     let matches = search(entries, &args.query, args.server.as_deref(), usize::MAX);
     if matches.is_empty() {
         return Ok(text_result(no_match_message(entries, &args.query)));

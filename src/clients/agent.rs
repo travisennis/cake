@@ -121,10 +121,6 @@ pub(super) fn record_turn_usage(
         *last_usage = Some(usage.usage);
     }
 
-    // A context fraction is only meaningful when the provider reported every
-    // counter and the model configures a window. A partial report would
-    // otherwise read as a measured context size the provider never gave us.
-    // Summary attempts never describe the main-agent context.
     let budget = match context_window {
         Some(window) if !is_compaction && usage.presence == UsagePresence::Complete => Some((
             window,
@@ -173,10 +169,6 @@ struct DeferredMcpTool {
     tool: McpTool,
     client: Arc<McpClient>,
 }
-
-// =============================================================================
-// Agent (shared loop over any backend)
-// =============================================================================
 
 /// Orchestrates conversation loops, tool execution, and API communication.
 ///
@@ -412,9 +404,6 @@ impl Agent {
         if self.tool_context.sandbox_policy() == SandboxPolicy::ReadOnly {
             return self;
         }
-        // Start from zero, not the server's current count: a notification
-        // that arrives between the startup listing and this builder call must
-        // still trigger one re-list before the first request.
         self.mcp_tool_generations = servers
             .iter()
             .map(|server| (server.name.clone(), 0))
@@ -599,9 +588,6 @@ impl Agent {
                     );
                 },
             }
-            // Record the pre-request generation. A notification that arrives
-            // during the re-list makes the next loop run again rather than
-            // being swallowed by this pass.
             self.mcp_tool_generations.insert(name, observed);
         }
     }
@@ -727,8 +713,6 @@ impl Agent {
                     .insert(tool.registered_name.clone());
             }
         } else if self.tools.has(&tool.registered_name) {
-            // The no-ToolSearch fallback registers deferred tools directly.
-            // Replace the entry so a changed definition reaches the model.
             self.tools.remove_by_name(&tool.registered_name);
             _ = self.register_mcp_tool(
                 &server.name,

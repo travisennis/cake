@@ -69,8 +69,6 @@ impl<R: BufRead> SessionFramer<R> {
                 continue;
             }
 
-            // A line not terminated by a '\n' necessarily read the rest of the
-            // stream: it is the final line and a partial tail.
             return Ok(Some(FramedSessionLine {
                 line_number,
                 text: text.to_string(),

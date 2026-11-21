@@ -10,20 +10,12 @@ use crate::clients::tools::{
     repair_json_args, resolve_path_for_write_scheduling, validate_path_for_write,
 };
 
-// =============================================================================
-// Constants
-// =============================================================================
-
 /// Maximum number of edits allowed in a single call
 const MAX_EDITS_PER_CALL: usize = 20;
 /// Maximum number of candidate matches included in an ambiguous-match error.
 const MAX_AMBIGUOUS_MATCHES: usize = 5;
 /// Maximum per-edit status lines included in a failed multi-edit preflight.
 const MAX_PREFLIGHT_STATUS_LINES: usize = 6;
-
-// =============================================================================
-// Edit Tool Definition
-// =============================================================================
 
 /// Returns the Edit tool definition
 pub(super) fn edit_tool() -> super::Tool {
@@ -65,10 +57,6 @@ pub(super) fn edit_tool() -> super::Tool {
         }),
     }
 }
-
-// =============================================================================
-// Types
-// =============================================================================
 
 /// A single edit operation
 #[derive(Debug, Clone, Deserialize)]
@@ -160,13 +148,9 @@ struct NormalizedContent {
 /// Line ending type for preservation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LineEnding {
-    Lf,   // \n (Unix)
-    Crlf, // \r\n (Windows)
+    Lf,
+    Crlf,
 }
-
-// =============================================================================
-// Edit Execution
-// =============================================================================
 
 /// Execute an edit command
 pub(super) fn execute_edit(
@@ -176,21 +160,16 @@ pub(super) fn execute_edit(
     let args = parse_edit_args(arguments)?;
     validate_edit_count(&args.edits)?;
 
-    // Validate and canonicalize the path (ensures it's not read-only)
     let path = validate_path_for_write(tool_context, &args.path)?;
     let read_status = tool_context.read_status(&path);
     let content = read_edit_file(&path, &tool_context.limits)?;
 
-    // Detect and strip BOM
     let (bom, content) = strip_bom(&content);
 
-    // Detect line ending style
     let line_ending = detect_line_ending(content);
 
-    // Normalize CRLF to LF for matching while keeping original byte ranges.
     let normalized_content = normalize_crlf_line_endings(content);
 
-    // Preflight validation: find all match positions
     let preflighted_edits = preflight_edits(
         &args.edits,
         &normalized_content,
@@ -215,19 +194,14 @@ pub(super) fn execute_edit(
         });
     }
 
-    // Apply edits in reverse order (highest position first)
     let new_content = apply_edits_reverse_order(content, &matched_edits);
 
-    // Restore BOM if it was present
     let new_content = restore_bom(new_content, bom);
 
-    // Publish the complete replacement through a staged sibling so a failed
-    // preparation leaves the original file untouched.
     replace_file(&path, new_content.as_bytes())
         .map_err(|e| format!("Failed to write file '{}': {e}", path.display()))?;
     tool_context.record_edit(&path);
 
-    // Generate diff output
     let diff = generate_unified_diff(&restore_bom(content.to_string(), bom), &new_content, &path);
 
     let skipped_noop_message = if skipped_noop_indexes.is_empty() {
@@ -299,8 +273,6 @@ fn validate_edit_metadata(
 }
 
 fn read_edit_bytes(path: &Path, max_bytes: Option<usize>) -> Result<Vec<u8>, String> {
-    // The metadata check avoids opening a known oversized file. The bounded
-    // reader is still required because the file can grow after that check.
     let file = std::fs::File::open(path)
         .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?;
     let mut reader = BufReader::new(file);
@@ -330,7 +302,6 @@ fn read_edit_bytes(path: &Path, max_bytes: Option<usize>) -> Result<Vec<u8>, Str
 }
 
 fn validate_edit_bytes(path: &Path, file_bytes: &[u8]) -> Result<String, String> {
-    // Refuse binary files before treating the bytes as editable UTF-8 text.
     if contains_null_byte(file_bytes) {
         return Err(format!(
             "Cannot edit binary file: {} (detected null bytes)",
@@ -381,10 +352,6 @@ fn parse_edit_args(arguments: &str) -> Result<EditArgs, String> {
 pub(super) fn arguments_are_invalid(arguments: &str) -> bool {
     parse_edit_args(arguments).is_err()
 }
-
-// =============================================================================
-// Preflight Validation
-// =============================================================================
 
 /// Find all matches while retaining only the bounded candidate list needed for errors.
 fn find_match_result(content: &str, needle: &str) -> MatchResult {
@@ -494,14 +461,13 @@ fn preflight_edits(
     let mut skipped_noop_indexes = Vec::new();
 
     for (i, edit) in edits.iter().enumerate() {
-        let edit_index = i + 1; // 1-based for error messages
+        let edit_index = i + 1;
 
         if edit.old_text == edit.new_text {
             skipped_noop_indexes.push(edit_index);
             continue;
         }
 
-        // Count occurrences while retaining only the first five positions for an error.
         let index = PreflightContext {
             content: &normalized_content.content,
             total,
@@ -523,7 +489,6 @@ fn preflight_edits(
         });
     }
 
-    // Sort by position for overlap detection
     matched_edits.sort_by_key(|e| e.index);
     reject_overlapping_edits(total, &matched_edits, &skipped_noop_indexes, path)?;
 
@@ -783,7 +748,6 @@ fn nearest_match(content: &str, needle: &str) -> Option<NearestMatch> {
         }
     }
 
-    // Require a meaningful overlap so we don't show noise.
     let min_score = needle_trimmed.len().min(8);
     if best_score < min_score {
         return None;
@@ -973,25 +937,16 @@ fn common_prefix_len(a: &str, b: &str) -> usize {
         .count()
 }
 
-// =============================================================================
-// Edit Application
-// =============================================================================
-
 /// Apply edits in reverse order (highest position first) to prevent position shifting
 fn apply_edits_reverse_order(content: &str, matched_edits: &[MatchedEdit]) -> String {
     let mut result = content.to_string();
 
-    // Process highest index first
     for edit in matched_edits.iter().rev() {
         result.replace_range(edit.index..edit.index + edit.match_length, &edit.new_text);
     }
 
     result
 }
-
-// =============================================================================
-// Line Ending Handling
-// =============================================================================
 
 /// Detect the line ending style used in the content
 fn detect_line_ending(content: &str) -> LineEnding {
@@ -1009,8 +964,6 @@ fn detect_line_ending(content: &str) -> LineEnding {
 /// with a binary search. This keeps the mapping sparse and supports file sizes
 /// representable by the platform's `usize`.
 fn normalize_crlf_line_endings(content: &str) -> NormalizedContent {
-    // When the content has no CRLF line endings, normalization is a no-op and the
-    // empty marker list represents the identity mapping.
     if !content.contains("\r\n") {
         return NormalizedContent {
             content: content.to_string(),
@@ -1094,13 +1047,8 @@ impl NormalizedContent {
     }
 }
 
-// =============================================================================
-// BOM Handling
-// =============================================================================
-
 /// Strip BOM from content if present, returning (`optional_bom`, `content_without_bom`)
 fn strip_bom(content: &str) -> (Option<&str>, &str) {
-    // UTF-8 BOM is \u{FEFF} which is 3 bytes in UTF-8
     const BOM: &str = "\u{FEFF}";
 
     content
@@ -1115,10 +1063,6 @@ fn restore_bom(content: String, bom: Option<&str>) -> String {
         None => content,
     }
 }
-
-// =============================================================================
-// Unified Diff Generation
-// =============================================================================
 
 /// Generate a unified diff showing the changes
 fn generate_unified_diff(original: &str, modified: &str, path: &Path) -> String {

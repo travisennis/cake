@@ -51,10 +51,6 @@ pub use sandbox::{SandboxPolicy, resolve_linked_worktree_dirs, resolve_sandbox_p
 pub fn compute_temp_directories() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
-    // Include symlink path first, then canonical path.
-    // On macOS, /tmp -> /private/tmp and /var/folders -> /private/var/folders.
-    // Both forms are needed so that ancestor literals and subpath rules
-    // cover the paths regardless of which form a process uses.
     dirs.push(PathBuf::from("/tmp"));
     if let Ok(canonical) = std::fs::canonicalize("/tmp")
         && canonical.as_path() != Path::new("/tmp")
@@ -240,10 +236,6 @@ impl ToolContext {
     }
 }
 
-// =============================================================================
-// Module Declarations
-// =============================================================================
-
 mod bash;
 mod edit;
 mod file_access;
@@ -328,10 +320,6 @@ pub(super) fn push_output_truncation_event_if(
     }
 }
 
-// =============================================================================
-// JSON Parse Error Formatting
-// =============================================================================
-
 /// Maximum characters of context to show around a parse-failure position.
 const JSON_PARSE_CONTEXT_WIDTH: usize = 80;
 
@@ -386,7 +374,6 @@ fn line_col_to_offset(s: &str, line: usize, column: usize) -> Option<usize> {
         }
     }
 
-    // The error may be at or past the end of the last line (EOF).
     if current_line == line {
         let col_byte_offset = line_start + column.saturating_sub(1);
         if col_byte_offset <= bytes.len() {
@@ -412,15 +399,12 @@ fn extract_json_error_context(
         end = payload.len();
     }
 
-    // Use safe string slicing via `.get()` which returns `None` (falling back to
-    // empty) when the range doesn't fall on UTF-8 character boundaries.
     let before = payload.get(start..offset).unwrap_or_default();
     let after = payload.get(offset..end).unwrap_or_default();
 
     let escaped_before = escape_json_context(before);
     let escaped_after = escape_json_context(after);
 
-    // Show a 4-space indent before the snippet
     let snippet = format!("    {escaped_before}{escaped_after}");
     let caret = format!("    {:>width$}", "^", width = escaped_before.len());
 
@@ -436,8 +420,6 @@ fn escape_json_context(s: &str) -> String {
             '\t' => out.push_str("\\t"),
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
-            // Remaining C0 control chars (U+0001-U+001F) not matched above:
-            // vertical tab, form feed, shift-in through unit separator.
             c if c.is_control() && (c as u32) <= 0x1F => {
                 #[expect(
                     clippy::let_underscore_must_use,
@@ -454,7 +436,6 @@ fn escape_json_context(s: &str) -> String {
 
 /// Produce a targeted hint based on the serde error message text.
 fn json_error_hint(error_msg: &str) -> &'static str {
-    // Extract just the message portion before " at line ... column ..."
     let msg = error_msg.split(" at line ").next().unwrap_or(error_msg);
 
     if msg.contains("control character") {
@@ -941,10 +922,6 @@ impl ToolRegistry {
     }
 }
 
-// =============================================================================
-// Path Validation
-// =============================================================================
-
 /// Access level for a validated path
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PathAccess {
@@ -996,7 +973,6 @@ fn validate_path_with_grants(
     path_str: &str,
     grants: &sandbox::PathGrants,
 ) -> Result<ValidatedPath, String> {
-    // Canonicalize the path (resolve symlinks, relative paths, etc.)
     let canonical = Path::new(path_str)
         .canonicalize()
         .map_err(|e| format!("Path not found or not accessible '{path_str}': {e}"))?;
@@ -1056,7 +1032,6 @@ fn credential_path_denied(path: &Path) -> String {
 /// against the directory's canonical form too so a symlinked grant
 /// directory (e.g., /tmp → /private/tmp on macOS) matches either spelling.
 fn path_within(canonical: &Path, dir: &Path) -> bool {
-    // Try canonical form first (fast path when no symlinks involved)
     if canonical.starts_with(dir) {
         return true;
     }
@@ -1133,9 +1108,7 @@ fn resolve_write_path_component(
             pending.clear();
             *missing = false;
         },
-        std::path::Component::CurDir => {
-            // skip `.`
-        },
+        std::path::Component::CurDir => {},
         std::path::Component::Normal(name) => {
             resolve_normal_write_component(name, resolved, pending, missing);
         },
@@ -1158,7 +1131,6 @@ fn resolve_normal_write_component(
 
     let candidate = resolved.join(name);
     if candidate.exists() {
-        // Follow symlinks by canonicalizing.
         *resolved = candidate.canonicalize().unwrap_or(candidate);
     } else {
         *missing = true;
@@ -1180,17 +1152,12 @@ fn resolve_parent_write_component(
             pending.push(OsStr::new("..").to_os_string());
         }
     } else if !pending.is_empty() {
-        // `..` in the non-existing segment cancels the last pending normal
-        // component. If pending is now empty, resume filesystem resolution so
-        // that subsequent existing symlinks are canonicalized correctly.
         pending.pop();
         if pending.is_empty() {
             *missing = false;
         }
     } else if resolved.as_os_str().is_empty() || resolved == Path::new("/") {
-        // `..` at root or empty base is a no-op.
     } else {
-        // `..` above a fully-resolved non-root base — go up.
         resolved.pop();
     }
 }
@@ -1228,8 +1195,6 @@ pub(super) fn resolve_path_for_write_scheduling(
 ) -> Result<PathBuf, String> {
     let path = Path::new(path_str);
 
-    // If the file exists, use the shared validation which canonicalizes and
-    // checks read-only status.
     if path.exists() {
         return validate_path_for_write(context, path_str);
     }
@@ -1266,10 +1231,6 @@ fn resolve_nonexistent_path(
     path: &Path,
     allow_read_only: bool,
 ) -> Result<PathBuf, String> {
-    // Resolve the path root-to-leaf with symlink-aware semantics for existing
-    // components. Non-existing suffixes are normalised lexically so that
-    // parent-directory components across nonexistent ancestors are handled
-    // correctly (<cwd>/missing/../target → <cwd>/target).
     let (resolved_base, pending) = resolve_write_path(path);
 
     if let Some(link) = dangling_symlink_below(&resolved_base, &pending) {
@@ -1280,9 +1241,6 @@ fn resolve_nonexistent_path(
         ));
     }
 
-    // Reconstruct the full path before validating so a credential denial also
-    // covers a target that does not exist yet (for example a new file under
-    // ~/.ssh or a new ~/.npmrc).
     let mut final_path = resolved_base.clone();
     for component in &pending {
         final_path = final_path.join(component);
@@ -1293,10 +1251,6 @@ fn resolve_nonexistent_path(
         return Err(credential_path_denied(path));
     }
 
-    // Validate the resolved base against the same grant table and precedence
-    // as existing files. `path_within` canonicalizes each grant so a symlinked
-    // cwd, temp, or settings dir is accepted for new files exactly as the
-    // existing-file path accepts it (#277).
     let canonical_base = resolved_base.canonicalize().map_err(|e| {
         format!(
             "Parent directory not found '{}': {e}",
@@ -1324,10 +1278,6 @@ fn resolve_nonexistent_path(
 
     Ok(final_path)
 }
-
-// =============================================================================
-// Tool Execution
-// =============================================================================
 
 fn execute_bash_tool(context: Arc<ToolContext>, call_id: String, arguments: String) -> ToolFuture {
     Box::pin(async move { bash::execute_bash_for_call(&context, &arguments, Some(call_id)).await })
@@ -1384,10 +1334,6 @@ fn execute_write_tool(
             .map_err(ToolError::from)
     })
 }
-
-// =============================================================================
-// Tool Registry
-// =============================================================================
 
 /// One tool discovered from an external server, for prompt listing.
 ///
@@ -1598,8 +1544,6 @@ fn filter_builtin_description(
     description: &str,
     available_names: &[String],
 ) -> String {
-    // BashSession describes Bash output and IDs, but never recommends calling
-    // Bash. Those lines are essential even in a BashSession-only selection.
     if !["Bash", "Read", "ReadImage", "Edit", "Write"].contains(&tool_name) {
         return description.to_string();
     }

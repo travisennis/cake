@@ -39,10 +39,6 @@ impl Role {
     }
 }
 
-// =============================================================================
-// Reasoning Content (preserved for API round-tripping)
-// =============================================================================
-
 /// A content item within a reasoning output, preserved verbatim for echoing
 /// back to the API in multi-turn conversations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,10 +149,6 @@ impl<'de> Deserialize<'de> for ReasoningContentKind {
         String::deserialize(deserializer).map(Self::from)
     }
 }
-
-// =============================================================================
-// Conversation Item Enum (for Responses API input/output)
-// =============================================================================
 
 /// One image attached to a message or a function-call output.
 ///

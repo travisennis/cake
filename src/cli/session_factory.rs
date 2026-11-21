@@ -128,8 +128,6 @@ impl crate::CodingAssistant {
         task_id: uuid::Uuid,
     ) -> anyhow::Result<RunSession> {
         let seed = restored.context_seed();
-        // Seed once-per-session activation dedup from the persisted records so
-        // a resumed run does not re-emit "first observed" for known skills.
         let activated_skills = restored.activated_skills();
         let activated_mcp_tools = restored.activated_mcp_tools();
 
@@ -142,8 +140,6 @@ impl crate::CodingAssistant {
             .with_mcp_servers(mcp_servers)
             .with_enabled_tools(enabled_tools)
             .with_active_mcp_tools(activated_mcp_tools)
-            // Flattened rather than layered: the CLI prints only the outermost
-            // error, and the underlying diagnostic is the useful part.
             .with_context_seed(seed)
             .map_err(|error| anyhow::anyhow!("Cannot restore session {}: {error:#}", restored.id))?
             .with_last_usage(restored.last_turn_usage())
@@ -238,16 +234,11 @@ impl crate::CodingAssistant {
             .with_enabled_tools(enabled_tools)
             .with_active_mcp_tools(activated_mcp_tools);
         let new_id = agent.session_id();
-        // Re-envelope the seed's checkpoint for this session before restoring
-        // it, so the in-memory checkpoint and the copied record below agree.
         let agent = agent
             .with_context_seed(restored.context_seed().for_session(new_id.to_string()))
             .map_err(|error| anyhow::anyhow!("Cannot fork session {}: {error:#}", restored.id))?
             .with_last_usage(restored.last_turn_usage())
             .with_skill_locations(skill_locations)
-            // The fork's session file starts with copies of the source
-            // session's SkillActivated records; seed the same names so re-reads
-            // do not emit duplicates.
             .with_activated_skills(restored.activated_skills());
         warn_omitted_history_images(&agent, &resolved, &model_config_name);
         let latest_checkpoint = restored.latest_checkpoint_index();
@@ -281,10 +272,6 @@ impl crate::CodingAssistant {
                     timestamp: *timestamp,
                     tools: tools.clone(),
                 }),
-                // Copy only the latest checkpoint, re-enveloped for this
-                // session at its original position among the copied records,
-                // so the positional boundary is reconstructed. Checkpoint-free
-                // format-4 forks copy exactly what they copied before.
                 SessionRecord::Compaction(checkpoint) if latest_checkpoint == Some(index) => Some(
                     SessionRecord::Compaction(checkpoint.for_session(new_id.to_string())),
                 ),
@@ -295,9 +282,6 @@ impl crate::CodingAssistant {
         let mut session = Session::new(new_id, current_dir);
         session.model = Some(resolved.model_config.model.clone());
         session.model_config = Some(model_config_name);
-        // A fork copies the parent snapshot. `--allow-session-model-change`
-        // accepts the current resolution for this invocation without
-        // rebinding the fork to a new destination.
         session
             .provider_identity
             .clone_from(&restored.provider_identity);
