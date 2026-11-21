@@ -63,14 +63,14 @@ Keep a change within 800 changed lines unless it is mechanical, and within 500 w
 
 **Definition of done:** run the gate your change class routes to and report, in the handoff (or the pull request for an external contribution), which checks ran and which did not.
 
-  | Change class                 | Command                   | What it covers                                                                                                                                                                |
-  | ---------------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | Rust source or control flow  | `just check`              | Toolchain pin, `cargo fmt --check`, strict Clippy over all targets and features, the per-function complexity ratchet, and the import, dependency-direction, and module lints  |
-  | Per-function complexity risk | `just cc-check`           | Cyclomatic complexity against `ci/complexity-baseline.json`; unlisted functions use the CC 10 target, listed grandfathers use `max(target, baseline CC)`. Inside `just check` |
-  | Markdown                     | `just docs-check`         | Formatting and lint over the Markdown git tracks                                                                                                                              |
-  | Dependencies                 | `just check-deps`         | `cargo deny` advisories, plus the license allowlist in `deny.toml`                                                                                                            |
-  | Linux-only `cfg` paths       | `just clippy-linux`       | Clippy against `x86_64-unknown-linux-gnu`, when the target and cross compiler are installed                                                                                   |
-  | Rust-version pin             | `just rust-version-check` | The toolchain pin stays synchronized across its files. Also inside `just check`                                                                                               |
+  | Change class                 | Command                   | What it covers                                                                                                                                                                                  |
+  | ---------------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | Rust source or control flow  | `just check`              | Toolchain pin, `cargo fmt --check`, strict Clippy over all targets and features, the per-function complexity ratchet, and the import, dependency-direction, module, glossary, and comment lints |
+  | Per-function complexity risk | `just cc-check`           | Cyclomatic complexity against `ci/complexity-baseline.json`; unlisted functions use the CC 10 target, listed grandfathers use `max(target, baseline CC)`. Inside `just check`                   |
+  | Markdown                     | `just docs-check`         | Formatting and lint over the Markdown git tracks                                                                                                                                                |
+  | Dependencies                 | `just check-deps`         | `cargo deny` advisories, plus the license allowlist in `deny.toml`                                                                                                                              |
+  | Linux-only `cfg` paths       | `just clippy-linux`       | Clippy against `x86_64-unknown-linux-gnu`, when the target and cross compiler are installed                                                                                                     |
+  | Rust-version pin             | `just rust-version-check` | The toolchain pin stays synchronized across its files. Also inside `just check`                                                                                                                 |
 
 Additional checks:
 
@@ -89,6 +89,7 @@ If an applicable check cannot run, report the exact reason and the narrower chec
 - Use `#[expect(..., reason = "...")]` only for intentional, explained lint exceptions.
 - Keep imports at module scope unless conditional compilation makes that impossible.
 - Use absolute `crate::` imports in production code; verified by `just lint-imports`.
+- Do not add ordinary comments to Rust production sources. Rationale belongs in [docs/adr/](docs/adr/), the only sanctioned home for a decision; `just lint-comments` enforces the ban against `ci/comment-baseline.json`. Doc comments and `// SAFETY:` blocks are exempt because clap and clippy consume them. Extend an existing record when the decision belongs to the same subsystem, and lower the ratchet after a cleanup rather than raising it.
 - Preserve public behavior during refactors unless the task explicitly changes it.
 - Spawn `git` through `config::git::command`. Git exports `GIT_DIR` and its siblings into hooks and everything they spawn, so a command that inherits them operates on the exporting repository rather than the directory it was given.
 

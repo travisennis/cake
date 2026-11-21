@@ -100,9 +100,10 @@ A workflow job name identifies the check in the GitHub UI and in `gh` output; ke
 
 ### Code quality and complexity
 
-Complexity targets, the cyclomatic-complexity ratchet, and the module-size report. Relevant when writing or modifying functions.
+Complexity targets, the cyclomatic-complexity ratchet, the module-size report, and the comment ban. Relevant when writing or modifying functions.
 
 - [Code complexity targets](docs/guardrails/complexity-targets.md), the authority; `just cc-check` is the gate.
+- [Architecture decision records](docs/adr/README.md), where rationale lives; `just lint-comments` bans ordinary comments and ratchets the baseline.
 
 ## Repository rules
 
@@ -110,6 +111,7 @@ Complexity targets, the cyclomatic-complexity ratchet, and the module-size repor
 - A task that uses a branch gets one branch, cut from an up-to-date `master`.
 - Preserve unrelated user changes; never clean or revert them.
 - Use Conventional Commits, scoped only from the `cog.toml` allowlist; verified by the commit-msg hook. See [CONTRIBUTING.md](CONTRIBUTING.md) for scope selection.
+- Do not add ordinary comments to Rust production sources. Record the decision in [docs/adr/](docs/adr/README.md); `just lint-comments` enforces the ban. Doc comments and `// SAFETY:` blocks are exempt.
 - Future work and unresolved questions belong in the response or the issue tracker, not in new durable records.
 
 ## Integration and pull requests
