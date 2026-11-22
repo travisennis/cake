@@ -559,7 +559,7 @@ The system prompt uses the first readable source in this order:
 4. `<config>/cake/system.md`
 5. the prompt embedded in the binary
 
-An override replaces the built-in prompt; it is not appended. The selected system prompt is stored when a session is created and reused on resume. Mutable AGENTS.md, skill, and environment context is rebuilt for each invocation.
+An override replaces the built-in prompt; it is not appended. The full system prompt is stored with the session for audit, but resume rebuilds it from the same source precedence and current settings instead of reusing the stored text; the stored text embeds the creation-time tool catalog. An explicit `--system-prompt` path is a stored run choice and is reapplied (see [Session resume](#session-resume)). Mutable AGENTS.md, skill, and environment context is rebuilt for each invocation.
 
 `.cake/system.md` is project prompt content, not authority: it remains untrusted model input. `--no-project-config` skips it, and a symlinked `.cake/system.md` is skipped rather than followed. A project `system_prompt` path is authority-bearing because it can read an arbitrary host file into the provider request, so it requires trust.
 
@@ -673,6 +673,15 @@ cake debug mcp --mcp-config./mcp.json
 `cake debug mcp` reports a `hidden` server without connecting, and reports `description` and `exposure` for every entry. `cake debug tools` lists the configured MCP sources and their exposure without connecting either; see [Tool inventory](#tool-inventory).
 
 Safari 27 exposes its developer automation this way. Enable Develop settings and "Allow remote automation and external agents", add the `safari-mcp` entry above, and run `cake debug mcp` to confirm the connection.
+
+## Session resume
+
+A session records the run choices that define its behavior in `session_meta.run_config`: the selected profile, the effective sandbox policy, resolved `--add-dir`, `--toolbox`, and `--mcp-config` paths, the `--tools`/`--no-tools` and `--skills`/`--no-skills` selections, an explicit `--system-prompt` path, and `--no-runtime-context`. The model entry is pinned separately and described under [Models](#models).
+
+On `--resume`, an explicit CLI flag wins. Otherwise the stored value is applied before settings load, so a stored profile still shapes the ordinary precedence chain. For repeatable directory flags, any explicit flag replaces the stored list rather than adding to it. A stored profile that no longer exists fails settings load; a profile whose definition changed applies its current definition. Project trust is never inherited: authority-bearing project settings, hooks, toolbox tools, MCP servers, and the project system prompt still require the current invocation's trust decision or `--trust-project`. The stored full system prompt is audit only; the `run_config` path is the source that is reapplied. Per-invocation controls (`--max-tokens`, `--reasoning-effort`, `--reasoning-budget`, `--tool-choice`, `--output-schema`, `--read-only`, the trust and gate flags, `--worktree`, and `--no-session`) are not stored. There is no clear sentinel: an absent flag restores the stored value, and an
+explicit empty value does not clear a stored choice; start a new session to change it permanently.
+
+Restoring a sandbox policy, directory grant, toolbox directory, MCP config, or system-prompt path from a session is equivalent to re-running the flags recorded in that owner-only session file. An explicit flag on the resume invocation overrides it, and `--no-project-config` still suppresses project configuration. `--fork` starts a new session and does not inherit the parent's `run_config`; the new session records the fork invocation's choices.
 
 ## Session diagnostics
 

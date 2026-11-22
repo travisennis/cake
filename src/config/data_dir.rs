@@ -11,7 +11,7 @@ use serde::Deserialize;
 use crate::config::blob_store::{self as blob_store, BlobDiagnostics};
 use crate::config::session_jsonl::SessionFramer;
 use crate::config::{BlobStore, Session, git, session::CURRENT_FORMAT_VERSION};
-use crate::types::{GitState, SessionRecord};
+use crate::types::{GitState, SessionRecord, SessionRunConfig};
 
 /// A data-directory preparation failure.
 ///
@@ -287,6 +287,27 @@ impl DataDir {
         Ok(result)
     }
 
+    /// Read the stored run choices for a session without loading its transcript.
+    ///
+    /// Returns `None` when the session file does not exist or predates run
+    /// choices. Used before settings load so a resume can apply the stored
+    /// profile and policy through the ordinary precedence chain.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the session file exists but its header cannot be
+    /// read or parsed.
+    pub fn load_session_run_config(
+        &self,
+        id: uuid::Uuid,
+    ) -> anyhow::Result<Option<SessionRunConfig>> {
+        let path = self.session_path(id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        Ok(read_session_header(&path)?.run_config)
+    }
+
     /// Loads a specific session by UUID.
     ///
     /// Returns the session with the given ID, or `None` if no such session exists.
@@ -355,6 +376,8 @@ struct SessionFileHeader {
     working_directory: PathBuf,
     /// Timestamp from the `session_meta` record, used instead of filesystem mtime.
     timestamp: DateTime<Utc>,
+    #[serde(default)]
+    run_config: Option<SessionRunConfig>,
 }
 
 /// Reads only the first record line of a session file to extract its header.
@@ -470,6 +493,7 @@ fn session_meta_record(session: &Session, tools: Vec<String>) -> SessionRecord {
         build_commit: crate::build_info::commit(),
         build_dirty: crate::build_info::dirty(),
         system_prompt: session.system_prompt.clone(),
+        run_config: session.run_config.clone(),
         git: session
             .git
             .clone()

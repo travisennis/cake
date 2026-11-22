@@ -27,6 +27,58 @@ pub struct GitState {
     pub commit_hash: Option<String>,
 }
 
+/// Run choices stored with a session and reapplied on resume.
+///
+/// These are the CLI selections that define how the session runs, not a
+/// snapshot of every resolved setting. Profiles and current settings still
+/// supply settings-level values; an explicit flag on a later invocation wins
+/// over the stored choice. Paths are absolute so a resume from another
+/// directory resolves them the same way.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionRunConfig {
+    /// The selected behavior profile name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    /// The stable [`crate::clients::SandboxPolicy::label`] spelling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<String>,
+    /// Resolved `--add-dir` paths.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub add_dirs: Vec<PathBuf>,
+    /// Resolved `--toolbox` paths.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub toolbox_dirs: Vec<PathBuf>,
+    /// Resolved `--mcp-config` paths.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_config: Vec<PathBuf>,
+    /// The comma-separated `--tools` selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<String>,
+    /// Whether the session ran with `--no-tools`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub no_tools: bool,
+    /// The comma-separated `--skills` selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<String>,
+    /// Whether the session ran with `--no-skills`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub no_skills: bool,
+    /// The resolved `--system-prompt` path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    /// Whether the session ran with `--no-runtime-context`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub no_runtime_context: bool,
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if requires a reference"
+)]
+const fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Subtype of a task completion record.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -630,6 +682,10 @@ pub enum SessionRecord {
         build_dirty: Option<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         system_prompt: Option<String>,
+        /// Additive to format version 4; absent on sessions written before
+        /// run choices were recorded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_config: Option<SessionRunConfig>,
         #[serde(default)]
         git: GitState,
     },
@@ -749,6 +805,10 @@ pub enum StreamRecord {
         build_dirty: Option<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         system_prompt: Option<String>,
+        /// Additive to format version 4; absent on sessions written before
+        /// run choices were recorded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_config: Option<SessionRunConfig>,
         #[serde(default)]
         git: GitState,
     },
@@ -850,6 +910,7 @@ impl From<StreamRecord> for SessionRecord {
                 build_commit,
                 build_dirty,
                 system_prompt,
+                run_config,
                 git,
             } => Self::SessionMeta {
                 format_version,
@@ -864,6 +925,7 @@ impl From<StreamRecord> for SessionRecord {
                 build_commit,
                 build_dirty,
                 system_prompt,
+                run_config,
                 git,
             },
             record => session_record_from_task_stream(record),
@@ -959,6 +1021,7 @@ impl From<SessionRecord> for StreamRecord {
                 build_commit,
                 build_dirty,
                 system_prompt,
+                run_config,
                 git,
             } => Self::SessionMeta {
                 format_version,
@@ -973,6 +1036,7 @@ impl From<SessionRecord> for StreamRecord {
                 build_commit,
                 build_dirty,
                 system_prompt,
+                run_config,
                 git,
             },
             record => session_record_to_task_stream(record),

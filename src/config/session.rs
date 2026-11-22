@@ -19,7 +19,8 @@ use fs4::{FileExt, TryLockError};
 
 use crate::types::ProviderIdentity;
 use crate::types::{
-    CompactionData, ContextProvenance, ContextSeed, GitState, SessionRecord, TurnUsageData, Usage,
+    CompactionData, ContextProvenance, ContextSeed, GitState, SessionRecord, SessionRunConfig,
+    TurnUsageData, Usage,
 };
 
 /// Shared writer that holds the locked append handle for a session JSONL file.
@@ -223,6 +224,8 @@ pub struct Session {
     pub provider_identity: Option<ProviderIdentity>,
     /// Full system prompt used when the session was created.
     pub system_prompt: Option<String>,
+    /// Run choices stored with the session and reapplied on resume.
+    pub run_config: Option<SessionRunConfig>,
     /// Git repository state captured when the session was created.
     pub git: Option<GitState>,
     /// Full record history (`SessionMeta`, task boundaries, messages, tool calls, etc.)
@@ -247,6 +250,7 @@ impl Session {
             model_config: None,
             provider_identity: None,
             system_prompt: None,
+            run_config: None,
             git: None,
             records: Vec::new(),
         }
@@ -402,6 +406,7 @@ impl Session {
             model_config: header.model_config,
             provider_identity: header.provider_identity,
             system_prompt: header.system_prompt,
+            run_config: header.run_config,
             git: header.git,
             records,
         })
@@ -592,6 +597,7 @@ struct SessionHeader {
     model_config: Option<String>,
     provider_identity: Option<ProviderIdentity>,
     system_prompt: Option<String>,
+    run_config: Option<SessionRunConfig>,
     git: Option<GitState>,
     timestamp: chrono::DateTime<chrono::Utc>,
 }
@@ -632,6 +638,7 @@ fn read_session_header<R: std::io::BufRead>(
             model_config,
             provider_identity,
             system_prompt,
+            run_config,
             git,
             ..
         } => {
@@ -651,6 +658,7 @@ fn read_session_header<R: std::io::BufRead>(
                 model_config: model_config.clone(),
                 provider_identity: provider_identity.as_deref().cloned(),
                 system_prompt: system_prompt.clone(),
+                run_config: run_config.clone(),
                 git: Some(git.clone()),
                 timestamp: *timestamp,
             }

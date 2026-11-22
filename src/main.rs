@@ -43,7 +43,9 @@ use crate::program_status::{BlockedKind, State};
 
 use crate::session_telemetry::{SessionTelemetryRecord, SessionTelemetryWriter};
 
-use crate::types::{CutOffError, LimitExceededError, SessionRecord, StreamRecord, TaskOutcome};
+use crate::types::{
+    CutOffError, LimitExceededError, SessionRecord, SessionRunConfig, StreamRecord, TaskOutcome,
+};
 
 use clap::{ArgGroup, Parser, ValueEnum};
 
@@ -66,7 +68,7 @@ pub enum OutputFormat {
 }
 
 /// AI coding assistant CLI
-#[derive(Parser)]
+#[derive(Clone, Parser)]
 #[command(author, version, about, long_about = None)]
 #[command(after_help = "\
 Examples:
@@ -416,6 +418,143 @@ impl CodingAssistant {
             );
         };
         Ok((def.to_model_config(), model_name.to_string()))
+    }
+
+    /// Read the run choices stored with the session being resumed.
+    ///
+    /// The header is read before settings load so a stored profile can shape
+    /// the ordinary precedence chain instead of being applied after it.
+    fn restored_run_config(
+        run_mode: &RunMode,
+        data_dir: &DataDir,
+    ) -> anyhow::Result<Option<SessionRunConfig>> {
+        match run_mode {
+            RunMode::Resume { session_id, .. } => data_dir.load_session_run_config(*session_id),
+            RunMode::NewSession
+            | RunMode::Ephemeral
+            | RunMode::ForkLatest
+            | RunMode::Fork { .. } => Ok(None),
+        }
+    }
+
+    /// Apply stored run choices where this invocation did not set a flag.
+    ///
+    /// An explicit CLI flag always wins. Repeatable directory flags replace
+    /// the stored list rather than unioning, so one invocation cannot inherit a
+    /// grant it did not name.
+    fn with_restored_run_config(
+        &self,
+        config: Option<&SessionRunConfig>,
+    ) -> anyhow::Result<Option<Self>> {
+        let Some(config) = config else {
+            return Ok(None);
+        };
+        let mut effective = self.clone();
+        effective.apply_restored_identity(config)?;
+        effective.apply_restored_paths(config);
+        effective.apply_restored_choices(config);
+        Ok(Some(effective))
+    }
+
+    fn apply_restored_identity(&mut self, config: &SessionRunConfig) -> anyhow::Result<()> {
+        if self.profile.is_none() {
+            self.profile.clone_from(&config.profile);
+        }
+        if self.sandbox.is_none()
+            && let Some(label) = config.sandbox.as_deref()
+        {
+            self.sandbox = Some(SandboxPolicy::from_str(label, true).map_err(|error| {
+                anyhow::anyhow!("Session run config has invalid sandbox policy '{label}': {error}")
+            })?);
+        }
+        Ok(())
+    }
+
+    fn apply_restored_paths(&mut self, config: &SessionRunConfig) {
+        if self.add_dir.is_empty() {
+            self.add_dir = config
+                .add_dirs
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect();
+        }
+        if self.toolbox.is_empty() {
+            self.toolbox.clone_from(&config.toolbox_dirs);
+        }
+        if self.mcp_config.is_empty() {
+            self.mcp_config.clone_from(&config.mcp_config);
+        }
+    }
+
+    fn apply_restored_choices(&mut self, config: &SessionRunConfig) {
+        self.apply_restored_tool_selection(config);
+        self.apply_restored_skill_selection(config);
+        if self.system_prompt.is_none() {
+            self.system_prompt.clone_from(&config.system_prompt);
+        }
+        if !self.no_runtime_context {
+            self.no_runtime_context = config.no_runtime_context;
+        }
+    }
+
+    fn apply_restored_tool_selection(&mut self, config: &SessionRunConfig) {
+        if self.no_tools || self.tools.is_some() {
+            return;
+        }
+        if config.no_tools {
+            self.no_tools = true;
+        } else {
+            self.tools.clone_from(&config.tools);
+        }
+    }
+
+    fn apply_restored_skill_selection(&mut self, config: &SessionRunConfig) {
+        if self.no_skills || self.skills.is_some() {
+            return;
+        }
+        if config.no_skills {
+            self.no_skills = true;
+        } else {
+            self.skills.clone_from(&config.skills);
+        }
+    }
+
+    /// Build the run choices to store with a newly created session.
+    fn session_run_config(
+        &self,
+        prepared: &PreparedRun,
+        resources: &RunResources,
+        invocation_dir: &Path,
+    ) -> SessionRunConfig {
+        SessionRunConfig {
+            profile: self.profile.clone(),
+            sandbox: Some(resources.tool_context.sandbox_policy().label().to_string()),
+            add_dirs: prepared.additional_dirs.clone(),
+            toolbox_dirs: self
+                .toolbox
+                .iter()
+                .map(|path| resolve_run_path(path, invocation_dir))
+                .collect(),
+            mcp_config: prepared.mcp_config_paths.clone(),
+            tools: if self.no_tools {
+                None
+            } else {
+                self.tools.clone()
+            },
+            no_tools: self.no_tools,
+            skills: if self.no_skills {
+                None
+            } else {
+                self.skills.clone()
+            },
+            no_skills: self.no_skills,
+            system_prompt: self.system_prompt.as_deref().map(|path| {
+                resolve_run_path(Path::new(path), invocation_dir)
+                    .to_string_lossy()
+                    .into_owned()
+            }),
+            no_runtime_context: self.no_runtime_context,
+        }
     }
 
     /// Resolve the model for a session restore (--resume or --fork).
@@ -1574,23 +1713,49 @@ fn sink_safe_error_text(error: &anyhow::Error) -> String {
     format!("{error:#}")
 }
 
+fn resolve_run_path(path: &Path, base: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base.join(path)
+    }
+}
+
 impl CmdRunner for CodingAssistant {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "top-level run orchestration wires every session resource together"
-    )]
     async fn run(&self, data_dir: &DataDir, options: &CommandRunOptions<'_>) -> anyhow::Result<()> {
         if self.command.is_some() {
             return self.run_subcommand(data_dir, options).await;
         }
+        Box::pin(self.run_agent(data_dir, options)).await
+    }
+}
 
+impl CodingAssistant {
+    fn run_context(&self, data_dir: &DataDir) -> anyhow::Result<(RunMode, Option<Self>, PathBuf)> {
+        let invocation_dir = std::env::current_dir()?;
         let run_mode = RunMode::from_cli(self)?;
-        let (prepared, resources) = self
+        let restored_config = Self::restored_run_config(&run_mode, data_dir)?;
+        let effective = self.with_restored_run_config(restored_config.as_ref())?;
+        Ok((run_mode, effective, invocation_dir))
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "top-level run orchestration wires every session resource together"
+    )]
+    async fn run_agent(
+        &self,
+        data_dir: &DataDir,
+        options: &CommandRunOptions<'_>,
+    ) -> anyhow::Result<()> {
+        let (run_mode, effective, invocation_dir) = self.run_context(data_dir)?;
+        let this = effective.as_ref().unwrap_or(self);
+        let (prepared, resources) = this
             .prepare_run_context(data_dir, options.project_config_mode)
             .await?;
         let task_id = uuid::Uuid::new_v4();
         let config_dir = crate::config::config_dir().join("cake");
-        let mut run_session = self.build_client_and_session(
+        let mut run_session = this.build_client_and_session(
             &run_mode,
             data_dir,
             prepared.current_dir.clone(),
@@ -1609,10 +1774,12 @@ impl CmdRunner for CodingAssistant {
             &resources.loaded.skills,
             resources.project_config_mode.loads_project_config(),
         )?;
+        run_session.session.run_config =
+            Some(this.session_run_config(&prepared, &resources, &invocation_dir));
 
         run_session.agent = run_session
             .agent
-            .with_policy_gates(&resources.loaded, self.no_gate)
+            .with_policy_gates(&resources.loaded, this.no_gate)
             .await;
 
         Self::warn_unavailable_tools(
@@ -1630,7 +1797,7 @@ impl CmdRunner for CodingAssistant {
             &run_session.resolved,
         )?;
         run_session.attach_output_schema(prepared.output_schema.as_ref());
-        run_session.attach_tool_choice(self.tool_choice);
+        run_session.attach_tool_choice(this.tool_choice);
 
         let session_start_source =
             HookSource::SessionStart(run_mode.session_start_source().to_owned());
@@ -1648,7 +1815,7 @@ impl CmdRunner for CodingAssistant {
             data_dir,
             &session,
             &run_mode,
-            self.output_format,
+            this.output_format,
             &resources.trust,
             effective_provider_identity.as_ref(),
             session_model_change_override,
@@ -1659,7 +1826,7 @@ impl CmdRunner for CodingAssistant {
             transcript_path: run_mode
                 .persists_session()
                 .then(|| data_dir.session_path(session.id)),
-            hook_event_sink: Self::hook_event_sink(session_writer, self.output_format),
+            hook_event_sink: Self::hook_event_sink(session_writer, this.output_format),
             cwd: prepared.current_dir.clone(),
             model: client.model_name().to_string(),
         };
@@ -1674,7 +1841,7 @@ impl CmdRunner for CodingAssistant {
                 &resources.project_hook_files,
             )?
         };
-        let output = self.output_sink();
+        let output = this.output_sink();
         let mut client = output.attach_callbacks(client);
 
         program_status::report(State::Working, None);
