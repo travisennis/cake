@@ -72,7 +72,7 @@ cake --resume <UUID> "Finish it or try another approach"
 cake --fork <UUID> "Explore this without changing the original session"
 ```
 
-Use `--no-session` for an ephemeral run. Session and output compatibility contracts are documented in [Integrations](docs/integrations.md).
+Use `--no-session` for an ephemeral run. Resume with `--read-only` to load a session for one invocation without appending records, writing telemetry, taking the writer lock, or running hooks; pair it with `--tool-choice none` for a transcript-only subcall that keeps the tool schemas but forbids tool calls. Session and output compatibility contracts are documented in [Integrations](docs/integrations.md).
 
 ### Worktrees
 

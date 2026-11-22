@@ -349,6 +349,8 @@ requests to omit tool definitions.
 
 `--tools name1,name2` selects a one-run allowlist and `--no-tools` exposes no tools for the run, the CLI spelling of `enabled = []`. Both mirror `--skills`/`--no-skills`. Because CLI flags are the highest precedence, either flag replaces the profile and top-level `[tools].enabled` chain instead of unioning with it, and `--no-tools` wins when both flags are passed. Values split on `,`, trim surrounding whitespace, and drop empty entries, so `--tools ""` or `--tools ","` selects no tools, matching `--skills ""`. As with settings, unknown or unavailable names warn and are dropped without failing the run; `--tools` is a usability filter, not a security boundary, and the sandbox and configured policy gates remain the enforcement.
 
+`--tool-choice <auto|none|required>` sets the provider's request-level `tool_choice` without touching the exposed tool set, so the tool schemas and prompt prefix stay identical. `none` forbids tool calls while keeping the schemas in the request; the flag is ignored when the run exposes no tools, and a provider that rejects the requested choice fails the request.
+
 ## Bash tool settings
 
 `[tools.bash]` configures the Bash tool. Its `gates` list selects the ordered external policy pipeline that evaluates every non-empty command before spawn. Cake assembles the command, working directory, repository digest, optional model-supplied `reason`, and any collected script evidence, then enforces the gate's decision. If no usable enforce gate covers `pre_tool`/`bash.exec`, Cake removes Bash and BashSession rather than running commands ungated. The gate configuration is in [Gates](#gates); [Security](security.md) owns the trust boundary.

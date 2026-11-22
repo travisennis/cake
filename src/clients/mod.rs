@@ -29,6 +29,7 @@ mod tools;
 
 pub use agent::Agent;
 #[doc(inline)]
+pub use backend::ToolChoice;
 pub use tools::ToolContext;
 pub use tools::format_tool_list_section_with_mcp_and_skill_search;
 pub use tools::skill_search_enabled;

@@ -2483,6 +2483,7 @@ impl SummaryCaller for AgentSummaryCaller<'_> {
                 request.history,
                 &[],
                 None,
+                None,
                 Some(purpose),
                 health.as_ref(),
                 &mut next_attempt,

@@ -115,6 +115,31 @@ pub(super) struct FinalOutputConstraint<'a> {
     pub(super) schema: &'a serde_json::Value,
 }
 
+/// The provider-level choice among the tools offered in a request.
+///
+/// This changes only `tool_choice`, never the tool set, so a constrained run
+/// keeps the same tool schemas and prompt prefix.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum ToolChoice {
+    /// Let the model decide whether to call a tool.
+    #[default]
+    Auto,
+    /// Forbid tool calls for this run.
+    None,
+    /// Require at least one tool call.
+    Required,
+}
+
+impl ToolChoice {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::None => "none",
+            Self::Required => "required",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Backend {
     Responses,
@@ -154,19 +179,34 @@ impl Backend {
         session_id: uuid::Uuid,
         history: &'a [ConversationItem],
         tools: &'a [Tool],
+        tool_choice: Option<ToolChoice>,
         overrides: &RequestOverrides,
         constraint: Option<FinalOutputConstraint<'a>>,
     ) -> anyhow::Result<reqwest::Response> {
         match self {
             Self::Responses => {
                 responses::send_request(
-                    client, config, session_id, history, tools, overrides, constraint,
+                    client,
+                    config,
+                    session_id,
+                    history,
+                    tools,
+                    tool_choice,
+                    overrides,
+                    constraint,
                 )
                 .await
             },
             Self::ChatCompletions => {
                 chat_completions::send_request(
-                    client, config, session_id, history, tools, overrides, constraint,
+                    client,
+                    config,
+                    session_id,
+                    history,
+                    tools,
+                    tool_choice,
+                    overrides,
+                    constraint,
                 )
                 .await
             },

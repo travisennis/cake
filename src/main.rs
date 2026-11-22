@@ -129,6 +129,16 @@ pub(crate) struct CodingAssistant {
     #[arg(long, value_name = "UUID")]
     pub resume: Option<String>,
 
+    /// Resume a session without persisting this invocation
+    ///
+    /// Appends no session records, writes no telemetry, and does not run hooks;
+    /// hooks can inject Developer context and have side effects outside the
+    /// session. The session file, its blobs, and the original transcript are
+    /// left untouched. Requires `--resume`. Tool execution is unchanged; pair
+    /// with `--tool-choice none` for a generation-only call.
+    #[arg(long)]
+    pub read_only: bool,
+
     /// Fork a session: copy its history into a new session with a fresh ID.
     /// Use without a value to fork the latest session, or provide a UUID.
     #[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "UUID")]
@@ -205,6 +215,14 @@ pub(crate) struct CodingAssistant {
     /// Expose no tools for this session
     #[arg(long)]
     pub no_tools: bool,
+
+    /// Set the provider's tool choice for this session
+    ///
+    /// `auto` lets the model decide, `none` forbids tool calls, and `required`
+    /// forces one. The tool set is unchanged, so the request keeps its tool
+    /// schemas. Ignored when the run exposes no tools.
+    #[arg(long, value_enum, value_name = "MODE")]
+    pub tool_choice: Option<crate::clients::ToolChoice>,
 
     /// Disable all skills for this session
     #[arg(long)]
@@ -1167,6 +1185,7 @@ impl CodingAssistant {
             (self.max_tokens.is_some(), "--max-tokens"),
             (self.output_schema.is_some(), "--output-schema"),
             (self.resume.is_some(), "--resume"),
+            (self.read_only, "--read-only"),
             (self.fork.is_some(), "--fork"),
             (
                 self.allow_session_model_change,
@@ -1181,6 +1200,7 @@ impl CodingAssistant {
             (!self.mcp_config.is_empty(), "--mcp-config"),
             (self.sandbox.is_some(), "--sandbox"),
             (self.no_tools, "--no-tools"),
+            (self.tool_choice.is_some(), "--tool-choice"),
             (self.tools.is_some(), "--tools"),
             (self.no_skills, "--no-skills"),
             (self.skills.is_some(), "--skills"),
@@ -1564,11 +1584,11 @@ impl CmdRunner for CodingAssistant {
             return self.run_subcommand(data_dir, options).await;
         }
 
+        let run_mode = RunMode::from_cli(self)?;
         let (prepared, resources) = self
             .prepare_run_context(data_dir, options.project_config_mode)
             .await?;
         let task_id = uuid::Uuid::new_v4();
-        let run_mode = RunMode::from_cli(self)?;
         let config_dir = crate::config::config_dir().join("cake");
         let mut run_session = self.build_client_and_session(
             &run_mode,
@@ -1610,6 +1630,7 @@ impl CmdRunner for CodingAssistant {
             &run_session.resolved,
         )?;
         run_session.attach_output_schema(prepared.output_schema.as_ref());
+        run_session.attach_tool_choice(self.tool_choice);
 
         let session_start_source =
             HookSource::SessionStart(run_mode.session_start_source().to_owned());
@@ -1643,12 +1664,16 @@ impl CmdRunner for CodingAssistant {
             model: client.model_name().to_string(),
         };
         let hook_output_limit = resources.loaded.limits.tool_limits.hook_output_limit;
-        let (client, hook_runner) = Self::attach_hooks(
-            client,
-            hook_context,
-            hook_output_limit,
-            &resources.project_hook_files,
-        )?;
+        let (client, hook_runner) = if run_mode.is_read_only() {
+            (client, None)
+        } else {
+            Self::attach_hooks(
+                client,
+                hook_context,
+                hook_output_limit,
+                &resources.project_hook_files,
+            )?
+        };
         let output = self.output_sink();
         let mut client = output.attach_callbacks(client);
 

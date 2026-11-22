@@ -7,7 +7,7 @@ use tracing::debug;
 use crate::clients::agent::{AttemptPurpose, TurnResult, TurnUsageSettlement};
 use crate::clients::agent_observer::HealthCallback;
 use crate::clients::backend::{
-    Backend, FinalOutputConstraint, ResponseDecodeError, ResponseParseError,
+    Backend, FinalOutputConstraint, ResponseDecodeError, ResponseParseError, ToolChoice,
 };
 use crate::clients::response_stall::{
     BodyReadFailure, BodyReadOutcome, FailedBody, ResponseStall, STALL_WINDOW, StallPhase,
@@ -261,13 +261,21 @@ impl AgentRunner {
         session_id: uuid::Uuid,
         history: &'a [ConversationItem],
         tools: &'a [Tool],
+        tool_choice: Option<ToolChoice>,
         overrides: &RequestOverrides,
         constraint: Option<FinalOutputConstraint<'a>>,
     ) -> anyhow::Result<reqwest::Response> {
         match tokio::time::timeout(
             self.stall_window,
             self.backend.send_request(
-                client, config, session_id, history, tools, overrides, constraint,
+                client,
+                config,
+                session_id,
+                history,
+                tools,
+                tool_choice,
+                overrides,
+                constraint,
             ),
         )
         .await
@@ -295,6 +303,7 @@ impl AgentRunner {
         turn_index: u32,
         history: &'a [ConversationItem],
         tools: &'a [Tool],
+        tool_choice: Option<ToolChoice>,
         constraint: Option<FinalOutputConstraint<'a>>,
         attempt_purpose: Option<AttemptPurpose>,
         before_attempt: Option<&HealthCallback>,
@@ -332,6 +341,7 @@ impl AgentRunner {
                     session_id,
                     history,
                     tools,
+                    tool_choice,
                     &request_overrides,
                     constraint,
                 )

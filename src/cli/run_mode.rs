@@ -15,7 +15,10 @@ pub enum RunMode {
     /// Run without persisting a session (`--no-session`).
     Ephemeral,
     /// Resume a specific session by UUID (`--resume <UUID>`).
-    Resume { session_id: uuid::Uuid },
+    Resume {
+        session_id: uuid::Uuid,
+        read_only: bool,
+    },
     /// Fork the most recent session (`--fork` without a value).
     ForkLatest,
     /// Fork a specific session by UUID (`--fork <UUID>`).
@@ -26,6 +29,17 @@ impl RunMode {
     /// Derive the run mode from parsed CLI arguments.
     pub(crate) fn from_cli(args: &crate::CodingAssistant) -> anyhow::Result<Self> {
         let mode = Self::from_session_flags(args)?;
+        if args.read_only
+            && !matches!(
+                mode,
+                Self::Resume {
+                    read_only: true,
+                    ..
+                }
+            )
+        {
+            anyhow::bail!("Invalid read-only run: --read-only requires --resume");
+        }
         if args.allow_session_model_change
             && !matches!(
                 mode,
@@ -49,7 +63,10 @@ impl RunMode {
                     "Invalid session UUID '{session_id}'. Expected format: e.g., 550e8400-e29b-41d4-a716-446655440000"
                 )
             })?;
-            return Ok(Self::Resume { session_id: id });
+            return Ok(Self::Resume {
+                session_id: id,
+                read_only: args.read_only,
+            });
         }
         if let Some(fork_id) = args.fork.as_deref() {
             if fork_id.is_empty() {
@@ -68,7 +85,25 @@ impl RunMode {
 
     /// Whether the session should be persisted to disk.
     pub(crate) const fn persists_session(&self) -> bool {
-        !matches!(self, Self::Ephemeral)
+        !matches!(
+            self,
+            Self::Ephemeral
+                | Self::Resume {
+                    read_only: true,
+                    ..
+                }
+        )
+    }
+
+    /// Whether this run leaves no session, telemetry, or hook trace.
+    pub(crate) const fn is_read_only(&self) -> bool {
+        matches!(
+            self,
+            Self::Resume {
+                read_only: true,
+                ..
+            }
+        )
     }
 
     /// A human-readable label for the hook source.

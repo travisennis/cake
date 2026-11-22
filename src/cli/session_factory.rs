@@ -51,6 +51,13 @@ impl RunSession {
             self.agent.set_output_schema(Arc::clone(schema));
         }
     }
+
+    /// Attach the run's `--tool-choice`, if one was given.
+    pub(crate) const fn attach_tool_choice(&mut self, choice: Option<crate::clients::ToolChoice>) {
+        if let Some(choice) = choice {
+            self.agent.set_tool_choice(choice);
+        }
+    }
 }
 
 /// Build a map of skill file paths to skills for activation deduplication.
@@ -126,6 +133,7 @@ impl crate::CodingAssistant {
         mcp_servers: Vec<McpServer>,
         enabled_tools: Option<&[String]>,
         task_id: uuid::Uuid,
+        persistence: Option<SessionPersistencePlan>,
     ) -> anyhow::Result<RunSession> {
         let seed = restored.context_seed();
         let activated_skills = restored.activated_skills();
@@ -153,7 +161,7 @@ impl crate::CodingAssistant {
         Ok(RunSession {
             agent,
             session,
-            persistence: Some(SessionPersistencePlan::Append),
+            persistence,
             effective_provider_identity: Some(effective_provider_identity),
             session_model_change_override,
             resolved: Box::new(resolved),
@@ -344,7 +352,10 @@ impl crate::CodingAssistant {
             task_id,
         };
         match run_mode {
-            RunMode::Resume { session_id } => self.resume_run(*session_id, data_dir, &inputs),
+            RunMode::Resume {
+                session_id,
+                read_only,
+            } => self.resume_run(*session_id, *read_only, data_dir, &inputs),
             RunMode::ForkLatest | RunMode::Fork { .. } => {
                 self.forked_run(run_mode, data_dir, &inputs)
             },
@@ -366,6 +377,7 @@ impl crate::CodingAssistant {
         &self,
         restored: Session,
         inputs: &RunInputs<'_>,
+        persistence: Option<SessionPersistencePlan>,
     ) -> anyhow::Result<RunSession> {
         let (config, model_config_name) = self.resolve_model_selection(
             inputs.models,
@@ -399,6 +411,7 @@ impl crate::CodingAssistant {
             inputs.mcp_servers.to_vec(),
             inputs.tools_enabled,
             inputs.task_id,
+            persistence,
         )?;
         run.agent = run.agent.with_image_policy(inputs.images);
         Ok(run)
@@ -408,6 +421,7 @@ impl crate::CodingAssistant {
     fn resume_run(
         &self,
         session_id: uuid::Uuid,
+        read_only: bool,
         data_dir: &DataDir,
         inputs: &RunInputs<'_>,
     ) -> anyhow::Result<RunSession> {
@@ -415,7 +429,8 @@ impl crate::CodingAssistant {
             .load_session(session_id)?
             .ok_or_else(|| anyhow::anyhow!("Session {session_id} not found"))?;
         info!(target: "cake", "Resumed session: {}", restored.id);
-        self.restored_run(restored, inputs)
+        let persistence = (!read_only).then_some(SessionPersistencePlan::Append);
+        self.restored_run(restored, inputs, persistence)
     }
 
     /// `--fork`: start a fresh session seeded from a prior one.

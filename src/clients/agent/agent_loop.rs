@@ -1076,6 +1076,7 @@ impl Agent {
                 turn_index,
                 &history,
                 tool_definitions,
+                self.tool_choice,
                 constraint,
                 None,
                 health.as_ref(),

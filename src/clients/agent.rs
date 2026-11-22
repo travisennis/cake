@@ -10,7 +10,7 @@ use crate::OutputFormat;
 use crate::clients::agent_observer::{AgentObserver, HealthCallback};
 use crate::clients::agent_runner::AgentRunner;
 use crate::clients::agent_state::{ConversationState, SourceRef, accumulate_usage};
-use crate::clients::backend::Backend;
+use crate::clients::backend::{Backend, ToolChoice};
 use crate::clients::compaction::MeasuredInput;
 use crate::clients::mcp::{McpClient, McpServer, McpTool};
 use crate::clients::tools::{
@@ -259,6 +259,8 @@ pub struct Agent {
     /// Optional compiled JSON Schema constraining the final response
     /// (`--output-schema`). Intermediate turns run unconstrained.
     output_schema: Option<Arc<OutputSchema>>,
+    /// The provider-level tool choice for every request, when constrained.
+    tool_choice: Option<ToolChoice>,
     /// Whether correction turns may attach the provider's native
     /// structured-output constraint. Cleared for the rest of the run when the
     /// provider rejects the constrained request (HTTP 400); never reset.
@@ -311,6 +313,7 @@ impl Agent {
             hook_runner: None,
             telemetry: None,
             output_schema: None,
+            tool_choice: None,
             native_constraint_enabled: true,
         }
     }
@@ -1120,6 +1123,12 @@ impl Agent {
     /// Schema. Intermediate tool-use turns are unaffected.
     pub fn set_output_schema(&mut self, schema: Arc<OutputSchema>) {
         self.output_schema = Some(schema);
+    }
+
+    /// Sets the provider-level tool choice for subsequent requests without
+    /// changing the registered or enabled tool set.
+    pub const fn set_tool_choice(&mut self, choice: ToolChoice) {
+        self.tool_choice = Some(choice);
     }
 
     /// Append hook-provided developer context before the next provider request.

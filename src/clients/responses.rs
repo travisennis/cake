@@ -3,7 +3,9 @@ use tracing::{debug, trace, warn};
 use crate::config::model::ResolvedModelConfig;
 
 use crate::clients::agent::TurnResult;
-use crate::clients::backend::{FinalOutputConstraint, ResponseDecodeError, ResponseParseError};
+use crate::clients::backend::{
+    FinalOutputConstraint, ResponseDecodeError, ResponseParseError, ToolChoice,
+};
 use crate::clients::image_budget::verify_request_images;
 use crate::clients::provider_strategy::ProviderStrategy;
 use crate::clients::response_stall::{BodyReadOutcome, read_body};
@@ -27,16 +29,21 @@ use crate::types::{
 /// # Errors
 ///
 /// Returns an error if the HTTP request fails.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a provider request threads identity, history, tools, choice, overrides, and constraint"
+)]
 pub(super) async fn send_request<'a>(
     client: &reqwest::Client,
     config: &ResolvedModelConfig,
     session_id: uuid::Uuid,
     history: &'a [ConversationItem],
     tools: &'a [Tool],
+    tool_choice: Option<ToolChoice>,
     overrides: &RequestOverrides,
     constraint: Option<FinalOutputConstraint<'a>>,
 ) -> anyhow::Result<reqwest::Response> {
-    let request = build_request_json(config, history, tools, overrides, constraint)?;
+    let request = build_request_json(config, history, tools, tool_choice, overrides, constraint)?;
     send_request_json(client, config, session_id, request).await
 }
 
@@ -54,6 +61,7 @@ pub(super) fn build_request_json<'a>(
     config: &ResolvedModelConfig,
     history: &'a [ConversationItem],
     tools: &'a [Tool],
+    tool_choice: Option<ToolChoice>,
     overrides: &RequestOverrides,
     constraint: Option<FinalOutputConstraint<'a>>,
 ) -> anyhow::Result<Vec<u8>> {
@@ -104,7 +112,7 @@ pub(super) fn build_request_json<'a>(
         tool_choice: if tools.is_empty() {
             None
         } else {
-            Some("auto".to_string())
+            Some(tool_choice.unwrap_or_default().as_str().to_string())
         },
         provider: provider_config,
         reasoning,
