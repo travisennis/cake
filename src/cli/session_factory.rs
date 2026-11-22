@@ -327,6 +327,7 @@ impl crate::CodingAssistant {
         mcp_servers: &[McpServer],
         enabled_tools: Option<&[String]>,
         task_id: uuid::Uuid,
+        cli_system_prompt: Option<&Path>,
         loaded_system_prompt: Option<&str>,
         skill_settings: &SkillSettings,
         include_project_prompt: bool,
@@ -334,8 +335,8 @@ impl crate::CodingAssistant {
         let inputs = RunInputs {
             current_dir,
             config_dir,
-            cli_system_prompt: self.system_prompt.as_deref().map(std::path::Path::new),
-            settings_system_prompt: loaded_system_prompt.map(std::path::Path::new),
+            cli_system_prompt,
+            settings_system_prompt: loaded_system_prompt.map(Path::new),
             agents_files,
             skill_catalog,
             skill_locations: skill_locations(skill_catalog),

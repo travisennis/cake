@@ -41,7 +41,7 @@ pub use blob_store::BlobStore;
 #[doc(inline)]
 pub use config_dir::config_dir;
 #[doc(inline)]
-pub use data_dir::{DataDir, DataDirError};
+pub use data_dir::{DataDir, DataDirError, SessionResumeConfig};
 #[doc(inline)]
 pub use hooks::{HookSource, HooksLoader};
 #[doc(inline)]

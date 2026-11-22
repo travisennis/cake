@@ -63,7 +63,7 @@ pub struct SessionRunConfig {
     /// Whether the session ran with `--no-skills`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub no_skills: bool,
-    /// The resolved `--system-prompt` path.
+    /// The resolved `--system-prompt` path, or an explicit empty value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
     /// Whether the session ran with `--no-runtime-context`.

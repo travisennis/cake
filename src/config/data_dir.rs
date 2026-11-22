@@ -287,25 +287,39 @@ impl DataDir {
         Ok(result)
     }
 
-    /// Read the stored run choices for a session without loading its transcript.
+    /// Read the stored run choices and origin directory for a session without
+    /// loading its transcript.
     ///
-    /// Returns `None` when the session file does not exist or predates run
-    /// choices. Used before settings load so a resume can apply the stored
-    /// profile and policy through the ordinary precedence chain.
+    /// Returns `None` when the session file does not exist. Used before
+    /// settings load so a resume can apply the stored profile and policy
+    /// through the ordinary precedence chain, and so project-relative extension
+    /// paths can be checked against the project that selected them.
     ///
     /// # Errors
     ///
     /// Returns an error when the session file exists but its header cannot be
-    /// read or parsed.
-    pub fn load_session_run_config(
+    /// read or parsed, or when the header UUID does not match the requested
+    /// session.
+    pub fn load_session_resume_config(
         &self,
         id: uuid::Uuid,
-    ) -> anyhow::Result<Option<SessionRunConfig>> {
+    ) -> anyhow::Result<Option<SessionResumeConfig>> {
         let path = self.session_path(id);
         if !path.exists() {
             return Ok(None);
         }
-        Ok(read_session_header(&path)?.run_config)
+        let header = read_session_header(&path)?;
+        let header_id = uuid::Uuid::parse_str(&header.session_id)
+            .with_context(|| format!("Invalid session UUID '{}'", header.session_id))?;
+        anyhow::ensure!(
+            header_id == id,
+            "Session header id {header_id} does not match filename UUID {id} in {}",
+            path.display()
+        );
+        Ok(Some(SessionResumeConfig {
+            working_directory: header.working_directory,
+            run_config: header.run_config,
+        }))
     }
 
     /// Loads a specific session by UUID.
@@ -368,11 +382,23 @@ fn session_id_from_path(path: &Path) -> anyhow::Result<uuid::Uuid> {
         .with_context(|| format!("Session file name is not a UUID: {}", path.display()))
 }
 
+/// The identity and run choices read from a session header before a resume.
+#[derive(Debug, Clone)]
+pub struct SessionResumeConfig {
+    /// The directory the session ran in when it was created.
+    pub working_directory: PathBuf,
+    /// Stored run choices, absent on sessions that predate them.
+    pub run_config: Option<SessionRunConfig>,
+}
+
 /// Minimal header struct for quickly inspecting a session file without
 /// loading the entire conversation history.
 #[derive(Deserialize)]
 struct SessionFileHeader {
+    #[serde(rename = "type")]
+    record_type: String,
     format_version: u32,
+    session_id: String,
     working_directory: PathBuf,
     /// Timestamp from the `session_meta` record, used instead of filesystem mtime.
     timestamp: DateTime<Utc>,
@@ -399,6 +425,12 @@ fn read_session_header(path: &Path) -> anyhow::Result<SessionFileHeader> {
     };
     let header: SessionFileHeader = serde_json::from_str(&line.text)
         .with_context(|| format!("Failed to parse session header: {}", path.display()))?;
+    if header.record_type != "session_meta" {
+        anyhow::bail!(
+            "Unsupported or legacy session file format: expected session_meta as first record in {}",
+            path.display()
+        );
+    }
     if header.format_version != CURRENT_FORMAT_VERSION {
         anyhow::bail!(
             "Unsupported session format_version: {} (expected {}). Session file: {}",

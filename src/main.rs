@@ -30,11 +30,11 @@ use crate::clients::{Agent, SandboxPolicy, ToolContext, resolve_sandbox_policy};
 use crate::config::ResolvedModelConfig;
 use crate::config::settings::LoadedSettings;
 use crate::config::trust::{
-    HookFileSource, ProjectConfigMode, ProjectConfigUse, ProjectTrustReport,
+    HookFileSource, ProjectConfigMode, ProjectConfigSnapshot, ProjectConfigUse, ProjectTrustReport,
 };
 use crate::config::{
     AgentsFile, DataDir, DiagnosticLevel, HookSource, HooksLoader, ModelConfig, ModelDefinition,
-    ReasoningEffort, Session, SettingsLoader, SkillCatalog, discover_skills,
+    ReasoningEffort, Session, SessionResumeConfig, SettingsLoader, SkillCatalog, discover_skills,
     discover_skills_with_paths, parse_skill_path_list, read_agents_files, user_skills_dir,
     worktree,
 };
@@ -420,16 +420,19 @@ impl CodingAssistant {
         Ok((def.to_model_config(), model_name.to_string()))
     }
 
-    /// Read the run choices stored with the session being resumed.
+    /// Read the run choices and origin directory stored with the session being
+    /// resumed.
     ///
     /// The header is read before settings load so a stored profile can shape
-    /// the ordinary precedence chain instead of being applied after it.
-    fn restored_run_config(
+    /// the ordinary precedence chain instead of being applied after it. The
+    /// header UUID is checked here, before extension discovery or MCP startup,
+    /// so a misnamed session cannot apply another session's choices.
+    fn restored_resume_config(
         run_mode: &RunMode,
         data_dir: &DataDir,
-    ) -> anyhow::Result<Option<SessionRunConfig>> {
+    ) -> anyhow::Result<Option<SessionResumeConfig>> {
         match run_mode {
-            RunMode::Resume { session_id, .. } => data_dir.load_session_run_config(*session_id),
+            RunMode::Resume { session_id, .. } => data_dir.load_session_resume_config(*session_id),
             RunMode::NewSession
             | RunMode::Ephemeral
             | RunMode::ForkLatest
@@ -442,16 +445,26 @@ impl CodingAssistant {
     /// An explicit CLI flag always wins. Repeatable directory flags replace
     /// the stored list rather than unioning, so one invocation cannot inherit a
     /// grant it did not name.
-    fn with_restored_run_config(
+    fn with_restored_resume_config(
         &self,
-        config: Option<&SessionRunConfig>,
+        restored: Option<&SessionResumeConfig>,
+        invocation_dir: &Path,
+        project_config_mode: ProjectConfigMode,
     ) -> anyhow::Result<Option<Self>> {
-        let Some(config) = config else {
+        let Some(restored) = restored else {
+            return Ok(None);
+        };
+        let Some(config) = restored.run_config.as_ref() else {
             return Ok(None);
         };
         let mut effective = self.clone();
         effective.apply_restored_identity(config)?;
-        effective.apply_restored_paths(config);
+        effective.apply_restored_paths(
+            config,
+            &restored.working_directory,
+            invocation_dir,
+            project_config_mode,
+        );
         effective.apply_restored_choices(config);
         Ok(Some(effective))
     }
@@ -470,7 +483,15 @@ impl CodingAssistant {
         Ok(())
     }
 
-    fn apply_restored_paths(&mut self, config: &SessionRunConfig) {
+    fn apply_restored_paths(
+        &mut self,
+        config: &SessionRunConfig,
+        session_dir: &Path,
+        invocation_dir: &Path,
+        project_config_mode: ProjectConfigMode,
+    ) {
+        let session_dir =
+            std::fs::canonicalize(session_dir).unwrap_or_else(|_| session_dir.to_path_buf());
         if self.add_dir.is_empty() {
             self.add_dir = config
                 .add_dirs
@@ -478,11 +499,35 @@ impl CodingAssistant {
                 .map(|path| path.to_string_lossy().into_owned())
                 .collect();
         }
+
+        let mut dropped = false;
         if self.toolbox.is_empty() {
-            self.toolbox.clone_from(&config.toolbox_dirs);
+            let (paths, untrusted) = restored_extension_paths(
+                &config.toolbox_dirs,
+                crate::config::toolbox::filter_project_toolbox_dirs,
+                &session_dir,
+                invocation_dir,
+                project_config_mode,
+            );
+            self.toolbox = paths;
+            dropped |= untrusted;
         }
         if self.mcp_config.is_empty() {
-            self.mcp_config.clone_from(&config.mcp_config);
+            let (paths, untrusted) = restored_extension_paths(
+                &config.mcp_config,
+                crate::config::mcp::filter_project_mcp_paths,
+                &session_dir,
+                invocation_dir,
+                project_config_mode,
+            );
+            self.mcp_config = paths;
+            dropped |= untrusted;
+        }
+        if dropped {
+            eprintln!(
+                "warning: ignoring resumed toolbox or MCP paths under {}: project configuration there is not trusted; run `cake trust` there or pass the flags again",
+                session_dir.display()
+            );
         }
     }
 
@@ -549,7 +594,7 @@ impl CodingAssistant {
             },
             no_skills: self.no_skills,
             system_prompt: self.system_prompt.as_deref().map(|path| {
-                resolve_run_path(Path::new(path), invocation_dir)
+                resolve_system_prompt_path(path, &prepared.current_dir)
                     .to_string_lossy()
                     .into_owned()
             }),
@@ -1721,6 +1766,65 @@ fn resolve_run_path(path: &Path, base: &Path) -> PathBuf {
     }
 }
 
+/// Resolve the CLI system prompt against the directory the run will read it
+/// from. An explicit empty value stays empty so it keeps its override meaning.
+fn resolve_system_prompt_path(path: &str, base: &Path) -> PathBuf {
+    if path.is_empty() {
+        PathBuf::new()
+    } else {
+        resolve_run_path(Path::new(path), base)
+    }
+}
+
+/// Whether a resumed session's project-relative extensions remain trusted.
+///
+/// A stored `--toolbox` or `--mcp-config` path under the session project's
+/// `.cake/` is authority-bearing. It must not start just because the resume ran
+/// from a different checkout. A one-run trust flag covers only the invocation
+/// directory; a different origin needs its own persistent trust record.
+fn resumed_project_extensions_trusted(
+    session_dir: &Path,
+    invocation_dir: &Path,
+    mode: ProjectConfigMode,
+) -> bool {
+    if !mode.loads_project_config() {
+        return false;
+    }
+    if mode.one_run() && same_canonical_path(session_dir, invocation_dir) {
+        return true;
+    }
+    ProjectConfigSnapshot::load(
+        session_dir,
+        &crate::config::config_dir(),
+        ProjectConfigMode::Inspect,
+    )
+    .ok()
+    .and_then(|snapshot| snapshot.evaluate().ok())
+    .is_some_and(|report| report.allows_authority())
+}
+
+fn same_canonical_path(left: &Path, right: &Path) -> bool {
+    std::fs::canonicalize(left).unwrap_or_else(|_| left.to_path_buf())
+        == std::fs::canonicalize(right).unwrap_or_else(|_| right.to_path_buf())
+}
+
+fn restored_extension_paths(
+    stored: &[PathBuf],
+    filter: fn(Vec<PathBuf>, &[&Path]) -> Vec<PathBuf>,
+    session_dir: &Path,
+    invocation_dir: &Path,
+    mode: ProjectConfigMode,
+) -> (Vec<PathBuf>, bool) {
+    let filtered = filter(stored.to_vec(), &[session_dir]);
+    if filtered.len() == stored.len()
+        || resumed_project_extensions_trusted(session_dir, invocation_dir, mode)
+    {
+        (stored.to_vec(), false)
+    } else {
+        (filtered, true)
+    }
+}
+
 impl CmdRunner for CodingAssistant {
     async fn run(&self, data_dir: &DataDir, options: &CommandRunOptions<'_>) -> anyhow::Result<()> {
         if self.command.is_some() {
@@ -1731,11 +1835,19 @@ impl CmdRunner for CodingAssistant {
 }
 
 impl CodingAssistant {
-    fn run_context(&self, data_dir: &DataDir) -> anyhow::Result<(RunMode, Option<Self>, PathBuf)> {
+    fn run_context(
+        &self,
+        data_dir: &DataDir,
+        project_config_mode: ProjectConfigMode,
+    ) -> anyhow::Result<(RunMode, Option<Self>, PathBuf)> {
         let invocation_dir = std::env::current_dir()?;
         let run_mode = RunMode::from_cli(self)?;
-        let restored_config = Self::restored_run_config(&run_mode, data_dir)?;
-        let effective = self.with_restored_run_config(restored_config.as_ref())?;
+        let restored = Self::restored_resume_config(&run_mode, data_dir)?;
+        let effective = self.with_restored_resume_config(
+            restored.as_ref(),
+            &invocation_dir,
+            project_config_mode,
+        )?;
         Ok((run_mode, effective, invocation_dir))
     }
 
@@ -1748,13 +1860,18 @@ impl CodingAssistant {
         data_dir: &DataDir,
         options: &CommandRunOptions<'_>,
     ) -> anyhow::Result<()> {
-        let (run_mode, effective, invocation_dir) = self.run_context(data_dir)?;
+        let (run_mode, effective, invocation_dir) =
+            self.run_context(data_dir, options.project_config_mode)?;
         let this = effective.as_ref().unwrap_or(self);
         let (prepared, resources) = this
             .prepare_run_context(data_dir, options.project_config_mode)
             .await?;
         let task_id = uuid::Uuid::new_v4();
         let config_dir = crate::config::config_dir().join("cake");
+        let cli_system_prompt = this
+            .system_prompt
+            .as_deref()
+            .map(|path| resolve_system_prompt_path(path, &prepared.current_dir));
         let mut run_session = this.build_client_and_session(
             &run_mode,
             data_dir,
@@ -1770,6 +1887,7 @@ impl CodingAssistant {
             &resources.mcp_servers,
             resources.tools_enabled.as_deref(),
             task_id,
+            cli_system_prompt.as_deref(),
             resources.loaded.system_prompt.as_deref(),
             &resources.loaded.skills,
             resources.project_config_mode.loads_project_config(),
