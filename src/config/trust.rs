@@ -906,6 +906,26 @@ impl ProjectConfigSnapshot {
         self.evaluate_record()
     }
 
+    /// Evaluate the persistent record even when no recognized authority file
+    /// is present.
+    ///
+    /// A resumed session can name an explicit extension path anywhere under a
+    /// project `.cake/` tree, including a filename that the trust scanner does
+    /// not classify as authority. Such a path still needs a matching manifest
+    /// before it can start. This is the same record comparison as [`evaluate`],
+    /// without the empty-authority shortcut that returns `NotRequired`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrustError`] when the record comparison fails in an enforcing
+    /// mode.
+    pub(crate) fn evaluate_manifest(&self) -> Result<ProjectTrustReport, TrustError> {
+        if !self.mode.loads_project_config() {
+            return Ok(self.report(TrustState::NotRequired, Vec::new()));
+        }
+        self.evaluate_record()
+    }
+
     fn evaluate_record(&self) -> Result<ProjectTrustReport, TrustError> {
         match TrustRecord::read(&self.record_path, &self.project_root) {
             Ok(None) => self.handle_missing_record(),

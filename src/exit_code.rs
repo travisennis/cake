@@ -97,6 +97,13 @@ fn classify_typed_error(err: &anyhow::Error) -> Option<u8> {
         return Some(classify_settings_error(settings_err));
     }
 
+    if err
+        .downcast_ref::<crate::config::SessionHeaderError>()
+        .is_some()
+    {
+        return Some(code::INPUT_ERROR);
+    }
+
     if let Some(class) = classify_configuration_error(err) {
         return Some(class);
     }

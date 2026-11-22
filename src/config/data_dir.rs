@@ -4,6 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use uuid::{Error as UuidError, Uuid};
+
 use anyhow::{Context, anyhow};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
@@ -74,6 +76,103 @@ pub enum DataDirError {
         /// The underlying permission error.
         #[source]
         source: std::io::Error,
+    },
+}
+
+/// A session header that cannot be read, validated, or trusted.
+///
+/// These are defects in an owner-supplied session reference, so they share
+/// the CLI's input-error class instead of becoming agent errors.
+#[derive(Debug, thiserror::Error)]
+pub enum SessionHeaderError {
+    /// The path could not be stat'd for a reason other than absence.
+    #[error("Failed to stat session file: {path}: {source}")]
+    Stat {
+        /// The session path.
+        path: PathBuf,
+        /// The underlying stat error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The session file could not be opened without following a symlink.
+    #[error("Failed to open session file: {path}: {source}")]
+    Open {
+        /// The session path.
+        path: PathBuf,
+        /// The underlying open error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The path is a symlink or not a regular file.
+    #[error("Session file is not a regular file: {path}")]
+    NotRegular {
+        /// The offending path.
+        path: PathBuf,
+    },
+    /// The first record could not be read.
+    #[error("Failed to read header from session file: {path}: {source}")]
+    Read {
+        /// The session path.
+        path: PathBuf,
+        /// The underlying read error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The first record was empty.
+    #[error("Session file is empty: {path}")]
+    Empty {
+        /// The session path.
+        path: PathBuf,
+    },
+    /// The first record was not valid JSON for a session header.
+    #[error("Failed to parse session file header: {path}: {source}")]
+    Parse {
+        /// The session path.
+        path: PathBuf,
+        /// The underlying JSON error.
+        #[source]
+        source: serde_json::Error,
+    },
+    /// The first record was not a session header.
+    #[error(
+        "Unsupported or legacy session file format: expected session_meta as first record in {path}"
+    )]
+    LegacyFormat {
+        /// The session path.
+        path: PathBuf,
+    },
+    /// The header's format version is not supported.
+    #[error(
+        "Unsupported session format_version: {version} (expected {expected}). Session file: {path}"
+    )]
+    UnsupportedVersion {
+        /// The recorded format version.
+        version: u32,
+        /// The version this build supports.
+        expected: u32,
+        /// The session path.
+        path: PathBuf,
+    },
+    /// The header's session id is not a UUID.
+    #[error("Invalid session UUID '{value}' in {path}")]
+    InvalidSessionId {
+        /// The value read from the header.
+        value: String,
+        /// The session path.
+        path: PathBuf,
+        /// The UUID parse error.
+        #[source]
+        source: UuidError,
+    },
+    /// The header id and the filename UUID disagree.
+    #[error("Session header id {header_id} does not match filename UUID {expected} in {path}")]
+    IdMismatch {
+        /// The id in the header.
+        header_id: Uuid,
+        /// The UUID encoded in the filename and requested by the caller.
+        expected: Uuid,
+        /// The session path.
+        path: PathBuf,
     },
 }
 
@@ -287,8 +386,8 @@ impl DataDir {
         Ok(result)
     }
 
-    /// Read the stored run choices and origin directory for a session without
-    /// loading its transcript.
+    /// Read the stored run choices for a session without loading its
+    /// transcript.
     ///
     /// Returns `None` when the session file does not exist. Used before
     /// settings load so a resume can apply the stored profile and policy
@@ -305,19 +404,30 @@ impl DataDir {
         id: uuid::Uuid,
     ) -> anyhow::Result<Option<SessionResumeConfig>> {
         let path = self.session_path(id);
-        if !path.exists() {
-            return Ok(None);
+        match fs::symlink_metadata(&path) {
+            Ok(_) => {},
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(source) => {
+                return Err(SessionHeaderError::Stat { path, source }.into());
+            },
         }
         let header = read_session_header(&path)?;
-        let header_id = uuid::Uuid::parse_str(&header.session_id)
-            .with_context(|| format!("Invalid session UUID '{}'", header.session_id))?;
-        anyhow::ensure!(
-            header_id == id,
-            "Session header id {header_id} does not match filename UUID {id} in {}",
-            path.display()
-        );
+        let header_id = Uuid::parse_str(&header.session_id).map_err(|source| {
+            SessionHeaderError::InvalidSessionId {
+                value: header.session_id.clone(),
+                path: path.clone(),
+                source,
+            }
+        })?;
+        if header_id != id {
+            return Err(SessionHeaderError::IdMismatch {
+                header_id,
+                expected: id,
+                path,
+            }
+            .into());
+        }
         Ok(Some(SessionResumeConfig {
-            working_directory: header.working_directory,
             run_config: header.run_config,
         }))
     }
@@ -382,11 +492,9 @@ fn session_id_from_path(path: &Path) -> anyhow::Result<uuid::Uuid> {
         .with_context(|| format!("Session file name is not a UUID: {}", path.display()))
 }
 
-/// The identity and run choices read from a session header before a resume.
+/// The run choices read from a session header before a resume.
 #[derive(Debug, Clone)]
 pub struct SessionResumeConfig {
-    /// The directory the session ran in when it was created.
-    pub working_directory: PathBuf,
     /// Stored run choices, absent on sessions that predate them.
     pub run_config: Option<SessionRunConfig>,
 }
@@ -410,36 +518,78 @@ struct SessionFileHeader {
 ///
 /// Blank leading lines are skipped, so a header is found regardless of leading
 /// whitespace, matching full load, replay, and listing.
-fn read_session_header(path: &Path) -> anyhow::Result<SessionFileHeader> {
-    let file = fs::File::open(path)
-        .with_context(|| format!("Failed to open session file: {}", path.display()))?;
+fn read_session_header(path: &Path) -> Result<SessionFileHeader, SessionHeaderError> {
+    let file = open_session_file(path)?;
     let mut framer = SessionFramer::new(BufReader::new(file));
-    let Some(line) = framer.next_record().with_context(|| {
-        format!(
-            "Failed to read header from session file: {}",
-            path.display()
-        )
-    })?
+    let Some(line) = framer
+        .next_record()
+        .map_err(|source| SessionHeaderError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?
     else {
-        anyhow::bail!("Session file is empty: {}", path.display());
+        return Err(SessionHeaderError::Empty {
+            path: path.to_path_buf(),
+        });
     };
-    let header: SessionFileHeader = serde_json::from_str(&line.text)
-        .with_context(|| format!("Failed to parse session header: {}", path.display()))?;
+    let header: SessionFileHeader =
+        serde_json::from_str(&line.text).map_err(|source| SessionHeaderError::Parse {
+            path: path.to_path_buf(),
+            source,
+        })?;
     if header.record_type != "session_meta" {
-        anyhow::bail!(
-            "Unsupported or legacy session file format: expected session_meta as first record in {}",
-            path.display()
-        );
+        return Err(SessionHeaderError::LegacyFormat {
+            path: path.to_path_buf(),
+        });
     }
     if header.format_version != CURRENT_FORMAT_VERSION {
-        anyhow::bail!(
-            "Unsupported session format_version: {} (expected {}). Session file: {}",
-            header.format_version,
-            CURRENT_FORMAT_VERSION,
-            path.display()
-        );
+        return Err(SessionHeaderError::UnsupportedVersion {
+            version: header.format_version,
+            expected: CURRENT_FORMAT_VERSION,
+            path: path.to_path_buf(),
+        });
     }
     Ok(header)
+}
+
+/// Open a session file without following a final symlink, then confirm the
+/// opened object is a regular file.
+///
+/// The resume path reads the header before the full loader checks the append
+/// path, so a symlink must be rejected here rather than after run settings have
+/// already been applied. The non-following metadata check rejects symlinks and
+/// non-regular files before the open; `O_NOFOLLOW` closes the check/open gap on
+/// Unix.
+fn open_session_file(path: &Path) -> Result<File, SessionHeaderError> {
+    let metadata = fs::symlink_metadata(path).map_err(|source| SessionHeaderError::Stat {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(SessionHeaderError::NotRegular {
+            path: path.to_path_buf(),
+        });
+    }
+
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    crate::config::owner_only::apply_session_options(&mut options);
+    let file = options
+        .open(path)
+        .map_err(|source| SessionHeaderError::Open {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let metadata = file.metadata().map_err(|source| SessionHeaderError::Stat {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if !metadata.is_file() {
+        return Err(SessionHeaderError::NotRegular {
+            path: path.to_path_buf(),
+        });
+    }
+    Ok(file)
 }
 
 /// Ensures `path` is a real directory, distinguishing a denied stat from a

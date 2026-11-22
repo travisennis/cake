@@ -31,6 +31,7 @@ use crate::config::ResolvedModelConfig;
 use crate::config::settings::LoadedSettings;
 use crate::config::trust::{
     HookFileSource, ProjectConfigMode, ProjectConfigSnapshot, ProjectConfigUse, ProjectTrustReport,
+    TrustState,
 };
 use crate::config::{
     AgentsFile, DataDir, DiagnosticLevel, HookSource, HooksLoader, ModelConfig, ModelDefinition,
@@ -459,12 +460,7 @@ impl CodingAssistant {
         };
         let mut effective = self.clone();
         effective.apply_restored_identity(config)?;
-        effective.apply_restored_paths(
-            config,
-            &restored.working_directory,
-            invocation_dir,
-            project_config_mode,
-        );
+        effective.apply_restored_paths(config, invocation_dir, project_config_mode);
         effective.apply_restored_choices(config);
         Ok(Some(effective))
     }
@@ -486,12 +482,9 @@ impl CodingAssistant {
     fn apply_restored_paths(
         &mut self,
         config: &SessionRunConfig,
-        session_dir: &Path,
         invocation_dir: &Path,
         project_config_mode: ProjectConfigMode,
     ) {
-        let session_dir =
-            std::fs::canonicalize(session_dir).unwrap_or_else(|_| session_dir.to_path_buf());
         if self.add_dir.is_empty() {
             self.add_dir = config
                 .add_dirs
@@ -500,14 +493,14 @@ impl CodingAssistant {
                 .collect();
         }
 
+        let mut origins = HashMap::new();
         let mut dropped = false;
         if self.toolbox.is_empty() {
             let (paths, untrusted) = restored_extension_paths(
                 &config.toolbox_dirs,
-                crate::config::toolbox::filter_project_toolbox_dirs,
-                &session_dir,
                 invocation_dir,
                 project_config_mode,
+                &mut origins,
             );
             self.toolbox = paths;
             dropped |= untrusted;
@@ -515,18 +508,16 @@ impl CodingAssistant {
         if self.mcp_config.is_empty() {
             let (paths, untrusted) = restored_extension_paths(
                 &config.mcp_config,
-                crate::config::mcp::filter_project_mcp_paths,
-                &session_dir,
                 invocation_dir,
                 project_config_mode,
+                &mut origins,
             );
             self.mcp_config = paths;
             dropped |= untrusted;
         }
         if dropped {
             eprintln!(
-                "warning: ignoring resumed toolbox or MCP paths under {}: project configuration there is not trusted; run `cake trust` there or pass the flags again",
-                session_dir.display()
+                "warning: ignoring resumed toolbox or MCP paths under a project .cake directory that is not trusted or does not have a matching trust record; run `cake trust` there when it reports authority, or resume from that project with --trust-project"
             );
         }
     }
@@ -1776,53 +1767,99 @@ fn resolve_system_prompt_path(path: &str, base: &Path) -> PathBuf {
     }
 }
 
-/// Whether a resumed session's project-relative extensions remain trusted.
+/// Keep stored extension paths whose project `.cake/` origins are trusted.
 ///
-/// A stored `--toolbox` or `--mcp-config` path under the session project's
-/// `.cake/` is authority-bearing. It must not start just because the resume ran
-/// from a different checkout. A one-run trust flag covers only the invocation
-/// directory; a different origin needs its own persistent trust record.
-fn resumed_project_extensions_trusted(
-    session_dir: &Path,
+/// Each path carries its own origin. A worktree session can name an extension
+/// in the checkout that created it, and a custom MCP or toolbox path may not be
+/// one of the filenames the trust scanner classifies as authority. Both still
+/// need the origin's matching manifest, or fresh one-run authorization for that
+/// exact origin. Paths outside any `.cake/` tree are explicit user selections
+/// and pass through.
+fn restored_extension_paths(
+    stored: &[PathBuf],
+    invocation_dir: &Path,
+    mode: ProjectConfigMode,
+    cache: &mut HashMap<PathBuf, bool>,
+) -> (Vec<PathBuf>, bool) {
+    let mut kept = Vec::new();
+    let mut dropped = false;
+    for path in stored {
+        let origins = extension_origins(path);
+        let trusted = origins.iter().all(|origin| {
+            *cache
+                .entry(origin.clone())
+                .or_insert_with(|| restored_extension_origin_trusted(origin, invocation_dir, mode))
+        });
+        if trusted {
+            kept.push(path.clone());
+        } else {
+            dropped = true;
+        }
+    }
+    (kept, dropped)
+}
+
+/// Whether one project `.cake/` origin may supply a restored extension.
+///
+/// A one-run trust flag authorizes only the invocation directory, matching the
+/// project-config filter. Every other origin needs a persistent record whose
+/// manifest matches the current tree, including a tree with no recognized
+/// authority files. `evaluate_manifest` deliberately skips the `NotRequired`
+/// shortcut that `evaluate` uses for an empty authority list.
+fn restored_extension_origin_trusted(
+    origin: &Path,
     invocation_dir: &Path,
     mode: ProjectConfigMode,
 ) -> bool {
     if !mode.loads_project_config() {
         return false;
     }
-    if mode.one_run() && same_canonical_path(session_dir, invocation_dir) {
+    if mode.one_run() && same_canonical_path(origin, invocation_dir) {
         return true;
     }
     ProjectConfigSnapshot::load(
-        session_dir,
+        origin,
         &crate::config::config_dir(),
         ProjectConfigMode::Inspect,
     )
     .ok()
-    .and_then(|snapshot| snapshot.evaluate().ok())
-    .is_some_and(|report| report.allows_authority())
+    .and_then(|snapshot| snapshot.evaluate_manifest().ok())
+    .is_some_and(|report| report.state == TrustState::Trusted)
+}
+
+/// Every project root whose `.cake/` tree contains `path`.
+///
+/// Both the lexical path and its canonical target are checked, so a symlink
+/// cannot hide an extension in a second, untrusted checkout.
+fn extension_origins(path: &Path) -> Vec<PathBuf> {
+    let mut origins = Vec::new();
+    collect_extension_origin(path, &mut origins);
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        collect_extension_origin(&canonical, &mut origins);
+    }
+    origins
+}
+
+fn collect_extension_origin(path: &Path, origins: &mut Vec<PathBuf>) {
+    let mut prefix = PathBuf::new();
+    for component in path.components() {
+        prefix.push(component.as_os_str());
+        if component.as_os_str() == std::ffi::OsStr::new(".cake") {
+            if let Some(origin) = prefix.parent()
+                && !origins
+                    .iter()
+                    .any(|existing| same_canonical_path(existing, origin))
+            {
+                origins.push(origin.to_path_buf());
+            }
+            return;
+        }
+    }
 }
 
 fn same_canonical_path(left: &Path, right: &Path) -> bool {
     std::fs::canonicalize(left).unwrap_or_else(|_| left.to_path_buf())
         == std::fs::canonicalize(right).unwrap_or_else(|_| right.to_path_buf())
-}
-
-fn restored_extension_paths(
-    stored: &[PathBuf],
-    filter: fn(Vec<PathBuf>, &[&Path]) -> Vec<PathBuf>,
-    session_dir: &Path,
-    invocation_dir: &Path,
-    mode: ProjectConfigMode,
-) -> (Vec<PathBuf>, bool) {
-    let filtered = filter(stored.to_vec(), &[session_dir]);
-    if filtered.len() == stored.len()
-        || resumed_project_extensions_trusted(session_dir, invocation_dir, mode)
-    {
-        (stored.to_vec(), false)
-    } else {
-        (filtered, true)
-    }
 }
 
 impl CmdRunner for CodingAssistant {
