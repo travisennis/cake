@@ -21,6 +21,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::cli::context_identity::{
+    self, ContextDrift, ContextIdentityCheck, ContextIdentityInputs,
+};
 use crate::cli::{
     CliOutputSink, CmdRunner, CommandRunOptions, Commands, RunMode, SessionPersistencePlan,
     TurnResult, execute_persistence_plan, prepare_user_skills_dir,
@@ -41,11 +44,15 @@ use crate::config::{
 };
 use crate::hooks::{HookContext, HookRunner, SessionEndReason, StopHookOutcome};
 use crate::program_status::{BlockedKind, State};
+use crate::prompts::resolve_system_prompt_source;
 
-use crate::session_telemetry::{SessionTelemetryRecord, SessionTelemetryWriter};
+use crate::session_telemetry::{
+    ContextRebindTelemetry, SessionTelemetryRecord, SessionTelemetryWriter,
+};
 
 use crate::types::{
-    CutOffError, LimitExceededError, SessionRecord, SessionRunConfig, StreamRecord, TaskOutcome,
+    ContextIdentity, CutOffError, LimitExceededError, SessionRecord, SessionRunConfig,
+    StreamRecord, TaskOutcome,
 };
 
 use clap::{ArgGroup, Parser, ValueEnum};
@@ -175,6 +182,15 @@ pub(crate) struct CodingAssistant {
     /// start a new session for a permanent move. Requires `--resume`.
     #[arg(long)]
     pub allow_session_cwd_change: bool,
+
+    /// Fail instead of warn when a resumed session's rebuilt context differs
+    ///
+    /// AGENTS.md, skill, MCP, and system-prompt content changes warn by
+    /// default. This flag makes them errors. Requires `--resume` and cannot be
+    /// combined with `--reuse-last-request`, which preserves the captured
+    /// context.
+    #[arg(long)]
+    pub strict_context_drift: bool,
 
     /// Do not save the session to disk
     #[arg(long)]
@@ -1314,6 +1330,7 @@ impl CodingAssistant {
         project_trust: &ProjectTrustReport,
         effective_provider_identity: Option<&crate::types::ProviderIdentity>,
         session_model_change_override: bool,
+        context_rebind: Option<crate::session_telemetry::ContextRebindTelemetry>,
     ) -> Agent {
         if !run_mode.persists_session() {
             return client;
@@ -1358,8 +1375,10 @@ impl CodingAssistant {
             build_dirty: crate::build_info::dirty(),
             project_trust: Some(project_trust),
             provider_identity: effective_provider_identity
-                .map(crate::session_telemetry::ProviderIdentityTelemetry::from),
+                .map(crate::session_telemetry::ProviderIdentityTelemetry::from)
+                .map(Box::new),
             session_model_change_override,
+            context_rebind: context_rebind.map(Box::new),
         };
 
         if let Err(error) = writer.append(&record) {
@@ -1372,6 +1391,24 @@ impl CodingAssistant {
         }
 
         client.with_session_telemetry(writer, invocation_id)
+    }
+
+    fn attach_hooks_for_run(
+        client: Agent,
+        hook_context: HookContext,
+        hook_output_limit: Option<usize>,
+        project_hook_sources: &[HookFileSource],
+        read_only: bool,
+    ) -> anyhow::Result<(Agent, Option<Arc<HookRunner>>)> {
+        if read_only {
+            return Ok((client, None));
+        }
+        Self::attach_hooks(
+            client,
+            hook_context,
+            hook_output_limit,
+            project_hook_sources,
+        )
     }
 
     fn attach_hooks(
@@ -1453,6 +1490,7 @@ impl CodingAssistant {
                 "--allow-session-model-change",
             ),
             (self.allow_session_cwd_change, "--allow-session-cwd-change"),
+            (self.strict_context_drift, "--strict-context-drift"),
             (self.no_session, "--no-session"),
             (self.worktree.is_some(), "--worktree"),
             (self.reasoning_effort.is_some(), "--reasoning-effort"),
@@ -2102,6 +2140,133 @@ impl CodingAssistant {
         Ok(metadata.len())
     }
 
+    fn build_context_identity(
+        prepared: &PreparedRun,
+        resources: &RunResources,
+        run_session: &crate::cli::RunSession,
+        cli_system_prompt: Option<&Path>,
+    ) -> ContextIdentity {
+        let config_dir = crate::config::config_dir().join("cake");
+        let system_prompt_source = resolve_system_prompt_source(
+            &prepared.current_dir,
+            &config_dir,
+            cli_system_prompt,
+            resources.loaded.system_prompt.as_deref().map(Path::new),
+            resources.project_config_mode.loads_project_config(),
+        );
+        let tool_catalog_digest = run_session.agent.tool_catalog_digest();
+        context_identity::build(ContextIdentityInputs {
+            working_directory: &prepared.current_dir,
+            config_dir: &config_dir,
+            include_project_mcp: resources.project_config_mode.loads_project_config(),
+            system_prompt_source,
+            system_prompt: run_session.session.system_prompt.as_deref(),
+            agents_files: &resources.agents_files,
+            tool_catalog_digest: &tool_catalog_digest,
+            skill_catalog: &resources.skill_catalog,
+            mcp_config_paths: &prepared.mcp_config_paths,
+            mcp_servers: &resources.mcp_servers,
+            sandbox: resources.tool_context.sandbox_policy().label(),
+            profile_name: run_session
+                .session
+                .run_config
+                .as_ref()
+                .and_then(|config| config.profile.as_deref()),
+            loaded: &resources.loaded,
+        })
+    }
+
+    fn check_context_drift(
+        &self,
+        run_mode: &RunMode,
+        stored: Option<&ContextIdentity>,
+        current: &ContextIdentity,
+        session_id: uuid::Uuid,
+    ) -> anyhow::Result<Option<ContextRebindTelemetry>> {
+        if !matches!(run_mode, RunMode::Resume { .. }) {
+            return Ok(None);
+        }
+        match context_identity::check(stored, current, self.allow_session_cwd_change) {
+            ContextIdentityCheck::Match => Ok(None),
+            ContextIdentityCheck::UnknownBaseline => self.unknown_context_baseline(session_id),
+            ContextIdentityCheck::Drift(differences) => {
+                self.context_drift_result(stored, current, session_id, &differences)
+            },
+        }
+    }
+
+    fn unknown_context_baseline(
+        &self,
+        session_id: uuid::Uuid,
+    ) -> anyhow::Result<Option<ContextRebindTelemetry>> {
+        if self.strict_context_drift {
+            anyhow::bail!(
+                "Session context mismatch: session {session_id} has no context identity snapshot; --strict-context-drift cannot verify this resume. Resume without --strict-context-drift or start a new session."
+            );
+        }
+        eprintln!(
+            "warning: session {session_id} has no context identity snapshot; skipping the context drift check for this run"
+        );
+        Ok(None)
+    }
+
+    fn context_drift_result(
+        &self,
+        stored: Option<&ContextIdentity>,
+        current: &ContextIdentity,
+        session_id: uuid::Uuid,
+        differences: &[ContextDrift],
+    ) -> anyhow::Result<Option<ContextRebindTelemetry>> {
+        let detail = differences
+            .iter()
+            .map(ContextDrift::describe)
+            .collect::<Vec<_>>()
+            .join("\n  ");
+        if differences.iter().any(ContextDrift::is_fail) {
+            let hint = if differences
+                .iter()
+                .any(|difference| matches!(difference.field, "working_directory" | "project_root"))
+            {
+                "Pass --allow-session-cwd-change to accept the current working directory for one run, or start a new session for a permanent context change."
+            } else {
+                "Start a new session for a permanent context change."
+            };
+            anyhow::bail!(
+                "Session context mismatch: context for session {session_id} changed since it was created:\n  {detail}\n{hint}"
+            );
+        }
+        let warnings = differences
+            .iter()
+            .filter(|difference| difference.is_warn())
+            .collect::<Vec<_>>();
+        if self.strict_context_drift && !warnings.is_empty() {
+            anyhow::bail!(
+                "Session context mismatch: context for session {session_id} changed since it was created and --strict-context-drift was given:\n  {detail}\nResume without --strict-context-drift to continue with warnings, or start a new session."
+            );
+        }
+        if !warnings.is_empty() {
+            eprintln!(
+                "warning: session {session_id} context changed since it was created; continuing:\n  {detail}"
+            );
+        }
+        let rebind = differences.iter().any(ContextDrift::is_rebind).then(|| {
+            let stored_path = stored.map_or_else(
+                || current.working_directory.as_path(),
+                |identity| identity.working_directory.as_path(),
+            );
+            ContextRebindTelemetry {
+                stored_working_directory_digest: crate::session_telemetry::digest_identifier(
+                    &stored_path.display().to_string(),
+                ),
+                current_working_directory_digest: crate::session_telemetry::digest_identifier(
+                    &current.working_directory.display().to_string(),
+                ),
+                reason: "allow-session-cwd-change".to_string(),
+            }
+        });
+        Ok(rebind)
+    }
+
     async fn execute_reuse_plan(&self, data_dir: &DataDir, plan: ReusePlan) -> anyhow::Result<()> {
         let task_id = uuid::Uuid::new_v4();
         let mut agent = Agent::new(plan.resolved, &[])
@@ -2209,6 +2374,20 @@ impl CodingAssistant {
         run_session.attach_output_schema(prepared.output_schema.as_ref());
         run_session.attach_tool_choice(this.tool_choice);
 
+        let current_context_identity = Self::build_context_identity(
+            &prepared,
+            &resources,
+            &run_session,
+            cli_system_prompt.as_deref(),
+        );
+        let context_rebind = this.check_context_drift(
+            &run_mode,
+            run_session.session.context_identity.as_ref(),
+            &current_context_identity,
+            run_session.session.id,
+        )?;
+        run_session.session.context_identity = Some(current_context_identity);
+
         let session_start_source =
             HookSource::SessionStart(run_mode.session_start_source().to_owned());
         let effective_provider_identity = run_session.effective_provider_identity;
@@ -2236,6 +2415,7 @@ impl CodingAssistant {
             &resources.trust,
             effective_provider_identity.as_ref(),
             session_model_change_override,
+            context_rebind,
         );
         let hook_context = HookContext {
             session_id: session.id,
@@ -2248,16 +2428,13 @@ impl CodingAssistant {
             model: client.model_name().to_string(),
         };
         let hook_output_limit = resources.loaded.limits.tool_limits.hook_output_limit;
-        let (client, hook_runner) = if run_mode.is_read_only() {
-            (client, None)
-        } else {
-            Self::attach_hooks(
-                client,
-                hook_context,
-                hook_output_limit,
-                &resources.project_hook_files,
-            )?
-        };
+        let (client, hook_runner) = Self::attach_hooks_for_run(
+            client,
+            hook_context,
+            hook_output_limit,
+            &resources.project_hook_files,
+            run_mode.is_read_only(),
+        )?;
         let output = this.output_sink();
         let mut client = output.attach_callbacks(client);
 

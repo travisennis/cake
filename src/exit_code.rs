@@ -329,10 +329,12 @@ const INPUT_ERROR_PATTERNS: &[&str] = &[
     "Working directory mismatch",
     "Session working directory mismatch",
     "Session model mismatch",
+    "Session context mismatch",
     "request capture",
     "Invalid request reuse",
     "Invalid session model change override",
     "Invalid session working directory change",
+    "Invalid context drift check",
     "Failed to cd into worktree",
     "Failed to get current directory",
 ];

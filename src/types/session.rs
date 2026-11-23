@@ -13,6 +13,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::types::compaction::{
     CompactionData, CompactionEndData, CompactionStartData, RetainedConversationRecord,
 };
+use crate::types::context_identity::ContextIdentity;
 use crate::types::conversation::{
     ConversationItem, ImagePart, ReasoningContent, ReasoningSummary, Role,
 };
@@ -686,6 +687,10 @@ pub enum SessionRecord {
         /// run choices were recorded.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         run_config: Option<SessionRunConfig>,
+        /// Additive to format version 4; absent on sessions written before
+        /// context identity was recorded. Boxed to keep the record enum small.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_identity: Option<Box<ContextIdentity>>,
         #[serde(default)]
         git: GitState,
     },
@@ -809,6 +814,10 @@ pub enum StreamRecord {
         /// run choices were recorded.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         run_config: Option<SessionRunConfig>,
+        /// Additive to format version 4; absent on sessions written before
+        /// context identity was recorded. Boxed to keep the record enum small.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_identity: Option<Box<ContextIdentity>>,
         #[serde(default)]
         git: GitState,
     },
@@ -911,6 +920,7 @@ impl From<StreamRecord> for SessionRecord {
                 build_dirty,
                 system_prompt,
                 run_config,
+                context_identity,
                 git,
             } => Self::SessionMeta {
                 format_version,
@@ -926,6 +936,7 @@ impl From<StreamRecord> for SessionRecord {
                 build_dirty,
                 system_prompt,
                 run_config,
+                context_identity,
                 git,
             },
             record => session_record_from_task_stream(record),
@@ -1022,6 +1033,7 @@ impl From<SessionRecord> for StreamRecord {
                 build_dirty,
                 system_prompt,
                 run_config,
+                context_identity,
                 git,
             } => Self::SessionMeta {
                 format_version,
@@ -1037,6 +1049,7 @@ impl From<SessionRecord> for StreamRecord {
                 build_dirty,
                 system_prompt,
                 run_config,
+                context_identity,
                 git,
             },
             record => session_record_to_task_stream(record),

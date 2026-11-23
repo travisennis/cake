@@ -158,6 +158,8 @@ impl crate::CodingAssistant {
         session.model = Some(resolved.model_config.model.clone());
         session.model_config = Some(model_config_name);
         session.provider_identity = restored.provider_identity;
+        session.context_identity = restored.context_identity;
+        session.system_prompt = initial_messages.first().map(|(_, content)| content.clone());
         Ok(RunSession {
             agent,
             session,

@@ -679,6 +679,7 @@ fn session_meta_record(session: &Session, tools: Vec<String>) -> SessionRecord {
         build_dirty: crate::build_info::dirty(),
         system_prompt: session.system_prompt.clone(),
         run_config: session.run_config.clone(),
+        context_identity: session.context_identity.clone().map(Box::new),
         git: session
             .git
             .clone()

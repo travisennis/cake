@@ -19,8 +19,8 @@ use fs4::{FileExt, TryLockError};
 
 use crate::types::ProviderIdentity;
 use crate::types::{
-    CompactionData, ContextProvenance, ContextSeed, GitState, SessionRecord, SessionRunConfig,
-    TurnUsageData, Usage,
+    CompactionData, ContextIdentity, ContextProvenance, ContextSeed, GitState, SessionRecord,
+    SessionRunConfig, TurnUsageData, Usage,
 };
 
 /// Shared writer that holds the locked append handle for a session JSONL file.
@@ -226,6 +226,8 @@ pub struct Session {
     pub system_prompt: Option<String>,
     /// Run choices stored with the session and reapplied on resume.
     pub run_config: Option<SessionRunConfig>,
+    /// Sanitized context identity captured when the session was created.
+    pub context_identity: Option<ContextIdentity>,
     /// Git repository state captured when the session was created.
     pub git: Option<GitState>,
     /// Full record history (`SessionMeta`, task boundaries, messages, tool calls, etc.)
@@ -251,6 +253,7 @@ impl Session {
             provider_identity: None,
             system_prompt: None,
             run_config: None,
+            context_identity: None,
             git: None,
             records: Vec::new(),
         }
@@ -407,6 +410,7 @@ impl Session {
             provider_identity: header.provider_identity,
             system_prompt: header.system_prompt,
             run_config: header.run_config,
+            context_identity: header.context_identity,
             git: header.git,
             records,
         })
@@ -598,6 +602,7 @@ struct SessionHeader {
     provider_identity: Option<ProviderIdentity>,
     system_prompt: Option<String>,
     run_config: Option<SessionRunConfig>,
+    context_identity: Option<ContextIdentity>,
     git: Option<GitState>,
     timestamp: chrono::DateTime<chrono::Utc>,
 }
@@ -639,6 +644,7 @@ fn read_session_header<R: std::io::BufRead>(
             provider_identity,
             system_prompt,
             run_config,
+            context_identity,
             git,
             ..
         } => {
@@ -659,6 +665,7 @@ fn read_session_header<R: std::io::BufRead>(
                 provider_identity: provider_identity.as_deref().cloned(),
                 system_prompt: system_prompt.clone(),
                 run_config: run_config.clone(),
+                context_identity: context_identity.as_deref().cloned(),
                 git: Some(git.clone()),
                 timestamp: *timestamp,
             }

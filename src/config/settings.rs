@@ -799,7 +799,7 @@ impl ImagesSettingsOverlay {
 ///
 /// Unlike [`LimitsSettingsOverlay`], this type has no absent-key or sentinel
 /// state. It is produced once after every settings layer has been merged.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[expect(
     clippy::struct_field_names,
     reason = "the field names mirror the [images] settings keys"
@@ -944,7 +944,7 @@ impl CompactionSettingsOverlay {
 /// profile contributes only that model selection. `reasoning_effort` overrides
 /// the selected model's declared effort, or the conversation effort when no
 /// model or profile is selected.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct CompactionSummarizerSettings {
     /// `[[models]]` entry name used for checkpoint summaries.
     pub model: Option<String>,
@@ -967,7 +967,7 @@ pub const DEFAULT_SUMMARY_TOKENS: u64 = 4_096;
 pub const DEFAULT_SUMMARY_TIMEOUT_SECS: u64 = 180;
 
 /// A configured compaction policy before window clamping.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct CompactionPolicy {
     /// Whether automatic pre-request compaction runs.
     pub enabled: bool,
@@ -1113,7 +1113,7 @@ pub struct ResolvedCompactionPolicy {
 ///
 /// This type contains no TOML sentinel values or absent-key state. It is
 /// produced once after all settings overlays have been merged.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct ResolvedLimits {
     /// Maximum number of agent-loop turns, or `None` when uncapped.
     pub max_turns: Option<u32>,
@@ -1127,7 +1127,7 @@ pub struct ResolvedLimits {
 ///
 /// Optional byte caps use `None` when the user configures `"unlimited"`.
 /// Bash session bounds are mandatory positive values.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct ToolLimits {
     /// Maximum bytes of Bash output returned inline (default 50,000).
     pub bash_output_max_bytes: Option<usize>,

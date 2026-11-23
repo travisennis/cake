@@ -9,6 +9,7 @@
 mod bash;
 mod checkpoint;
 mod cmd_runner;
+pub mod context_identity;
 mod debug;
 mod diagnostic;
 mod doctor;
@@ -22,6 +23,7 @@ pub mod request_reuse;
 mod run_mode;
 mod sandbox_grants;
 mod session_factory;
+pub use session_factory::RunSession;
 mod sessions;
 mod settings;
 mod trust;

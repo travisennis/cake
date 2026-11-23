@@ -6,6 +6,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use sha2::{Digest, Sha256};
+
 use crate::OutputFormat;
 use crate::clients::agent_observer::{AgentObserver, HealthCallback};
 use crate::clients::agent_runner::AgentRunner;
@@ -331,6 +333,37 @@ impl Agent {
     /// Returns the enabled tool names.
     pub fn tool_names(&self) -> Vec<String> {
         self.tools.names()
+    }
+
+    /// Return a stable digest of the non-MCP tool catalog.
+    ///
+    /// Built-in and toolbox definitions include their descriptions and JSON
+    /// schemas. MCP tools are excluded so their capability drift is reported
+    /// separately from the built-in tool surface.
+    #[must_use]
+    pub fn tool_catalog_digest(&self) -> String {
+        let mut hasher = Sha256::new();
+        let mcp_names: HashSet<&str> = self
+            .mcp_servers
+            .iter()
+            .flat_map(|server| {
+                server
+                    .tools
+                    .iter()
+                    .map(|tool| tool.registered_name.as_str())
+            })
+            .collect();
+        for tool in self.tools.definitions() {
+            if mcp_names.contains(tool.name.as_str()) {
+                continue;
+            }
+            let Ok(bytes) = serde_json::to_vec(tool) else {
+                continue;
+            };
+            hasher.update((bytes.len() as u64).to_le_bytes());
+            hasher.update(&bytes);
+        }
+        hex::encode(hasher.finalize())
     }
 
     /// Sets the directory context used for tool execution and sandboxing.

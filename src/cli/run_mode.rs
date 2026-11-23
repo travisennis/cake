@@ -55,8 +55,24 @@ impl RunMode {
                 "Invalid session working directory change: --allow-session-cwd-change requires --resume"
             );
         }
+        Self::validate_strict_flag(args, &mode)?;
         Self::validate_reuse_flag(args, &mode)?;
         Ok(mode)
+    }
+
+    fn validate_strict_flag(args: &crate::CodingAssistant, mode: &Self) -> anyhow::Result<()> {
+        if !args.strict_context_drift {
+            return Ok(());
+        }
+        if !matches!(mode, Self::Resume { .. }) {
+            anyhow::bail!("Invalid context drift check: --strict-context-drift requires --resume");
+        }
+        if args.reuse_last_request {
+            anyhow::bail!(
+                "Invalid context drift check: --strict-context-drift cannot be combined with --reuse-last-request; reuse preserves the captured context"
+            );
+        }
+        Ok(())
     }
 
     fn validate_reuse_flag(args: &crate::CodingAssistant, mode: &Self) -> anyhow::Result<()> {

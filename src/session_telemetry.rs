@@ -147,6 +147,17 @@ pub struct SessionTelemetryContext {
     pub invocation_id: String,
 }
 
+/// One explicit working-directory rebind for this invocation.
+///
+/// The sidecar records one-way digests rather than the working directories, so
+/// it remains path-free.
+#[derive(Debug, Clone, Serialize)]
+pub struct ContextRebindTelemetry {
+    pub stored_working_directory_digest: String,
+    pub current_working_directory_digest: String,
+    pub reason: String,
+}
+
 /// Bounded, structured metadata from a terminal `response.failed` stream event
 /// on the Responses API after an accepted HTTP 2xx.
 ///
@@ -810,11 +821,14 @@ pub enum SessionTelemetryRecord {
         project_trust: Option<ProjectTrustTelemetry>,
         /// Sanitized provider identity resolved for this invocation.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        provider_identity: Option<ProviderIdentityTelemetry>,
+        provider_identity: Option<Box<ProviderIdentityTelemetry>>,
         /// Set when a resume or fork accepted a changed provider identity for
         /// this invocation only.
         #[serde(default, skip_serializing_if = "is_false")]
         session_model_change_override: bool,
+        /// Set when an explicit flag accepted a different working directory.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_rebind: Option<Box<ContextRebindTelemetry>>,
     },
     ApiAttemptInFlight {
         session_id: String,
