@@ -200,7 +200,8 @@ pub fn validate_capture(
     Ok(())
 }
 
-/// Append the invocation prompt as the next user message and forbid tool calls.
+/// Append the invocation prompt as the next user message and preserve the
+/// captured tool choice.
 pub fn append_user_message(
     capture: &SessionRequestCapture,
     session_id: Uuid,
@@ -243,7 +244,6 @@ fn append_chat_message(
         "role": "user",
         "content": instruction,
     }));
-    forbid_tools(body);
     Ok(())
 }
 
@@ -267,18 +267,7 @@ fn append_responses_message(
             "text": instruction,
         }],
     }));
-    forbid_tools(body);
     Ok(())
-}
-
-fn forbid_tools(body: &mut serde_json::Value) {
-    let has_tools = body
-        .get("tools")
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|tools| !tools.is_empty());
-    if has_tools {
-        body["tool_choice"] = serde_json::json!("none");
-    }
 }
 
 fn read_capture_file(path: &Path, session_id: Uuid) -> Result<Vec<u8>, RequestReuseError> {

@@ -253,8 +253,7 @@ impl Agent {
     /// Send one prebuilt request body for exact request reuse.
     ///
     /// This path never executes tools. A returned tool call is an error, not a
-    /// dispatch, so a provider that ignores `tool_choice: none` cannot mutate
-    /// the workspace.
+    /// dispatch, whatever `tool_choice` the captured request carries.
     pub async fn send_reused(&mut self, request: Vec<u8>) -> anyhow::Result<String> {
         let turn = self
             .runner

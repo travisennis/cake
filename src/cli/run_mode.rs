@@ -66,9 +66,9 @@ impl RunMode {
         if !matches!(mode, Self::Resume { .. }) {
             anyhow::bail!("Invalid request reuse: --reuse-last-request requires --resume");
         }
-        if args.tool_choice != Some(crate::clients::backend::ToolChoice::None) {
+        if args.tool_choice.is_some() {
             anyhow::bail!(
-                "Invalid request reuse: --reuse-last-request requires --tool-choice none"
+                "Invalid request reuse: --reuse-last-request does not accept --tool-choice; the captured request's tool choice is preserved"
             );
         }
         Ok(())

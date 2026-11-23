@@ -145,10 +145,11 @@ pub(crate) struct CodingAssistant {
     /// Reuse the session's last main-agent request exactly
     ///
     /// Sends the captured request body with the prompt appended as a new user
-    /// message and `tool_choice` set to `none`. Requires `--resume` and
-    /// `--tool-choice none`, and implies `--read-only`. The request is sent
-    /// once; a missing, stale, or incompatible capture is an error, and the
-    /// caller owns any fallback.
+    /// message and preserves the captured tool choice. Requires `--resume`,
+    /// does not accept `--tool-choice`, and implies `--read-only`. The request
+    /// is sent once; a missing, stale, or incompatible capture is an error,
+    /// and the caller owns any fallback. A returned tool call is an error, not
+    /// an execution.
     #[arg(long)]
     pub reuse_last_request: bool,
 
