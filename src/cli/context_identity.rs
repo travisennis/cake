@@ -1,9 +1,10 @@
 //! Build and compare the sanitized context identity pinned to a session.
 //!
-//! The builder runs after the run's resources are resolved. The comparison
-//! classifies a changed working directory, system prompt source, tool catalog,
-//! sandbox, or profile definition as a hard mismatch, and content changes in
-//! `AGENTS.md`, skills, or the MCP capability set as warnings.
+//! A preflight identity covers context that is available before toolbox and
+//! MCP startup. The full identity runs after those resources are resolved. The
+//! comparison classifies a changed working directory, system prompt source,
+//! tool catalog, sandbox, or profile definition as a hard mismatch, and content
+//! changes in `AGENTS.md`, skills, or the MCP capability set as warnings.
 
 use std::path::{Path, PathBuf};
 
@@ -30,6 +31,23 @@ pub struct ContextIdentityInputs<'a> {
     pub skill_catalog: &'a SkillCatalog,
     pub mcp_config_paths: &'a [PathBuf],
     pub mcp_servers: &'a [McpServer],
+    pub sandbox: &'a str,
+    pub profile_name: Option<&'a str>,
+    pub loaded: &'a LoadedSettings,
+}
+
+/// Current context available before toolbox and MCP startup.
+pub struct ContextPreflightInputs<'a> {
+    pub working_directory: &'a Path,
+    pub config_dir: &'a Path,
+    pub include_project_mcp: bool,
+    pub system_prompt_source: ResolvedSystemPromptSource,
+    /// Built prompt text when the source is a file; `None` for the built-in
+    /// prompt, whose text depends on extension startup.
+    pub system_prompt: Option<&'a str>,
+    pub agents_files: &'a [AgentsFile],
+    pub skill_catalog: &'a SkillCatalog,
+    pub mcp_config_paths: &'a [PathBuf],
     pub sandbox: &'a str,
     pub profile_name: Option<&'a str>,
     pub loaded: &'a LoadedSettings,
@@ -90,27 +108,12 @@ pub enum ContextIdentityCheck {
 /// Build the sanitized identity for the current run.
 #[must_use]
 pub fn build(inputs: ContextIdentityInputs<'_>) -> ContextIdentity {
-    let project_root = std::fs::canonicalize(inputs.working_directory)
-        .unwrap_or_else(|_| inputs.working_directory.to_path_buf());
+    let project_root = project_root(inputs.working_directory);
     let system_prompt = ContextSystemPromptIdentity {
         source: inputs.system_prompt_source.source.label().to_string(),
         path: inputs.system_prompt_source.path,
         digest: sha256_hex(inputs.system_prompt.unwrap_or_default().as_bytes()),
     };
-    let agents_files = inputs
-        .agents_files
-        .iter()
-        .map(|file| ContextFileIdentity {
-            path: file.path.clone(),
-            digest: sha256_hex(file.content.as_bytes()),
-        })
-        .collect();
-    let skills = inputs
-        .skill_catalog
-        .skills
-        .iter()
-        .map(skill_identity)
-        .collect();
     let mcp = mcp_identity(
         inputs.working_directory,
         inputs.config_dir,
@@ -122,15 +125,46 @@ pub fn build(inputs: ContextIdentityInputs<'_>) -> ContextIdentity {
         working_directory: inputs.working_directory.to_path_buf(),
         project_root,
         system_prompt,
-        agents_files,
+        agents_files: file_identities(inputs.agents_files),
         tool_catalog_digest: inputs.tool_catalog_digest.to_string(),
-        skills,
+        skills: skill_identities(inputs.skill_catalog),
         mcp,
         sandbox: inputs.sandbox.to_string(),
-        profile: ContextProfileIdentity {
-            name: inputs.profile_name.map(str::to_string),
-            request_settings_digest: request_settings_digest(inputs.loaded),
+        profile: profile_identity(inputs.profile_name, inputs.loaded),
+    }
+}
+
+/// Build the context available before toolbox and MCP startup.
+///
+/// The tool catalog and MCP server capabilities are left empty because they
+/// require extension startup; [`check_preflight`] does not compare them.
+#[must_use]
+pub fn build_preflight(inputs: ContextPreflightInputs<'_>) -> ContextIdentity {
+    let system_prompt = ContextSystemPromptIdentity {
+        source: inputs.system_prompt_source.source.label().to_string(),
+        path: inputs.system_prompt_source.path,
+        digest: inputs
+            .system_prompt
+            .map_or_else(String::new, |text| sha256_hex(text.as_bytes())),
+    };
+    ContextIdentity {
+        working_directory: inputs.working_directory.to_path_buf(),
+        project_root: project_root(inputs.working_directory),
+        system_prompt,
+        agents_files: file_identities(inputs.agents_files),
+        tool_catalog_digest: String::new(),
+        skills: skill_identities(inputs.skill_catalog),
+        mcp: ContextMcpIdentity {
+            config_paths: mcp_config_paths(
+                inputs.working_directory,
+                inputs.config_dir,
+                inputs.include_project_mcp,
+                inputs.mcp_config_paths,
+            ),
+            servers: Vec::new(),
         },
+        sandbox: inputs.sandbox.to_string(),
+        profile: profile_identity(inputs.profile_name, inputs.loaded),
     }
 }
 
@@ -141,11 +175,80 @@ pub fn check(
     current: &ContextIdentity,
     allow_cwd_rebind: bool,
 ) -> ContextIdentityCheck {
+    compare_identity(stored, current, ComparisonScope::Full { allow_cwd_rebind })
+}
+
+/// Compare the context that is available before toolbox and MCP startup.
+///
+/// This omits the tool catalog and MCP server capabilities, which cannot be
+/// rebuilt without starting those extensions. A warning that is not strict is
+/// suppressed here and reported by the full check after startup.
+#[must_use]
+pub fn check_preflight(
+    stored: Option<&ContextIdentity>,
+    current: &ContextIdentity,
+    allow_cwd_rebind: bool,
+) -> ContextIdentityCheck {
+    compare_identity(
+        stored,
+        current,
+        ComparisonScope::Preflight {
+            allow_cwd_rebind,
+            include_system_prompt_digest: !current.system_prompt.digest.is_empty(),
+        },
+    )
+}
+
+#[derive(Clone, Copy)]
+enum ComparisonScope {
+    Full {
+        allow_cwd_rebind: bool,
+    },
+    Preflight {
+        allow_cwd_rebind: bool,
+        include_system_prompt_digest: bool,
+    },
+}
+
+impl ComparisonScope {
+    const fn allow_cwd_rebind(self) -> bool {
+        match self {
+            Self::Full { allow_cwd_rebind }
+            | Self::Preflight {
+                allow_cwd_rebind, ..
+            } => allow_cwd_rebind,
+        }
+    }
+
+    const fn includes_tool_catalog(self) -> bool {
+        matches!(self, Self::Full { .. })
+    }
+
+    const fn includes_mcp_servers(self) -> bool {
+        matches!(self, Self::Full { .. })
+    }
+
+    const fn includes_system_prompt_digest(self) -> bool {
+        match self {
+            Self::Full { .. } => true,
+            Self::Preflight {
+                include_system_prompt_digest,
+                ..
+            } => include_system_prompt_digest,
+        }
+    }
+}
+
+fn compare_identity(
+    stored: Option<&ContextIdentity>,
+    current: &ContextIdentity,
+    scope: ComparisonScope,
+) -> ContextIdentityCheck {
     let Some(stored) = stored else {
         return ContextIdentityCheck::UnknownBaseline;
     };
     let mut differences = Vec::new();
-    let path_severity = if allow_cwd_rebind {
+    let path_severity = if scope.allow_cwd_rebind() {
         ContextDriftSeverity::Rebind
     } else {
         ContextDriftSeverity::Fail
@@ -167,6 +270,7 @@ pub fn check(
         &mut differences,
         &stored.system_prompt,
         &current.system_prompt,
+        scope.includes_system_prompt_digest(),
     );
     compare_files(
         &mut differences,
@@ -174,15 +278,22 @@ pub fn check(
         &stored.agents_files,
         &current.agents_files,
     );
-    compare_text(
-        &mut differences,
-        "tool_catalog_digest",
-        &short_digest(&stored.tool_catalog_digest),
-        &short_digest(&current.tool_catalog_digest),
-        ContextDriftSeverity::Fail,
-    );
+    if scope.includes_tool_catalog() {
+        compare_text(
+            &mut differences,
+            "tool_catalog_digest",
+            &short_digest(&stored.tool_catalog_digest),
+            &short_digest(&current.tool_catalog_digest),
+            ContextDriftSeverity::Fail,
+        );
+    }
     compare_skills(&mut differences, &stored.skills, &current.skills);
-    compare_mcp(&mut differences, &stored.mcp, &current.mcp);
+    compare_mcp(
+        &mut differences,
+        &stored.mcp,
+        &current.mcp,
+        scope.includes_mcp_servers(),
+    );
     compare_text(
         &mut differences,
         "sandbox",
@@ -195,6 +306,31 @@ pub fn check(
         ContextIdentityCheck::Match
     } else {
         ContextIdentityCheck::Drift(differences)
+    }
+}
+
+fn project_root(working_directory: &Path) -> PathBuf {
+    std::fs::canonicalize(working_directory).unwrap_or_else(|_| working_directory.to_path_buf())
+}
+
+fn file_identities(files: &[AgentsFile]) -> Vec<ContextFileIdentity> {
+    files
+        .iter()
+        .map(|file| ContextFileIdentity {
+            path: file.path.clone(),
+            digest: sha256_hex(file.content.as_bytes()),
+        })
+        .collect()
+}
+
+fn skill_identities(skill_catalog: &SkillCatalog) -> Vec<ContextSkillIdentity> {
+    skill_catalog.skills.iter().map(skill_identity).collect()
+}
+
+fn profile_identity(profile_name: Option<&str>, loaded: &LoadedSettings) -> ContextProfileIdentity {
+    ContextProfileIdentity {
+        name: profile_name.map(str::to_string),
+        request_settings_digest: request_settings_digest(loaded),
     }
 }
 
@@ -218,14 +354,12 @@ fn mcp_identity(
     configured_paths: &[PathBuf],
     servers: &[McpServer],
 ) -> ContextMcpIdentity {
-    let mut config_paths = Vec::with_capacity(configured_paths.len() + 2);
-    config_paths.push(config_dir.join("mcp.json"));
-    if include_project_mcp {
-        config_paths.push(working_directory.join(".cake").join("mcp.json"));
-    }
-    config_paths.extend(configured_paths.iter().cloned());
-    config_paths.sort();
-    config_paths.dedup();
+    let config_paths = mcp_config_paths(
+        working_directory,
+        config_dir,
+        include_project_mcp,
+        configured_paths,
+    );
     let mut servers = servers
         .iter()
         .map(|server| {
@@ -247,6 +381,23 @@ fn mcp_identity(
         config_paths,
         servers,
     }
+}
+
+fn mcp_config_paths(
+    working_directory: &Path,
+    config_dir: &Path,
+    include_project_mcp: bool,
+    configured_paths: &[PathBuf],
+) -> Vec<PathBuf> {
+    let mut config_paths = Vec::with_capacity(configured_paths.len() + 2);
+    config_paths.push(config_dir.join("mcp.json"));
+    if include_project_mcp {
+        config_paths.push(working_directory.join(".cake").join("mcp.json"));
+    }
+    config_paths.extend(configured_paths.iter().cloned());
+    config_paths.sort();
+    config_paths.dedup();
+    config_paths
 }
 
 fn request_settings_digest(loaded: &LoadedSettings) -> String {
@@ -303,6 +454,7 @@ fn compare_system_prompt(
     differences: &mut Vec<ContextDrift>,
     stored: &ContextSystemPromptIdentity,
     current: &ContextSystemPromptIdentity,
+    include_digest: bool,
 ) {
     compare_text(
         differences,
@@ -318,13 +470,15 @@ fn compare_system_prompt(
         &show_path(current.path.as_deref()),
         ContextDriftSeverity::Fail,
     );
-    compare_text(
-        differences,
-        "system_prompt.digest",
-        &short_digest(&stored.digest),
-        &short_digest(&current.digest),
-        ContextDriftSeverity::Warn,
-    );
+    if include_digest {
+        compare_text(
+            differences,
+            "system_prompt.digest",
+            &short_digest(&stored.digest),
+            &short_digest(&current.digest),
+            ContextDriftSeverity::Warn,
+        );
+    }
 }
 
 fn compare_files(
@@ -364,6 +518,7 @@ fn compare_mcp(
     differences: &mut Vec<ContextDrift>,
     stored: &ContextMcpIdentity,
     current: &ContextMcpIdentity,
+    include_servers: bool,
 ) {
     compare_text(
         differences,
@@ -372,13 +527,15 @@ fn compare_mcp(
         &describe_paths(&current.config_paths),
         ContextDriftSeverity::Warn,
     );
-    compare_text(
-        differences,
-        "mcp.servers",
-        &describe_servers(&stored.servers),
-        &describe_servers(&current.servers),
-        ContextDriftSeverity::Warn,
-    );
+    if include_servers {
+        compare_text(
+            differences,
+            "mcp.servers",
+            &describe_servers(&stored.servers),
+            &describe_servers(&current.servers),
+            ContextDriftSeverity::Warn,
+        );
+    }
 }
 
 fn compare_profile(

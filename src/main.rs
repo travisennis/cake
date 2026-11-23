@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::cli::context_identity::{
-    self, ContextDrift, ContextIdentityCheck, ContextIdentityInputs,
+    self, ContextDrift, ContextIdentityCheck, ContextIdentityInputs, ContextPreflightInputs,
 };
 use crate::cli::{
     CliOutputSink, CmdRunner, CommandRunOptions, Commands, RunMode, SessionPersistencePlan,
@@ -309,6 +309,14 @@ pub(crate) struct CodingAssistant {
     pub command: Option<Commands>,
 }
 
+struct RunContext {
+    run_mode: RunMode,
+    effective: Option<CodingAssistant>,
+    invocation_dir: PathBuf,
+    session_working_dir: Option<PathBuf>,
+    stored_context_identity: Option<ContextIdentity>,
+}
+
 struct PreparedRun {
     current_dir: PathBuf,
     additional_dirs: Vec<PathBuf>,
@@ -338,6 +346,7 @@ struct RunResources {
     trust: ProjectTrustReport,
     project_config_mode: ProjectConfigMode,
     project_hook_files: Vec<HookFileSource>,
+    project_mcp_bytes: Option<Vec<u8>>,
     agents_files: Vec<AgentsFile>,
     skill_catalog: SkillCatalog,
     tool_context: Arc<ToolContext>,
@@ -972,34 +981,39 @@ impl CodingAssistant {
         Ok(invocation_dir.to_path_buf())
     }
 
-    /// Prepare the invocation directory and load every run resource.
+    /// Prepare the invocation directory, preflight resumed context, and load
+    /// every run resource.
     async fn prepare_run_context(
         &self,
         data_dir: &DataDir,
         project_config_mode: ProjectConfigMode,
         session_working_dir: Option<&Path>,
+        run_mode: &RunMode,
+        stored_context_identity: Option<&ContextIdentity>,
     ) -> anyhow::Result<(PreparedRun, RunResources)> {
         let prepared = self.prepare_run(project_config_mode, session_working_dir)?;
-        let resources = self
-            .load_run_resources(
-                &prepared.current_dir,
-                data_dir,
-                prepared.additional_dirs.clone(),
-                &prepared.toolbox_dirs,
-                &prepared.mcp_config_paths,
-                project_config_mode,
-            )
-            .await?;
+        let mut resources = self.load_run_context(
+            &prepared.current_dir,
+            data_dir,
+            prepared.additional_dirs.clone(),
+            project_config_mode,
+        )?;
+        self.check_context_drift_before_extensions(
+            run_mode,
+            stored_context_identity,
+            &prepared,
+            &resources,
+        )?;
+        self.load_run_extensions(&prepared, &mut resources).await?;
         Ok((prepared, resources))
     }
 
-    async fn load_run_resources(
+    /// Load resources that do not start toolbox or MCP processes.
+    fn load_run_context(
         &self,
         current_dir: &Path,
         data_dir: &DataDir,
         additional_dirs: Vec<PathBuf>,
-        toolbox_dirs: &[PathBuf],
-        mcp_config_paths: &[PathBuf],
         project_config_mode: ProjectConfigMode,
     ) -> anyhow::Result<RunResources> {
         let load = self.load_settings(current_dir, project_config_mode)?;
@@ -1069,40 +1083,44 @@ impl CodingAssistant {
 
         Self::log_skill_diagnostics(&skill_catalog);
 
-        let toolbox_tools = if sandbox_policy == SandboxPolicy::ReadOnly {
-            Vec::new()
-        } else {
-            crate::config::toolbox::load_toolbox_tools(toolbox_dirs).await
-        };
-
-        let mcp_servers = if sandbox_policy == SandboxPolicy::ReadOnly {
-            if !mcp_config_paths.is_empty() {
-                eprintln!("note: MCP servers are not started under the read-only sandbox policy");
-            }
-            Vec::new()
-        } else {
-            Self::start_mcp_servers(
-                current_dir,
-                mcp_config_paths,
-                &trust,
-                project_config_mode,
-                project_mcp_bytes.as_deref(),
-            )
-            .await?
-        };
-
         Ok(RunResources {
             loaded,
             trust,
             project_config_mode,
             project_hook_files,
+            project_mcp_bytes,
             agents_files,
             skill_catalog,
             tool_context: Arc::new(tool_context),
-            toolbox_tools,
-            mcp_servers,
+            toolbox_tools: Vec::new(),
+            mcp_servers: Vec::new(),
             tools_enabled,
         })
+    }
+
+    /// Start toolbox and MCP resources after the resumed context preflight.
+    async fn load_run_extensions(
+        &self,
+        prepared: &PreparedRun,
+        resources: &mut RunResources,
+    ) -> anyhow::Result<()> {
+        if resources.tool_context.sandbox_policy() == SandboxPolicy::ReadOnly {
+            if !prepared.mcp_config_paths.is_empty() {
+                eprintln!("note: MCP servers are not started under the read-only sandbox policy");
+            }
+            return Ok(());
+        }
+        resources.toolbox_tools =
+            crate::config::toolbox::load_toolbox_tools(&prepared.toolbox_dirs).await;
+        resources.mcp_servers = Self::start_mcp_servers(
+            &prepared.current_dir,
+            &prepared.mcp_config_paths,
+            &resources.trust,
+            resources.project_config_mode,
+            resources.project_mcp_bytes.as_deref(),
+        )
+        .await?;
+        Ok(())
     }
 
     /// Discover configured MCP servers, connect to each, and print warnings for
@@ -2001,17 +2019,26 @@ impl CodingAssistant {
         &self,
         data_dir: &DataDir,
         project_config_mode: ProjectConfigMode,
-    ) -> anyhow::Result<(RunMode, Option<Self>, PathBuf, Option<PathBuf>)> {
+    ) -> anyhow::Result<RunContext> {
         let invocation_dir = std::env::current_dir()?;
         let run_mode = RunMode::from_cli(self)?;
         let restored = Self::restored_resume_config(&run_mode, data_dir)?;
         let session_working_dir = restored.as_ref().map(|config| config.working_dir.clone());
+        let stored_context_identity = restored
+            .as_ref()
+            .and_then(|config| config.context_identity.clone());
         let effective = self.with_restored_resume_config(
             restored.as_ref(),
             &invocation_dir,
             project_config_mode,
         )?;
-        Ok((run_mode, effective, invocation_dir, session_working_dir))
+        Ok(RunContext {
+            run_mode,
+            effective,
+            invocation_dir,
+            session_working_dir,
+            stored_context_identity,
+        })
     }
 
     /// Run one request from a session's captured main-agent body.
@@ -2140,6 +2167,43 @@ impl CodingAssistant {
         Ok(metadata.len())
     }
 
+    fn build_context_preflight(
+        &self,
+        prepared: &PreparedRun,
+        resources: &RunResources,
+    ) -> ContextIdentity {
+        let config_dir = crate::config::config_dir().join("cake");
+        let cli_system_prompt = self
+            .system_prompt
+            .as_deref()
+            .map(|path| resolve_system_prompt_path(path, &prepared.current_dir));
+        let system_prompt_source = resolve_system_prompt_source(
+            &prepared.current_dir,
+            &config_dir,
+            cli_system_prompt.as_deref(),
+            resources.loaded.system_prompt.as_deref().map(Path::new),
+            resources.project_config_mode.loads_project_config(),
+        );
+        let system_prompt = system_prompt_source
+            .path
+            .as_deref()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .map(|text| text.trim().to_string());
+        context_identity::build_preflight(ContextPreflightInputs {
+            working_directory: &prepared.current_dir,
+            config_dir: &config_dir,
+            include_project_mcp: resources.project_config_mode.loads_project_config(),
+            system_prompt_source,
+            system_prompt: system_prompt.as_deref(),
+            agents_files: &resources.agents_files,
+            skill_catalog: &resources.skill_catalog,
+            mcp_config_paths: &prepared.mcp_config_paths,
+            sandbox: resources.tool_context.sandbox_policy().label(),
+            profile_name: self.profile.as_deref(),
+            loaded: &resources.loaded,
+        })
+    }
+
     fn build_context_identity(
         prepared: &PreparedRun,
         resources: &RunResources,
@@ -2176,6 +2240,32 @@ impl CodingAssistant {
         })
     }
 
+    fn check_context_drift_before_extensions(
+        &self,
+        run_mode: &RunMode,
+        stored: Option<&ContextIdentity>,
+        prepared: &PreparedRun,
+        resources: &RunResources,
+    ) -> anyhow::Result<()> {
+        let RunMode::Resume { session_id, .. } = run_mode else {
+            return Ok(());
+        };
+        let current = self.build_context_preflight(prepared, resources);
+        match context_identity::check_preflight(stored, &current, self.allow_session_cwd_change) {
+            ContextIdentityCheck::Match => Ok(()),
+            ContextIdentityCheck::UnknownBaseline => {
+                if self.strict_context_drift {
+                    self.unknown_context_baseline(*session_id)?;
+                }
+                Ok(())
+            },
+            ContextIdentityCheck::Drift(differences) => {
+                self.context_drift_result(stored, &current, *session_id, &differences, false)?;
+                Ok(())
+            },
+        }
+    }
+
     fn check_context_drift(
         &self,
         run_mode: &RunMode,
@@ -2190,7 +2280,7 @@ impl CodingAssistant {
             ContextIdentityCheck::Match => Ok(None),
             ContextIdentityCheck::UnknownBaseline => self.unknown_context_baseline(session_id),
             ContextIdentityCheck::Drift(differences) => {
-                self.context_drift_result(stored, current, session_id, &differences)
+                self.context_drift_result(stored, current, session_id, &differences, true)
             },
         }
     }
@@ -2216,6 +2306,7 @@ impl CodingAssistant {
         current: &ContextIdentity,
         session_id: uuid::Uuid,
         differences: &[ContextDrift],
+        emit_warnings: bool,
     ) -> anyhow::Result<Option<ContextRebindTelemetry>> {
         let detail = differences
             .iter()
@@ -2244,7 +2335,7 @@ impl CodingAssistant {
                 "Session context mismatch: context for session {session_id} changed since it was created and --strict-context-drift was given:\n  {detail}\nResume without --strict-context-drift to continue with warnings, or start a new session."
             );
         }
-        if !warnings.is_empty() {
+        if !warnings.is_empty() && emit_warnings {
             eprintln!(
                 "warning: session {session_id} context changed since it was created; continuing:\n  {detail}"
             );
@@ -2302,17 +2393,16 @@ impl CodingAssistant {
         data_dir: &DataDir,
         options: &CommandRunOptions<'_>,
     ) -> anyhow::Result<()> {
-        let (run_mode, effective, invocation_dir, session_working_dir) =
-            self.run_context(data_dir, options.project_config_mode)?;
-        let this = effective.as_ref().unwrap_or(self);
+        let context = self.run_context(data_dir, options.project_config_mode)?;
+        let this = context.effective.as_ref().unwrap_or(self);
         if this.reuse_last_request {
             return this
                 .run_reused_request(
                     data_dir,
                     options,
-                    &run_mode,
-                    &invocation_dir,
-                    session_working_dir.as_deref(),
+                    &context.run_mode,
+                    &context.invocation_dir,
+                    context.session_working_dir.as_deref(),
                 )
                 .await;
         }
@@ -2320,7 +2410,9 @@ impl CodingAssistant {
             .prepare_run_context(
                 data_dir,
                 options.project_config_mode,
-                session_working_dir.as_deref(),
+                context.session_working_dir.as_deref(),
+                &context.run_mode,
+                context.stored_context_identity.as_ref(),
             )
             .await?;
         let task_id = uuid::Uuid::new_v4();
@@ -2330,7 +2422,7 @@ impl CodingAssistant {
             .as_deref()
             .map(|path| resolve_system_prompt_path(path, &prepared.current_dir));
         let mut run_session = this.build_client_and_session(
-            &run_mode,
+            &context.run_mode,
             data_dir,
             prepared.current_dir.clone(),
             &config_dir,
@@ -2350,7 +2442,7 @@ impl CodingAssistant {
             resources.project_config_mode.loads_project_config(),
         )?;
         run_session.session.run_config =
-            Some(this.session_run_config(&prepared, &resources, &invocation_dir));
+            Some(this.session_run_config(&prepared, &resources, &context.invocation_dir));
 
         run_session.agent = run_session
             .agent
@@ -2381,7 +2473,7 @@ impl CodingAssistant {
             cli_system_prompt.as_deref(),
         );
         let context_rebind = this.check_context_drift(
-            &run_mode,
+            &context.run_mode,
             run_session.session.context_identity.as_ref(),
             &current_context_identity,
             run_session.session.id,
@@ -2389,7 +2481,7 @@ impl CodingAssistant {
         run_session.session.context_identity = Some(current_context_identity);
 
         let session_start_source =
-            HookSource::SessionStart(run_mode.session_start_source().to_owned());
+            HookSource::SessionStart(context.run_mode.session_start_source().to_owned());
         let effective_provider_identity = run_session.effective_provider_identity;
         let capture_provider_identity = effective_provider_identity.clone();
         let capture_backend = run_session
@@ -2410,7 +2502,7 @@ impl CodingAssistant {
             client,
             data_dir,
             &session,
-            &run_mode,
+            &context.run_mode,
             this.output_format,
             &resources.trust,
             effective_provider_identity.as_ref(),
@@ -2420,7 +2512,8 @@ impl CodingAssistant {
         let hook_context = HookContext {
             session_id: session.id,
             task_id,
-            transcript_path: run_mode
+            transcript_path: context
+                .run_mode
                 .persists_session()
                 .then(|| data_dir.session_path(session.id)),
             hook_event_sink: Self::hook_event_sink(session_writer, this.output_format),
@@ -2433,12 +2526,12 @@ impl CodingAssistant {
             hook_context,
             hook_output_limit,
             &resources.project_hook_files,
-            run_mode.is_read_only(),
+            context.run_mode.is_read_only(),
         )?;
         let output = this.output_sink();
         let mut client = output.attach_callbacks(client);
 
-        Self::clear_request_capture(data_dir, &run_mode, session.id);
+        Self::clear_request_capture(data_dir, &context.run_mode, session.id);
 
         program_status::report(State::Working, None);
 
@@ -2484,7 +2577,7 @@ impl CodingAssistant {
             data_dir,
             &session,
             task_id,
-            &run_mode,
+            &context.run_mode,
             turn.result.is_ok(),
             &mut client,
             capture_provider_identity,
@@ -2498,7 +2591,7 @@ impl CodingAssistant {
             &prepared.current_dir,
             data_dir,
             &session,
-            run_mode.persists_session(),
+            context.run_mode.persists_session(),
         )?;
 
         Ok(())

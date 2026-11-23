@@ -13,7 +13,7 @@ use serde::Deserialize;
 use crate::config::blob_store::{self as blob_store, BlobDiagnostics};
 use crate::config::session_jsonl::SessionFramer;
 use crate::config::{BlobStore, Session, git, session::CURRENT_FORMAT_VERSION};
-use crate::types::{GitState, SessionRecord, SessionRunConfig};
+use crate::types::{ContextIdentity, GitState, SessionRecord, SessionRunConfig};
 
 /// A data-directory preparation failure.
 ///
@@ -430,6 +430,7 @@ impl DataDir {
         Ok(Some(SessionResumeConfig {
             working_dir: header.working_directory,
             run_config: header.run_config,
+            context_identity: header.context_identity,
         }))
     }
 
@@ -500,6 +501,8 @@ pub struct SessionResumeConfig {
     pub working_dir: PathBuf,
     /// Stored run choices, absent on sessions that predate them.
     pub run_config: Option<SessionRunConfig>,
+    /// Stored context identity, absent on sessions that predate the snapshot.
+    pub context_identity: Option<ContextIdentity>,
 }
 
 /// Minimal header struct for quickly inspecting a session file without
@@ -515,6 +518,8 @@ struct SessionFileHeader {
     timestamp: DateTime<Utc>,
     #[serde(default)]
     run_config: Option<SessionRunConfig>,
+    #[serde(default)]
+    context_identity: Option<ContextIdentity>,
 }
 
 /// Reads only the first record line of a session file to extract its header.
