@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 
-use crate::clients::agent::{Agent, TurnResult, record_turn_usage};
-use crate::clients::agent_state::RecordProvenance;
+use crate::clients::agent::{Agent, RequestCapture, TurnResult, record_turn_usage};
+use crate::clients::agent_state::{RecordProvenance, accumulate_usage};
 use crate::clients::backend::FinalOutputConstraint;
 use crate::clients::compaction::{FixedRequest, MeasuredInput, fixed_request_tokens};
 use crate::clients::image_budget::prune_request_with_plan;
@@ -26,7 +26,7 @@ use crate::session_telemetry::{
 };
 use crate::types::compaction::SkillRead;
 use crate::types::{
-    ConversationItem, CutOffError, ImagePart, LimitExceededError, ReplaySafety, SessionRecord,
+    ConversationItem, CutOffError, ImagePart, LimitExceededError, ReplaySafety, Role, SessionRecord,
 };
 
 /// Maximum number of corrective turns after a final message fails
@@ -243,8 +243,117 @@ impl Agent {
                 verdict: &verdict,
             };
             if let Some(document) = self.process_turn(function_calls, turn_context).await? {
+                self.refresh_request_capture();
                 return Ok(document);
             }
+            self.refresh_request_capture();
+        }
+    }
+
+    /// Send one prebuilt request body for exact request reuse.
+    ///
+    /// This path never executes tools. A returned tool call is an error, not a
+    /// dispatch, so a provider that ignores `tool_choice: none` cannot mutate
+    /// the workspace.
+    pub async fn send_reused(&mut self, request: Vec<u8>) -> anyhow::Result<String> {
+        let turn = self
+            .runner
+            .fixed_turn(&self.config, self.session_id, request)
+            .await?;
+        self.turn_count = self.turn_count.saturating_add(1);
+        if let Some(reported) = turn.usage {
+            accumulate_usage(&mut self.total_usage, Some(&reported.usage));
+            self.last_usage = Some(reported.usage);
+        }
+        if turn
+            .items
+            .iter()
+            .any(|item| matches!(item, ConversationItem::FunctionCall { .. }))
+        {
+            anyhow::bail!(
+                "Reused request returned a tool call; refusing to execute it. The request capture may be incompatible."
+            );
+        }
+        let message = turn
+            .items
+            .iter()
+            .rev()
+            .find_map(|item| match item {
+                ConversationItem::Message {
+                    role: Role::Assistant,
+                    content,
+                    ..
+                } => Some(content.clone()),
+                _ => None,
+            })
+            .ok_or_else(|| anyhow::anyhow!("Reused request returned no final assistant message"))?;
+        let Some(schema) = self.output_schema.clone() else {
+            return Ok(message);
+        };
+        let trimmed = message.trim();
+        let instance: serde_json::Value =
+            serde_json::from_str(trimmed).map_err(|error| OutputSchemaError::Unsatisfied {
+                attempts: 1,
+                detail: format!("the response is not a single valid JSON document: {error}"),
+            })?;
+        if let Some(detail) = schema.validation_detail(&instance) {
+            return Err(OutputSchemaError::Unsatisfied {
+                attempts: 1,
+                detail,
+            }
+            .into());
+        }
+        Ok(trimmed.to_string())
+    }
+
+    /// Record the body the next normal main-agent request would send.
+    ///
+    /// The capture is rebuilt after every successful turn, so the final one
+    /// includes the accepted assistant items and follows any tool results.
+    fn refresh_request_capture(&mut self) {
+        let history = self.conversation.request_context();
+        let history = if self.config.model_config.supports_images {
+            match prune_request_with_plan(history, &self.image_policy) {
+                Ok(plan) => plan.history,
+                Err(error) => {
+                    tracing::debug!(
+                        target: "cake",
+                        error = %error,
+                        "Skipping request capture after an image planning failure"
+                    );
+                    return;
+                },
+            }
+        } else {
+            history
+        };
+        let tools = tool_definitions_for_turn(&self.tools, TurnMode::Normal);
+        let overrides = RequestOverrides {
+            max_output_tokens: self.config.model_config.max_output_tokens,
+            reasoning_max_tokens: self.config.model_config.reasoning_max_tokens,
+            context_overflow_retry_used: false,
+        };
+        match self.runner.backend().build_request_json(
+            &self.config,
+            &history,
+            tools,
+            self.tool_choice,
+            &overrides,
+            None,
+        ) {
+            Ok(body) => {
+                self.request_capture = Some(RequestCapture {
+                    body,
+                    turn: self.turn_count,
+                });
+            },
+            Err(error) => {
+                tracing::debug!(
+                    target: "cake",
+                    error = %error,
+                    "Skipping request capture after a request build failure"
+                );
+            },
         }
     }
 

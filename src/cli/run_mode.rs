@@ -50,7 +50,28 @@ impl RunMode {
                 "Invalid session model change override: --allow-session-model-change requires --resume or --fork"
             );
         }
+        if args.allow_session_cwd_change && !matches!(mode, Self::Resume { .. }) {
+            anyhow::bail!(
+                "Invalid session working directory change: --allow-session-cwd-change requires --resume"
+            );
+        }
+        Self::validate_reuse_flag(args, &mode)?;
         Ok(mode)
+    }
+
+    fn validate_reuse_flag(args: &crate::CodingAssistant, mode: &Self) -> anyhow::Result<()> {
+        if !args.reuse_last_request {
+            return Ok(());
+        }
+        if !matches!(mode, Self::Resume { .. }) {
+            anyhow::bail!("Invalid request reuse: --reuse-last-request requires --resume");
+        }
+        if args.tool_choice != Some(crate::clients::backend::ToolChoice::None) {
+            anyhow::bail!(
+                "Invalid request reuse: --reuse-last-request requires --tool-choice none"
+            );
+        }
+        Ok(())
     }
 
     fn from_session_flags(args: &crate::CodingAssistant) -> anyhow::Result<Self> {
@@ -65,7 +86,7 @@ impl RunMode {
             })?;
             return Ok(Self::Resume {
                 session_id: id,
-                read_only: args.read_only,
+                read_only: args.read_only || args.reuse_last_request,
             });
         }
         if let Some(fork_id) = args.fork.as_deref() {

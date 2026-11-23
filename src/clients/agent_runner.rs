@@ -246,6 +246,64 @@ impl AgentRunner {
         }
     }
 
+    pub(super) const fn backend(&self) -> Backend {
+        self.backend
+    }
+
+    /// Send one prebuilt request body and parse its response.
+    ///
+    /// This path is for request reuse, where the body must stay byte-for-byte
+    /// as captured. It deliberately has no retry loop: a failed suggestion call
+    /// falls back to the normal resume path at the caller.
+    pub(super) async fn fixed_turn(
+        &self,
+        config: &ResolvedModelConfig,
+        session_id: uuid::Uuid,
+        request: Vec<u8>,
+    ) -> anyhow::Result<TurnResult> {
+        let response = match tokio::time::timeout(
+            self.stall_window,
+            self.backend
+                .send_request_json(&self.client, config, session_id, request),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_elapsed) => {
+                return Err(ResponseStall::new(
+                    config.model_config.model.clone(),
+                    StallPhase::Connect,
+                    self.stall_window,
+                    0,
+                )
+                .into());
+            },
+        };
+        let status = response.status();
+        if status.is_success() {
+            return self
+                .backend
+                .parse_response(response, &config.model_config.model, self.stall_window)
+                .await;
+        }
+        let headers = response.headers().clone();
+        let FailureBody {
+            body,
+            failure: body_read_failure,
+        } = self
+            .read_failure_body(response, &config.model_config.model)
+            .await;
+        let failure = with_body_read_detail(
+            HttpFailure {
+                status: status.as_u16(),
+                headers,
+                body,
+            },
+            body_read_failure.as_ref(),
+        );
+        Err(api_error_from_failure(config, &failure, body_read_failure).into())
+    }
+
     /// Send one request while bounding the wait for response headers.
     ///
     /// The body reader applies the same deadline per chunk, so this covers the

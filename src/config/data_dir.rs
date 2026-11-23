@@ -428,6 +428,7 @@ impl DataDir {
             .into());
         }
         Ok(Some(SessionResumeConfig {
+            working_dir: header.working_directory,
             run_config: header.run_config,
         }))
     }
@@ -492,9 +493,11 @@ fn session_id_from_path(path: &Path) -> anyhow::Result<uuid::Uuid> {
         .with_context(|| format!("Session file name is not a UUID: {}", path.display()))
 }
 
-/// The run choices read from a session header before a resume.
+/// The identity and run choices read from a session header before a resume.
 #[derive(Debug, Clone)]
 pub struct SessionResumeConfig {
+    /// Directory the session was created in and remains bound to.
+    pub working_dir: PathBuf,
     /// Stored run choices, absent on sessions that predate them.
     pub run_config: Option<SessionRunConfig>,
 }

@@ -168,9 +168,55 @@ impl Backend {
         }
     }
 
+    pub(super) fn build_request_json<'a>(
+        self,
+        config: &ResolvedModelConfig,
+        history: &'a [ConversationItem],
+        tools: &'a [Tool],
+        tool_choice: Option<ToolChoice>,
+        overrides: &RequestOverrides,
+        constraint: Option<FinalOutputConstraint<'a>>,
+    ) -> anyhow::Result<Vec<u8>> {
+        match self {
+            Self::Responses => responses::build_request_json(
+                config,
+                history,
+                tools,
+                tool_choice,
+                overrides,
+                constraint,
+            ),
+            Self::ChatCompletions => chat_completions::build_request_json(
+                config,
+                history,
+                tools,
+                tool_choice,
+                overrides,
+                constraint,
+            ),
+        }
+    }
+
+    pub(super) async fn send_request_json(
+        self,
+        client: &reqwest::Client,
+        config: &ResolvedModelConfig,
+        session_id: uuid::Uuid,
+        request: Vec<u8>,
+    ) -> anyhow::Result<reqwest::Response> {
+        match self {
+            Self::Responses => {
+                responses::send_request_json(client, config, session_id, request).await
+            },
+            Self::ChatCompletions => {
+                chat_completions::send_request_json(client, config, session_id, request).await
+            },
+        }
+    }
+
     #[expect(
         clippy::too_many_arguments,
-        reason = "a provider turn threads identity, history, tools, and overrides"
+        reason = "a provider request threads identity, history, tools, choice, overrides, and constraint"
     )]
     pub(super) async fn send_request<'a>(
         self,

@@ -142,6 +142,16 @@ pub(crate) struct CodingAssistant {
     #[arg(long)]
     pub read_only: bool,
 
+    /// Reuse the session's last main-agent request exactly
+    ///
+    /// Sends the captured request body with the prompt appended as a new user
+    /// message and `tool_choice` set to `none`. Requires `--resume` and
+    /// `--tool-choice none`, and implies `--read-only`. The request is sent
+    /// once; a missing, stale, or incompatible capture is an error, and the
+    /// caller owns any fallback.
+    #[arg(long)]
+    pub reuse_last_request: bool,
+
     /// Fork a session: copy its history into a new session with a fresh ID.
     /// Use without a value to fork the latest session, or provide a UUID.
     #[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "UUID")]
@@ -154,6 +164,16 @@ pub(crate) struct CodingAssistant {
     /// telemetry. Start a new session for a permanent model change.
     #[arg(long)]
     pub allow_session_model_change: bool,
+
+    /// Use the current directory when it differs from the resumed session's
+    /// working directory
+    ///
+    /// A resumed session normally rebuilds project context and runs tools from
+    /// the directory recorded at creation. This flag accepts the current
+    /// directory for one run. The stored working directory is not rewritten;
+    /// start a new session for a permanent move. Requires `--resume`.
+    #[arg(long)]
+    pub allow_session_cwd_change: bool,
 
     /// Do not save the session to disk
     #[arg(long)]
@@ -279,6 +299,15 @@ struct PreparedRun {
     mcp_config_paths: Vec<PathBuf>,
     _worktree: WorktreeGuard,
     content: String,
+    output_schema: Option<Arc<crate::config::OutputSchema>>,
+}
+
+struct ReusePlan {
+    session_id: uuid::Uuid,
+    settings_dir: PathBuf,
+    request: Vec<u8>,
+    resolved: ResolvedModelConfig,
+    model_config_name: String,
     output_schema: Option<Arc<crate::config::OutputSchema>>,
 }
 
@@ -784,14 +813,21 @@ impl CodingAssistant {
             .collect()
     }
 
-    fn prepare_run(&self, project_config_mode: ProjectConfigMode) -> anyhow::Result<PreparedRun> {
+    fn prepare_run(
+        &self,
+        project_config_mode: ProjectConfigMode,
+        session_working_dir: Option<&Path>,
+    ) -> anyhow::Result<PreparedRun> {
         let original_dir = std::env::current_dir()?;
         let additional_dirs = self.resolve_additional_dirs(&original_dir);
         let inputs = self.validate_run_inputs(&original_dir)?;
 
+        self.check_resume_worktree_rebind(session_working_dir)?;
+
         let worktree = self.setup_worktree(&original_dir)?;
-        let current_dir = std::env::current_dir()
+        let invocation_dir = std::env::current_dir()
             .map_err(|e| anyhow::anyhow!("Failed to get current directory: {e}"))?;
+        let current_dir = self.bind_session_working_dir(session_working_dir, &invocation_dir)?;
         let mut toolbox_dirs = crate::config::toolbox::toolbox_directories(
             std::env::var(crate::config::toolbox::TOOLBOX_ENV_VAR)
                 .ok()
@@ -872,13 +908,61 @@ impl CodingAssistant {
         )?)
     }
 
+    /// Reject a worktree rebind before creating the worktree.
+    fn check_resume_worktree_rebind(
+        &self,
+        session_working_dir: Option<&Path>,
+    ) -> anyhow::Result<()> {
+        if session_working_dir.is_some()
+            && self.worktree.is_some()
+            && !self.allow_session_cwd_change
+        {
+            anyhow::bail!(
+                "Session working directory mismatch: --worktree changes the working directory. Pass --allow-session-cwd-change to resume in a worktree."
+            );
+        }
+        Ok(())
+    }
+
+    /// Resolve the directory a resumed session reads project context from and
+    /// runs tools in.
+    ///
+    /// A resume is bound to the session's recorded working directory unless
+    /// the caller explicitly accepts a different directory for this run.
+    fn bind_session_working_dir(
+        &self,
+        session_working_dir: Option<&Path>,
+        invocation_dir: &Path,
+    ) -> anyhow::Result<PathBuf> {
+        let Some(session_dir) = session_working_dir else {
+            return Ok(invocation_dir.to_path_buf());
+        };
+        if same_canonical_path(session_dir, invocation_dir) {
+            return Ok(session_dir.to_path_buf());
+        }
+        if !self.allow_session_cwd_change {
+            anyhow::bail!(
+                "Session working directory mismatch: the session was created in '{}' but this run started in '{}'. Resume from the session's working directory or pass --allow-session-cwd-change to use the current directory for one run.",
+                session_dir.display(),
+                invocation_dir.display()
+            );
+        }
+        eprintln!(
+            "warning: using '{}' instead of the session's working directory '{}' for this run",
+            invocation_dir.display(),
+            session_dir.display()
+        );
+        Ok(invocation_dir.to_path_buf())
+    }
+
     /// Prepare the invocation directory and load every run resource.
     async fn prepare_run_context(
         &self,
         data_dir: &DataDir,
         project_config_mode: ProjectConfigMode,
+        session_working_dir: Option<&Path>,
     ) -> anyhow::Result<(PreparedRun, RunResources)> {
-        let prepared = self.prepare_run(project_config_mode)?;
+        let prepared = self.prepare_run(project_config_mode, session_working_dir)?;
         let resources = self
             .load_run_resources(
                 &prepared.current_dir,
@@ -1361,11 +1445,13 @@ impl CodingAssistant {
             (self.output_schema.is_some(), "--output-schema"),
             (self.resume.is_some(), "--resume"),
             (self.read_only, "--read-only"),
+            (self.reuse_last_request, "--reuse-last-request"),
             (self.fork.is_some(), "--fork"),
             (
                 self.allow_session_model_change,
                 "--allow-session-model-change",
             ),
+            (self.allow_session_cwd_change, "--allow-session-cwd-change"),
             (self.no_session, "--no-session"),
             (self.worktree.is_some(), "--worktree"),
             (self.reasoning_effort.is_some(), "--reasoning-effort"),
@@ -1876,16 +1962,169 @@ impl CodingAssistant {
         &self,
         data_dir: &DataDir,
         project_config_mode: ProjectConfigMode,
-    ) -> anyhow::Result<(RunMode, Option<Self>, PathBuf)> {
+    ) -> anyhow::Result<(RunMode, Option<Self>, PathBuf, Option<PathBuf>)> {
         let invocation_dir = std::env::current_dir()?;
         let run_mode = RunMode::from_cli(self)?;
         let restored = Self::restored_resume_config(&run_mode, data_dir)?;
+        let session_working_dir = restored.as_ref().map(|config| config.working_dir.clone());
         let effective = self.with_restored_resume_config(
             restored.as_ref(),
             &invocation_dir,
             project_config_mode,
         )?;
-        Ok((run_mode, effective, invocation_dir))
+        Ok((run_mode, effective, invocation_dir, session_working_dir))
+    }
+
+    /// Run one request from a session's captured main-agent body.
+    ///
+    /// This path deliberately skips project context, skills, MCP discovery,
+    /// tools, hooks, records, telemetry, and the cwd guard. It validates the
+    /// capture, sends it once, and leaves persistence to the caller.
+    async fn run_reused_request(
+        &self,
+        data_dir: &DataDir,
+        options: &CommandRunOptions<'_>,
+        run_mode: &RunMode,
+        invocation_dir: &Path,
+        session_working_dir: Option<&Path>,
+    ) -> anyhow::Result<()> {
+        let plan = self.prepare_reuse_plan(
+            data_dir,
+            options,
+            run_mode,
+            invocation_dir,
+            session_working_dir,
+        )?;
+        self.execute_reuse_plan(data_dir, plan).await
+    }
+
+    fn validate_reuse_options(&self) -> anyhow::Result<()> {
+        if self.worktree.is_some() {
+            anyhow::bail!("Invalid request reuse: cannot be combined with --worktree");
+        }
+        if self.output_format == OutputFormat::StreamJson {
+            anyhow::bail!("Invalid request reuse: not supported with --output-format stream-json");
+        }
+        if self.max_tokens.is_some()
+            || self.reasoning_effort.is_some()
+            || self.reasoning_budget.is_some()
+        {
+            anyhow::bail!(
+                "Invalid request reuse: cannot be combined with request-shaping overrides"
+            );
+        }
+        Ok(())
+    }
+
+    fn prepare_reuse_plan(
+        &self,
+        data_dir: &DataDir,
+        options: &CommandRunOptions<'_>,
+        run_mode: &RunMode,
+        invocation_dir: &Path,
+        session_working_dir: Option<&Path>,
+    ) -> anyhow::Result<ReusePlan> {
+        self.validate_reuse_options()?;
+        let session_id = Self::reuse_session_id(run_mode)?;
+        let inputs = self.validate_run_inputs(invocation_dir)?;
+        let capture = crate::cli::request_reuse::load_capture(data_dir, session_id)?;
+        let settings_dir = session_working_dir.unwrap_or(invocation_dir).to_path_buf();
+        let load = self.load_settings(&settings_dir, options.project_config_mode)?;
+        let loaded = load.settings;
+        loaded.print_warnings();
+        let (config, model_config_name, current_identity) =
+            self.resolve_reuse_identity(&loaded, &capture)?;
+        Self::validate_reuse_capture(
+            data_dir,
+            session_id,
+            &capture,
+            &current_identity,
+            self.profile.as_deref(),
+        )?;
+        let resolved = ResolvedModelConfig::resolve(config)?;
+        let request =
+            crate::cli::request_reuse::append_user_message(&capture, session_id, &inputs.content)?;
+        Ok(ReusePlan {
+            session_id,
+            settings_dir,
+            request,
+            resolved,
+            model_config_name,
+            output_schema: inputs.output_schema,
+        })
+    }
+
+    fn resolve_reuse_identity(
+        &self,
+        loaded: &LoadedSettings,
+        capture: &crate::cli::request_reuse::SessionRequestCapture,
+    ) -> anyhow::Result<(ModelConfig, String, crate::types::ProviderIdentity)> {
+        let (config, model_config_name) = self.resolve_model_selection(
+            &loaded.models,
+            loaded.default_model.as_deref(),
+            Some(&capture.provider_identity.model),
+            Some(&capture.provider_identity.model_config),
+        )?;
+        let identity = crate::config::provider_identity::build(&config, &model_config_name)?;
+        Ok((config, model_config_name, identity))
+    }
+
+    fn validate_reuse_capture(
+        data_dir: &DataDir,
+        session_id: uuid::Uuid,
+        capture: &crate::cli::request_reuse::SessionRequestCapture,
+        current_identity: &crate::types::ProviderIdentity,
+        current_profile: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let session_file_len = Self::reuse_session_file_len(data_dir, session_id)?;
+        crate::cli::request_reuse::validate_capture(
+            capture,
+            session_id,
+            session_file_len,
+            current_identity,
+            current_profile,
+        )?;
+        Ok(())
+    }
+
+    fn reuse_session_id(run_mode: &RunMode) -> anyhow::Result<uuid::Uuid> {
+        let RunMode::Resume { session_id, .. } = run_mode else {
+            anyhow::bail!("Invalid request reuse: --reuse-last-request requires --resume");
+        };
+        Ok(*session_id)
+    }
+
+    fn reuse_session_file_len(data_dir: &DataDir, session_id: uuid::Uuid) -> anyhow::Result<u64> {
+        let metadata = std::fs::metadata(data_dir.session_path(session_id)).map_err(|_error| {
+            crate::cli::request_reuse::RequestReuseError::Unavailable { session_id }
+        })?;
+        Ok(metadata.len())
+    }
+
+    async fn execute_reuse_plan(&self, data_dir: &DataDir, plan: ReusePlan) -> anyhow::Result<()> {
+        let task_id = uuid::Uuid::new_v4();
+        let mut agent = Agent::new(plan.resolved, &[])
+            .with_session_id(plan.session_id)
+            .with_task_id(task_id)
+            .with_model_config_name(plan.model_config_name);
+        if let Some(schema) = plan.output_schema {
+            agent.set_output_schema(schema);
+        }
+        let output = self.output_sink();
+        let mut client = output.attach_callbacks(agent);
+        program_status::report(State::Working, None);
+        let start = Instant::now();
+        let result = client.send_reused(plan.request).await;
+        let duration_ms = start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+        let turn = TurnResult {
+            result,
+            duration_ms,
+            intermediate: Vec::new(),
+        };
+        Self::report_turn_outcome(&turn.result);
+        let session = Session::new(plan.session_id, plan.settings_dir.clone());
+        output.render_turn(turn, &client, &plan.settings_dir, data_dir, &session, false)?;
+        Ok(())
     }
 
     #[expect(
@@ -1897,11 +2136,26 @@ impl CodingAssistant {
         data_dir: &DataDir,
         options: &CommandRunOptions<'_>,
     ) -> anyhow::Result<()> {
-        let (run_mode, effective, invocation_dir) =
+        let (run_mode, effective, invocation_dir, session_working_dir) =
             self.run_context(data_dir, options.project_config_mode)?;
         let this = effective.as_ref().unwrap_or(self);
+        if this.reuse_last_request {
+            return this
+                .run_reused_request(
+                    data_dir,
+                    options,
+                    &run_mode,
+                    &invocation_dir,
+                    session_working_dir.as_deref(),
+                )
+                .await;
+        }
         let (prepared, resources) = this
-            .prepare_run_context(data_dir, options.project_config_mode)
+            .prepare_run_context(
+                data_dir,
+                options.project_config_mode,
+                session_working_dir.as_deref(),
+            )
             .await?;
         let task_id = uuid::Uuid::new_v4();
         let config_dir = crate::config::config_dir().join("cake");
@@ -1957,6 +2211,13 @@ impl CodingAssistant {
         let session_start_source =
             HookSource::SessionStart(run_mode.session_start_source().to_owned());
         let effective_provider_identity = run_session.effective_provider_identity;
+        let capture_provider_identity = effective_provider_identity.clone();
+        let capture_backend = run_session
+            .resolved
+            .model_config
+            .api_type
+            .as_str()
+            .to_string();
         let session_model_change_override = run_session.session_model_change_override;
         let session = run_session.session;
         let (client, session_writer) = Self::attach_persistence(
@@ -1999,6 +2260,8 @@ impl CodingAssistant {
         let output = this.output_sink();
         let mut client = output.attach_callbacks(client);
 
+        Self::clear_request_capture(data_dir, &run_mode, session.id);
+
         program_status::report(State::Working, None);
 
         let mut interrupts = InterruptListeners::install();
@@ -2039,6 +2302,17 @@ impl CodingAssistant {
             turn.duration_ms,
             turn.result.as_ref().err().map(sink_safe_error_text),
         );
+        Self::write_request_capture(
+            data_dir,
+            &session,
+            task_id,
+            &run_mode,
+            turn.result.is_ok(),
+            &mut client,
+            capture_provider_identity,
+            capture_backend,
+            this.profile.clone(),
+        );
         Self::report_turn_outcome(&turn.result);
         output.render_turn(
             turn,
@@ -2050,6 +2324,68 @@ impl CodingAssistant {
         )?;
 
         Ok(())
+    }
+
+    fn clear_request_capture(data_dir: &DataDir, run_mode: &RunMode, session_id: uuid::Uuid) {
+        if run_mode.persists_session()
+            && let Err(error) = crate::cli::request_reuse::delete_capture(data_dir, session_id)
+        {
+            tracing::warn!(
+                target: "cake",
+                error = %error,
+                "Failed to clear the previous request capture"
+            );
+        }
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "capture writing threads session, task, run mode, agent, identity, and backend"
+    )]
+    fn write_request_capture(
+        data_dir: &DataDir,
+        session: &Session,
+        task_id: uuid::Uuid,
+        run_mode: &RunMode,
+        succeeded: bool,
+        client: &mut Agent,
+        provider_identity: Option<crate::types::ProviderIdentity>,
+        backend: String,
+        profile: Option<String>,
+    ) {
+        if !run_mode.persists_session() || !succeeded {
+            return;
+        }
+        let Some(capture) = client.take_request_capture() else {
+            return;
+        };
+        let Some(identity) = provider_identity else {
+            return;
+        };
+        let Ok(body) = String::from_utf8(capture.body) else {
+            return;
+        };
+        let Ok(metadata) = std::fs::metadata(data_dir.session_path(session.id)) else {
+            return;
+        };
+        let record = crate::cli::request_reuse::SessionRequestCapture::new(
+            session.id,
+            task_id,
+            capture.turn,
+            profile,
+            identity,
+            backend,
+            body,
+            metadata.len(),
+        );
+        if let Err(error) = crate::cli::request_reuse::write_capture(data_dir, session.id, &record)
+        {
+            tracing::warn!(
+                target: "cake",
+                error = %error,
+                "Failed to write the request capture"
+            );
+        }
     }
 }
 

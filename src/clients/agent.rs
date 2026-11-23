@@ -36,6 +36,13 @@ use crate::types::{
     Usage, UsagePresence,
 };
 
+/// The request body that follows the most recent successful main-agent turn.
+#[derive(Debug, Clone)]
+pub struct RequestCapture {
+    pub body: Vec<u8>,
+    pub turn: u32,
+}
+
 /// Result of a single API turn (one request/response cycle).
 #[derive(Debug)]
 pub(super) struct TurnResult {
@@ -261,6 +268,8 @@ pub struct Agent {
     output_schema: Option<Arc<OutputSchema>>,
     /// The provider-level tool choice for every request, when constrained.
     tool_choice: Option<ToolChoice>,
+    /// The next-request body after the most recent successful main-agent turn.
+    request_capture: Option<RequestCapture>,
     /// Whether correction turns may attach the provider's native
     /// structured-output constraint. Cleared for the rest of the run when the
     /// provider rejects the constrained request (HTTP 400); never reset.
@@ -314,6 +323,7 @@ impl Agent {
             telemetry: None,
             output_schema: None,
             tool_choice: None,
+            request_capture: None,
             native_constraint_enabled: true,
         }
     }
@@ -934,6 +944,12 @@ impl Agent {
     /// Returns the number of API calls made.
     pub const fn turn_count(&self) -> u32 {
         self.turn_count
+    }
+
+    /// Take the most recent next-request capture, if a main-agent turn produced
+    /// one.
+    pub const fn take_request_capture(&mut self) -> Option<RequestCapture> {
+        self.request_capture.take()
     }
 
     /// Sets the session ID for a restored session.

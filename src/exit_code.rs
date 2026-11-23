@@ -327,8 +327,12 @@ const INPUT_ERROR_PATTERNS: &[&str] = &[
     "No previous session found",
     "Failed to open session file",
     "Working directory mismatch",
+    "Session working directory mismatch",
     "Session model mismatch",
+    "request capture",
+    "Invalid request reuse",
     "Invalid session model change override",
+    "Invalid session working directory change",
     "Failed to cd into worktree",
     "Failed to get current directory",
 ];

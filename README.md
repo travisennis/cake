@@ -72,7 +72,7 @@ cake --resume <UUID> "Finish it or try another approach"
 cake --fork <UUID> "Explore this without changing the original session"
 ```
 
-Use `--no-session` for an ephemeral run. Resume with `--read-only` to load a session for one invocation without appending records, writing telemetry, taking the writer lock, or running hooks; pair it with `--tool-choice none` for a transcript-only subcall that keeps the tool schemas but forbids tool calls. Session and output compatibility contracts are documented in [Integrations](docs/integrations.md).
+Use `--no-session` for an ephemeral run. A resume rebuilds project context and runs tools from the session's recorded working directory; if you start it elsewhere, Cake exits `3` unless `--allow-session-cwd-change` accepts the current directory for that run. Resume with `--read-only` to load a session for one invocation without appending records, writing telemetry, taking the writer lock, or running hooks; pair it with `--tool-choice none` for a transcript-only subcall that keeps the tool schemas but forbids tool calls. After a successful task, Cake also caches the next request body; `--resume <UUID> --reuse-last-request --tool-choice none` sends it with your prompt appended, which preserves the provider cache prefix instead of rebuilding project context. Session and output compatibility contracts are documented in [Integrations](docs/integrations.md).
 
 ### Worktrees
 
