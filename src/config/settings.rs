@@ -1581,6 +1581,12 @@ pub enum SettingsError {
     #[error("Invalid model configuration '{name}': {reason}")]
     InvalidModelApiKeyEnv { name: String, reason: String },
 
+    #[error(
+        "Model '{name}' targets the ChatGPT Codex backend, which cake no longer supports. \
+         Remove the [[models]] entry or point base_url at an OpenAI-compatible endpoint."
+    )]
+    RetiredModelBackend { name: String },
+
     #[error("Duplicate model name '{name}' in settings")]
     DuplicateModelName { name: String },
 
@@ -2356,6 +2362,12 @@ impl SettingsLoader {
                 return Err(SettingsError::InvalidModelBaseUrl {
                     name: def.name.clone(),
                     reason,
+                });
+            }
+
+            if crate::config::model::is_retired_codex_backend(&def.base_url) {
+                return Err(SettingsError::RetiredModelBackend {
+                    name: def.name.clone(),
                 });
             }
 

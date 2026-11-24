@@ -86,10 +86,9 @@ pub struct SessionTelemetrySettings {
 
 /// Sanitized provider identity for one invocation.
 ///
-/// The session snapshot stores the environment variable name or Codex account
-/// digest; telemetry intentionally drops both and keeps only the credential
-/// kind, so a sidecar can attribute provider drift without carrying a local
-/// variable name or subscription fingerprint.
+/// The session snapshot stores the environment variable name; telemetry
+/// intentionally drops it and keeps only the credential kind, so a sidecar can
+/// attribute provider drift without carrying a local variable name.
 #[derive(Debug, Clone, Serialize)]
 pub struct ProviderIdentityTelemetry {
     pub model: String,

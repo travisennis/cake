@@ -98,7 +98,7 @@ struct ModelReport {
 
 #[derive(Debug, Serialize)]
 struct CredentialReport {
-    /// `environment` or `codex_auth_file`.
+    /// Credential source label; always `environment`.
     source: &'static str,
     /// Environment variable name for an environment-backed model.
     name: Option<String>,
@@ -135,20 +135,11 @@ impl ModelReport {
 }
 
 fn credential_report(definition: &ModelDefinition) -> CredentialReport {
-    if crate::auth::is_chatgpt_codex_backend(&definition.base_url) {
-        let present = crate::auth::codex_auth_path().is_ok_and(|path| path.is_file());
-        CredentialReport {
-            source: "codex_auth_file",
-            name: None,
-            present,
-        }
-    } else {
-        let present = std::env::var(&definition.api_key_env).is_ok_and(|value| !value.is_empty());
-        CredentialReport {
-            source: "environment",
-            name: Some(definition.api_key_env.clone()),
-            present,
-        }
+    let present = std::env::var(&definition.api_key_env).is_ok_and(|value| !value.is_empty());
+    CredentialReport {
+        source: "environment",
+        name: Some(definition.api_key_env.clone()),
+        present,
     }
 }
 

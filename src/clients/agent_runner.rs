@@ -1123,53 +1123,10 @@ fn api_error_from_failure(
 
     crate::exit_code::ApiError {
         status: failure.status,
-        body: api_error_body(config, failure, body_read_failure.as_ref()),
+        body: format_api_error_body(&config.model_config.model, &failure.body),
         input_overflow,
         body_read_failure,
     }
-}
-
-/// Builds the user-visible body: the provider's own text, plus the Codex credential
-/// remedy when the failure is a rejected `ChatGPT` credential on that backend.
-fn api_error_body(
-    config: &ResolvedModelConfig,
-    failure: &HttpFailure,
-    body_read_failure: Option<&BodyReadFailure>,
-) -> String {
-    let mut body = format_api_error_body(&config.model_config.model, &failure.body);
-    if let Some(remedy) =
-        codex_auth_remedy(&config.model_config.base_url, failure, body_read_failure)
-    {
-        body.push_str("\n\n");
-        body.push_str(remedy);
-    }
-    body
-}
-
-/// Remedy sentence for a rejected `ChatGPT` credential on the first-party Codex backend.
-///
-/// The access token in the Codex credential store expires periodically and cake
-/// never refreshes it, so the provider's `token_expired` body alone leaves the
-/// user without an action. Every other failure keeps its current text. A
-/// status alone is not enough: the body must have arrived completely before it
-/// can confirm that the credential was rejected.
-fn codex_auth_remedy(
-    base_url: &str,
-    failure: &HttpFailure,
-    body_read_failure: Option<&BodyReadFailure>,
-) -> Option<&'static str> {
-    if failure.status != 401
-        || body_read_failure.is_some()
-        || !crate::auth::is_chatgpt_codex_backend(base_url)
-    {
-        return None;
-    }
-
-    Some(if failure.body.contains("token_expired") {
-        "The ChatGPT access token in ~/.codex/auth.json has expired. Run the Codex CLI to refresh it (for example `codex login`), then retry."
-    } else {
-        "The Codex backend rejected the stored ChatGPT credential in ~/.codex/auth.json. Run the Codex CLI to re-authenticate (for example `codex login`), then retry."
-    })
 }
 
 fn format_api_error_body(model: &str, error_text: &str) -> String {

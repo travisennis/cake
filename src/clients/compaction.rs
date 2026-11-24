@@ -257,10 +257,6 @@ impl SummaryFailure {
 /// credentials, model, and reasoning effort with no tools, no task hooks, and
 /// no output schema.
 pub trait SummaryCaller {
-    /// Whether the backend preserves an explicit generation cap after its
-    /// final request transformation. The Codex adapter removes it.
-    fn supports_generation_cap(&self) -> bool;
-
     /// The configured output maximum, if any.
     fn configured_output_max(&self) -> Option<u32>;
 
@@ -2120,12 +2116,12 @@ const fn add_summary_usage(total: &mut SummaryUsage, usage: Usage) {
 ///
 /// # Errors
 ///
-/// Returns a classified [`SummaryFailure`] when the backend does not preserve
-/// a generation cap, a summary request fails, a response is unusable, the
-/// summary exceeds its target, the batch count exceeds four, the deadline is
-/// exceeded, or the final checkpoint cannot fit its ceiling. A timed-out
-/// request is retried once within the same total budget, and a response
-/// rejected for tool-call markup gets one corrective retry.
+/// Returns a classified [`SummaryFailure`] when a summary request fails, a
+/// response is unusable, the summary exceeds its target, the batch count
+/// exceeds four, the deadline is exceeded, or the final checkpoint cannot fit
+/// its ceiling. A timed-out request is retried once within the same total
+/// budget, and a response rejected for tool-call markup gets one corrective
+/// retry.
 pub async fn summarize<C: SummaryCaller>(
     prepared: PreparedCompaction,
     caller: &mut C,
@@ -2135,12 +2131,6 @@ pub async fn summarize<C: SummaryCaller>(
         return Err(SummaryFailure::new(
             SummaryFailureClass::Unsupported,
             "the summary deadline must be positive",
-        ));
-    }
-    if !caller.supports_generation_cap() {
-        return Err(SummaryFailure::new(
-            SummaryFailureClass::Unsupported,
-            "the configured backend does not support a bounded summary generation cap",
         ));
     }
     let generation_cap = caller
@@ -2369,20 +2359,13 @@ async fn summarize_batch<C: SummaryCaller>(
 
 /// Validate that the resolved backend can serve a bounded summary request.
 ///
-/// The check makes no network call. It rejects a backend that drops the
-/// generation cap and a configured reasoning allowance that cannot fit the
-/// summary cap without changing effort.
+/// The check makes no network call. It rejects a configured reasoning
+/// allowance that cannot fit the summary cap without changing effort.
 ///
 /// # Errors
 ///
-/// Returns an error when the backend or reasoning allowance cannot support a
-/// bounded summary.
+/// Returns an error when the reasoning allowance cannot fit the summary cap.
 pub fn validate_summary_backend(config: &ResolvedModelConfig) -> anyhow::Result<()> {
-    let backend = Backend::from_api_type(config.model_config.api_type);
-    anyhow::ensure!(
-        backend_supports_generation_cap(backend, config),
-        "the configured backend does not support a bounded summary generation cap"
-    );
     let cap = summary_generation_cap(config);
     if let Some(reasoning) = config.model_config.reasoning_max_tokens {
         anyhow::ensure!(
@@ -2440,11 +2423,6 @@ impl<'a> AgentSummaryCaller<'a> {
 }
 
 impl SummaryCaller for AgentSummaryCaller<'_> {
-    fn supports_generation_cap(&self) -> bool {
-        let backend = Backend::from_api_type(self.config.model_config.api_type);
-        backend_supports_generation_cap(backend, &self.config)
-    }
-
     fn configured_output_max(&self) -> Option<u32> {
         self.config.model_config.max_output_tokens
     }
@@ -2518,16 +2496,4 @@ pub fn summary_generation_cap(config: &ResolvedModelConfig) -> u32 {
         .max_output_tokens
         .unwrap_or(MAX_SUMMARY_OUTPUT_TOKENS)
         .min(MAX_SUMMARY_OUTPUT_TOKENS)
-}
-
-/// Whether the backend preserves the summary generation cap.
-///
-/// The Codex Responses adapter removes `max_output_tokens` in its final request
-/// transformation, so a bounded summary cannot be sent there. Chat Completions
-/// and ordinary Responses preserves the cap.
-pub(super) fn backend_supports_generation_cap(
-    backend: Backend,
-    config: &ResolvedModelConfig,
-) -> bool {
-    backend.supports_generation_cap(config)
 }

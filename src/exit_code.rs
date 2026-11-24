@@ -231,6 +231,7 @@ const fn classify_settings_error(error: &SettingsError) -> u8 {
         SettingsError::InvalidModelName { .. }
         | SettingsError::InvalidModelBaseUrl { .. }
         | SettingsError::InvalidModelApiKeyEnv { .. }
+        | SettingsError::RetiredModelBackend { .. }
         | SettingsError::DuplicateModelName { .. }
         | SettingsError::DuplicateReasoningEffort { .. }
         | SettingsError::GeneratedModelNameConflict { .. }

@@ -1,6 +1,5 @@
 //! cake - AI coding assistant CLI
 
-mod auth;
 mod build_info;
 mod cli;
 mod clients;
@@ -406,7 +405,7 @@ impl CodingAssistant {
         }
     }
 
-    /// Build the final content from prompt and stdin according to codex-style rules.
+    /// Build the final content from the prompt and piped stdin.
     fn build_content(
         prompt: Option<&str>,
         stdin_content: Option<String>,

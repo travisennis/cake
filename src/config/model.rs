@@ -186,9 +186,7 @@ impl fmt::Debug for ResolvedModelConfig {
 }
 
 impl ResolvedModelConfig {
-    /// Resolves a `ModelConfig` by reading the API key from the environment,
-    /// or the file-backed Codex subscription credential for the first-party
-    /// Codex backend.
+    /// Resolves a `ModelConfig` by reading the API key from the environment.
     ///
     /// Returns a `ResolvedModelConfig` with the provider credential value.
     ///
@@ -204,20 +202,11 @@ impl ResolvedModelConfig {
     ///
     /// Returns an error if the configured credential is unavailable or empty.
     pub fn resolve(config: ModelConfig) -> anyhow::Result<Self> {
-        let api_key = resolve_api_key(&config)?;
+        let api_key = resolve_env_api_key(&config)?;
         Ok(Self {
             model_config: config,
             api_key,
         })
-    }
-}
-
-/// Resolves the provider credential for a model configuration.
-fn resolve_api_key(config: &ModelConfig) -> anyhow::Result<String> {
-    if crate::auth::is_chatgpt_codex_backend(&config.base_url) {
-        Ok(crate::auth::ChatGptAuth::load()?.access_token)
-    } else {
-        resolve_env_api_key(config)
     }
 }
 
@@ -258,6 +247,20 @@ pub struct BaseUrlIdentity {
 /// configured value.
 pub fn canonicalize_base_url(raw: &str) -> Result<String, String> {
     Ok(base_url_identity(raw)?.base_url)
+}
+
+/// Whether `raw` targets the retired `ChatGPT` Codex subscription backend.
+///
+/// Settings reject this endpoint so an old entry cannot fall back to
+/// environment-variable auth or send a normal bearer credential to a
+/// non-compatible path.
+pub fn is_retired_codex_backend(raw: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(raw) else {
+        return false;
+    };
+    url.scheme() == "https"
+        && url.host_str() == Some("chatgpt.com")
+        && url.path().trim_end_matches('/') == "/backend-api/codex"
 }
 
 /// Parse a configured endpoint into its canonical identity and query digest.

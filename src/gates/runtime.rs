@@ -186,18 +186,10 @@ fn selected_model(
     let Some(model) = default else {
         return Ok(None);
     };
-    if crate::auth::is_chatgpt_codex_backend(&model.base_url) {
-        return Ok(None);
-    }
     Ok(Some(model.clone()))
 }
 
 fn descriptor(name: &str, model: &ModelConfig) -> Result<ModelDescriptor, GateFailure> {
-    if crate::auth::is_chatgpt_codex_backend(&model.base_url) {
-        return Err(GateFailure::config(
-            "gate models must use environment-backed credentials",
-        ));
-    }
     if model.top_k.is_some() {
         return Err(GateFailure::config(format!(
             "gate model '{name}' sets top_k, which cake-gate/1 descriptors cannot carry"

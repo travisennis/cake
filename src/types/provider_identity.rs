@@ -16,14 +16,15 @@ use serde::{Deserialize, Serialize};
 ///
 /// An environment-backed credential is identified by its variable name, so
 /// rotating the value under the same name does not change the identity. A
-/// file-backed Codex credential is identified by a one-way digest of its
-/// account ID, so changing the subscription account does.
+/// session written before Codex backend support was removed may still carry
+/// the legacy file-backed variant, identified by a one-way digest of its
+/// account ID.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProviderCredentialSource {
     /// The credential is read from this environment variable.
     Env { name: String },
-    /// The credential is the Codex CLI's `ChatGPT` auth file for this account.
+    /// Legacy file-backed Codex credential, readable from older sessions.
     CodexFile { account: String },
 }
 

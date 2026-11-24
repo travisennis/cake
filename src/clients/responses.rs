@@ -90,24 +90,17 @@ pub(super) fn build_request_json<'a>(
     });
 
     let (instructions, non_system_history) = extract_instructions(history)?;
-    let is_codex_backend = crate::auth::is_chatgpt_codex_backend(&config.model_config.base_url);
 
     let prompt = Request {
         model: &config.model_config.model,
-        store: is_codex_backend.then_some(false),
-        stream: is_codex_backend.then_some(true),
+        store: None,
+        stream: None,
         input: build_input(non_system_history, config.model_config.supports_images),
         instructions,
-        temperature: (!is_codex_backend)
-            .then_some(config.model_config.temperature)
-            .flatten(),
-        top_p: (!is_codex_backend)
-            .then_some(config.model_config.top_p)
-            .flatten(),
-        top_k: (!is_codex_backend)
-            .then_some(config.model_config.top_k)
-            .flatten(),
-        max_output_tokens: (!is_codex_backend).then_some(max_output_tokens).flatten(),
+        temperature: config.model_config.temperature,
+        top_p: config.model_config.top_p,
+        top_k: config.model_config.top_k,
+        max_output_tokens,
         tools: convert_tools(tools, strategy.responses_tool_strict()),
         tool_choice: if tools.is_empty() {
             None
@@ -151,7 +144,7 @@ pub(super) async fn send_request_json(
     session_id: uuid::Uuid,
     request: Vec<u8>,
 ) -> anyhow::Result<reqwest::Response> {
-    let request = build_response_request(client, config, session_id, request)?;
+    let request = build_response_request(client, config, session_id, request);
     Ok(request.send().await?)
 }
 
@@ -161,7 +154,7 @@ fn build_response_request(
     config: &ResolvedModelConfig,
     session_id: uuid::Uuid,
     request: Vec<u8>,
-) -> anyhow::Result<reqwest::RequestBuilder> {
+) -> reqwest::RequestBuilder {
     let strategy = ProviderStrategy::from_config(config);
 
     let url = format!(
@@ -174,14 +167,15 @@ fn build_response_request(
         trace!(target: "cake", "{prompt_json}");
     }
 
-    let request = strategy.apply_headers(
-        client
-            .post(&url)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .body(request),
-        session_id,
-    );
-    crate::auth::apply_request_auth(request, config)
+    strategy
+        .apply_headers(
+            client
+                .post(&url)
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(request),
+            session_id,
+        )
+        .bearer_auth(&config.api_key)
 }
 
 /// Decode the Responses API envelope, attaching a bounded preview of the raw

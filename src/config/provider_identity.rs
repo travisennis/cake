@@ -19,8 +19,6 @@ use crate::types::provider_identity::{
 pub enum ProviderIdentityError {
     #[error("Invalid model configuration '{name}': {reason}")]
     InvalidEndpoint { name: String, reason: String },
-    #[error("Cannot resolve the Codex account identity for model '{name}': {source}")]
-    CodexAccount { name: String, source: anyhow::Error },
 }
 
 /// Outcome of comparing a stored session identity with the current resolution.
@@ -42,7 +40,7 @@ pub enum SessionProviderIdentityCheck {
 /// # Errors
 ///
 /// Returns [`ProviderIdentityError`] when the endpoint is unparsable or embeds
-/// userinfo, or when a Codex-backed model's account fingerprint cannot be read.
+/// userinfo.
 pub fn build(config: &ModelConfig, model_config: &str) -> anyhow::Result<ProviderIdentity> {
     let BaseUrlIdentity {
         base_url,
@@ -53,7 +51,9 @@ pub fn build(config: &ModelConfig, model_config: &str) -> anyhow::Result<Provide
             reason,
         }
     })?;
-    let credential = credential_source(config, model_config)?;
+    let credential = ProviderCredentialSource::Env {
+        name: config.api_key_env.clone(),
+    };
     Ok(ProviderIdentity {
         model_config: model_config.to_string(),
         model: config.model.clone(),
@@ -83,25 +83,6 @@ pub fn check_session_identity(
             SessionProviderIdentityCheck::Changed(differences)
         }
     })
-}
-
-fn credential_source(
-    config: &ModelConfig,
-    model_config: &str,
-) -> anyhow::Result<ProviderCredentialSource> {
-    if crate::auth::is_chatgpt_codex_backend(&config.base_url) {
-        let account = crate::auth::codex_account_fingerprint().map_err(|source| {
-            ProviderIdentityError::CodexAccount {
-                name: model_config.to_string(),
-                source,
-            }
-        })?;
-        Ok(ProviderCredentialSource::CodexFile { account })
-    } else {
-        Ok(ProviderCredentialSource::Env {
-            name: config.api_key_env.clone(),
-        })
-    }
 }
 
 fn resolved_provider(config: &ModelConfig) -> Option<ModelProvider> {

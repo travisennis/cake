@@ -293,11 +293,10 @@ const DEFAULT_SETTINGS: &str = r#"# Cake project settings, created by `cake init
 # model to declare context_window. threshold_percent is the fallback trigger;
 # trigger_tokens replaces it with an absolute input-token line. The retained
 # tail and generated summary are capped by their token targets. Existing
-# checkpoints still restore when enabled = false, including on the Codex
-# Responses backend, which cannot create new checkpoints because it removes the
-# bounded summary generation cap. See docs/configuration.md. A selected profile
-# can also set [profiles.NAME.compaction]; profile values override top-level
-# values per key. model selects a [[models]] entry for checkpoint summaries;
+# checkpoints still restore when enabled = false. See docs/configuration.md.
+# A selected profile can also set [profiles.NAME.compaction]; profile values
+# override top-level values per key. model selects a [[models]] entry for
+# checkpoint summaries;
 # profile contributes only its default_model when model is absent. Either one
 # falls back to the conversation model, and reasoning_effort overrides the
 # selected model's effort. Summary calls still carry no tools, hooks, or schema.

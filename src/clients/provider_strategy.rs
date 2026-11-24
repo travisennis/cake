@@ -60,9 +60,7 @@ impl<'a> ProviderStrategy<'a> {
     pub(super) fn responses_tool_strict(&self) -> Option<bool> {
         let base_url = &self.config.model_config.base_url;
         let url = reqwest::Url::parse(base_url).ok()?;
-        (url.host_str() == Some("api.openai.com")
-            || crate::auth::is_chatgpt_codex_backend(base_url))
-        .then_some(false)
+        (url.host_str() == Some("api.openai.com")).then_some(false)
     }
 
     pub(super) fn responses_provider_config(&self) -> Option<ProviderConfig> {

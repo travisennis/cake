@@ -216,7 +216,7 @@ pub struct Session {
     /// Provider model ID used for the session (e.g. `gpt-5.6-luna`).
     pub model: Option<String>,
     /// The `[[models]]` entry name the session was created with
-    /// (e.g. `codex-luna-xhigh`). Preferred resume identity: the model
+    /// (e.g. `deepseek-flash-max`). Preferred resume identity: the model
     /// ID alone is ambiguous when entries share one ID.
     pub model_config: Option<String>,
     /// Sanitized provider destination pinned when the session was created.

@@ -135,26 +135,6 @@ Every model requires:
 - `base_url`: OpenAI-compatible endpoint;
 - `api_key_env`: environment variable containing the credential. The value must be a conventional variable name (`[A-Za-z_][A-Za-z0-9_]*`); a pasted credential or other text is rejected when settings load and is never echoed in the error.
 
-### Codex ChatGPT subscription prototype
-
-For a fast local prototype, Cake can reuse a file-backed login created by the Codex CLI:
-
-```toml
-# <config>/cake/settings.toml
-default_model = "chatgpt"
-
-[[models]]
-name = "chatgpt"
-model = "gpt-5"
-base_url = "https://chatgpt.com/backend-api/codex"
-api_key_env = "UNUSED_FOR_CHATGPT_AUTH"
-api_type = "responses"
-```
-
-Run `codex login` first. For this exact `base_url`, Cake reads the access token and ChatGPT account ID from `CODEX_HOME/auth.json`, or `~/.codex/auth.json` when `CODEX_HOME` is unset. `api_key_env` is still required by the settings schema, but is ignored for this backend. The prototype does not implement its own browser login, token refresh, logout, or keyring-backed Codex auth; if the file-backed login expires, log in again with Codex.
-
-This uses an internal Codex backend and is intended for experimentation rather than a stable provider integration. The backend may require a currently supported Codex model and Responses API request shape.
-
 Optional model fields are `api_type` (`chat_completions` or `responses`), `provider`, `provider_headers`, `temperature`, `top_p`, `top_k`, `max_output_tokens`, `context_window`, `reasoning_effort`, `reasoning_efforts`, `reasoning_summary`, `reasoning_max_tokens`, `providers`, and `supports_images`. `top_k` is an integer top-k sampling cutoff, omitted when unset.
 
 ### Reasoning-effort variants
@@ -189,7 +169,7 @@ All model references --- `default_model`, `--model`, profiles, and `[tools.bash.
 
 Resumed and forked sessions (`--resume`, `--fork`) are pinned to the `[[models]]` entry name they were created with, which is persisted in the session alongside the provider model ID. A bare resume reuses that entry deterministically. Passing `--model` for a different entry --- even one sharing the same provider model ID with a different backend or reasoning effort --- fails with a session-model mismatch instead of silently switching. Sessions written before the entry name was persisted carry only the provider ID: a bare resume still works when the ID matches exactly one entry, and otherwise fails listing the matching entry names so the run can be retried with an explicit `--model <name>`.
 
-New sessions also persist a sanitized `provider_identity` snapshot: the entry name and provider model ID, a credential-free canonical `base_url` (query and fragment removed; userinfo rejected), a one-way digest of any non-empty query, `api_type`, the resolved provider strategy, routing hints, the credential kind, and the configured temperature, top-p, top-k, output and reasoning limits, plus a one-way digest of any configured provider headers. The snapshot never contains an API key, bearer token, authorization header, raw provider-header value, raw query, or Codex access token. An environment-backed credential records only the variable name, so rotating its value does not invalidate the session; a Codex subscription credential records a one-way digest of the account ID, so changing accounts does.
+New sessions also persist a sanitized `provider_identity` snapshot: the entry name and provider model ID, a credential-free canonical `base_url` (query and fragment removed; userinfo rejected), a one-way digest of any non-empty query, `api_type`, the resolved provider strategy, routing hints, the credential kind, and the configured temperature, top-p, top-k, output and reasoning limits, plus a one-way digest of any configured provider headers. The snapshot never contains an API key, bearer token, authorization header, raw provider-header value, or raw query. An environment-backed credential records only the variable name, so rotating its value does not invalidate the session.
 
 Resume and fork resolve the stored entry, compare the snapshot with the current settings, and only then read the credential. A changed endpoint, endpoint query, API type, provider strategy, model identity, credential source, or request-shape control exits `3` with a diff of the non-secret values before any provider request. Per-invocation CLI overrides (`--max-tokens`, `--reasoning-effort`, `--reasoning-budget`) are not part of the snapshot and do not trigger a mismatch. A session written before `provider_identity` existed resumes with a warning and no identity check. Use `--allow-session-model-change` to accept a changed resolution for one resume or fork: it warns, records the override in telemetry, and leaves the stored snapshot unchanged. Start a new session for a permanent model change; a permanent rebind command is not provided.
 
@@ -328,7 +308,7 @@ Project `[compaction]` values override global values per key, and a selected pro
 
 Automatic checks run immediately before each logical provider request, after tool results and context-affecting hook additions have settled. After a failed summary, a no-fit result, or another skipped attempt, Cake makes another automatic attempt only once the projected request has grown by at least a tenth of the trigger and still reaches the trigger. Every request in between is still measured, and an over-window request fails before it is sent. This keeps one transient failure from permanently disabling compaction in a long invocation without repeating a doomed attempt on every turn. A new invocation starts with a fresh attempt budget.
 
-Creating a checkpoint requires the selected summarizer backend to preserve a bounded summary generation cap. Chat Completions and ordinary Responses satisfy this; the Codex Responses backend strips `max_output_tokens`, so enabling automatic compaction with a Codex summarizer fails before the run. Restoring an existing checkpoint remains supported there.
+Creating a checkpoint requires the configured reasoning allowance to fit the summary generation cap; a larger `reasoning_max_tokens` fails before the run with a diagnostic instead of silently changing effort. Restoring an existing checkpoint remains supported without that check.
 
 `[compaction]` is low-authority configuration: it can change request size, cost, and which globally configured model summarizes, but cannot add filesystem authority, execute code, or introduce a provider endpoint; `model` and `profile` resolve only to entries and profiles already defined in settings. `cake debug config` reports the configured values before window clamping, including the summarizer selection. The generated `cake init` settings template includes the same keys and defaults. See [Integrations](integrations.md#compaction-lifecycle) for the session and replay records.
 
