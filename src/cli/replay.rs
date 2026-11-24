@@ -191,12 +191,26 @@ fn load_records(path: &Path, session_id: Uuid) -> Result<Vec<SessionRecord>, Rep
             "session file is empty".to_string(),
         ));
     };
-    let meta = parse_record(&first.text, &session_id)?;
+    let Some(first_text) = first.text.as_deref() else {
+        return Err(ReplayError::Corrupt(
+            session_id.to_string(),
+            "session file begins with a record that is not valid UTF-8".to_string(),
+        ));
+    };
+    let meta = parse_record(first_text, &session_id)?;
     validate_meta(&meta, session_id)?;
 
     let mut records = vec![meta];
     while let Some(line) = next_record()? {
-        match parse_record(&line.text, &session_id) {
+        let Some(text) = line.text.as_deref() else {
+            tracing::warn!(
+                "Ignoring partial final session record in {}: line {} ends inside a multibyte character",
+                path.display(),
+                line.line_number
+            );
+            break;
+        };
+        match parse_record(text, &session_id) {
             Ok(record) => records.push(record),
             Err(error) if line.partial_tail => {
                 tracing::warn!(

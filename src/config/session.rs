@@ -614,10 +614,15 @@ fn read_session_header<R: std::io::BufRead>(
     let first_line = framer
         .next_record()
         .with_context(|| format!("Failed to read session file: {}", path.display()))?
-        .ok_or_else(|| anyhow::anyhow!("Session file is empty"))?
-        .text;
+        .ok_or_else(|| anyhow::anyhow!("Session file is empty"))?;
+    let Some(first_line) = first_line.text.as_deref() else {
+        anyhow::bail!(
+            "Session file {} begins with a record that is not valid UTF-8",
+            path.display()
+        );
+    };
 
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&first_line)
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(first_line)
         && value.get("type").and_then(|value| value.as_str()) != Some("session_meta")
     {
         anyhow::bail!(
@@ -626,7 +631,7 @@ fn read_session_header<R: std::io::BufRead>(
         );
     }
 
-    let meta: SessionRecord = serde_json::from_str(&first_line).with_context(|| {
+    let meta: SessionRecord = serde_json::from_str(first_line).with_context(|| {
         format!(
             "Failed to parse session_meta record of session file: {}",
             path.display()
@@ -695,7 +700,15 @@ fn read_session_records<R: std::io::BufRead>(
         .next_record()
         .with_context(|| format!("Failed to read session file: {}", path.display()))?
     {
-        match serde_json::from_str::<SessionRecord>(&line.text) {
+        let Some(text) = line.text.as_deref() else {
+            tracing::warn!(
+                "Ignoring partial final session record in {}: line {} ends inside a multibyte character",
+                path.display(),
+                line.line_number
+            );
+            break;
+        };
+        match serde_json::from_str::<SessionRecord>(text) {
             Ok(mut record) => {
                 record.normalize_legacy_fields(session_timestamp);
                 if let SessionRecord::Compaction(checkpoint) = &record {

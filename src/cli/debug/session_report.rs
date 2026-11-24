@@ -1057,7 +1057,11 @@ impl TranscriptScan {
         if line.partial_tail {
             self.partial_tail = true;
         }
-        let value: Value = match serde_json::from_str(&line.text) {
+        let Some(text) = line.text.as_deref() else {
+            self.ignored_partial_tail = true;
+            return Ok(false);
+        };
+        let value: Value = match serde_json::from_str(text) {
             Ok(value) => value,
             Err(_) if line.partial_tail => {
                 self.ignored_partial_tail = true;
@@ -1397,7 +1401,11 @@ impl TelemetryScan {
         if line.partial_tail {
             self.partial_tail = true;
         }
-        let value: Value = match serde_json::from_str(&line.text) {
+        let Some(text) = line.text.as_deref() else {
+            self.ignored_partial_tail = true;
+            return Ok(false);
+        };
+        let value: Value = match serde_json::from_str(text) {
             Ok(value) => value,
             Err(_) if line.partial_tail => {
                 self.ignored_partial_tail = true;

@@ -1230,7 +1230,15 @@ fn scan_session_record(
     path: &Path,
     scan: &mut SessionReferenceScan,
 ) -> bool {
-    match serde_json::from_str::<SessionRecord>(&line.text) {
+    let Some(text) = line.text.as_deref() else {
+        scan.fail(format!(
+            "session file '{}' line {} has an ignored partial record: the record is not valid UTF-8",
+            path.display(),
+            line.line_number
+        ));
+        return false;
+    };
+    match serde_json::from_str::<SessionRecord>(text) {
         Ok(record) => {
             collect_record_content_ids(&record, path, line.line_number, scan);
             true

@@ -540,8 +540,17 @@ fn read_session_header(path: &Path) -> Result<SessionFileHeader, SessionHeaderEr
             path: path.to_path_buf(),
         });
     };
+    let Some(text) = line.text.as_deref() else {
+        return Err(SessionHeaderError::Read {
+            path: path.to_path_buf(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "session header is not valid UTF-8",
+            ),
+        });
+    };
     let header: SessionFileHeader =
-        serde_json::from_str(&line.text).map_err(|source| SessionHeaderError::Parse {
+        serde_json::from_str(text).map_err(|source| SessionHeaderError::Parse {
             path: path.to_path_buf(),
             source,
         })?;

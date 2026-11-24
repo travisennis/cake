@@ -232,10 +232,12 @@ fn read_header(reader: &mut impl std::io::BufRead) -> anyhow::Result<SessionFile
             .next_record()
             .map_err(|error| anyhow::anyhow!("failed to read session header: {error}"))?
             .ok_or_else(|| anyhow::anyhow!("session file is empty"))?
-            .text
+    };
+    let Some(header_line) = header_line.text.as_deref() else {
+        anyhow::bail!("session file header is not valid UTF-8");
     };
 
-    let header: SessionFileHeader = serde_json::from_str(&header_line)
+    let header: SessionFileHeader = serde_json::from_str(header_line)
         .map_err(|error| anyhow::anyhow!("failed to parse session header: {error}"))?;
     if header.format_version != CURRENT_FORMAT_VERSION {
         return Err(anyhow::anyhow!(
