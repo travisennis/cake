@@ -173,6 +173,93 @@ impl ConversationState {
         &self.history
     }
 
+    /// The leading System and Developer messages that form the prompt prefix.
+    pub(super) fn leading_prompt_messages(&self) -> Vec<(Role, String)> {
+        self.history
+            .iter()
+            .take_while(|item| {
+                matches!(
+                    item,
+                    ConversationItem::Message {
+                        role: Role::System | Role::Developer,
+                        ..
+                    }
+                )
+            })
+            .filter_map(|item| match item {
+                ConversationItem::Message { role, content, .. } => Some((*role, content.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Number of leading Developer messages in the prompt prefix.
+    pub(super) fn leading_developer_count(&self) -> usize {
+        self.history
+            .iter()
+            .take_while(|item| {
+                matches!(
+                    item,
+                    ConversationItem::Message {
+                        role: Role::System | Role::Developer,
+                        ..
+                    }
+                )
+            })
+            .filter(|item| {
+                matches!(
+                    item,
+                    ConversationItem::Message {
+                        role: Role::Developer,
+                        ..
+                    }
+                )
+            })
+            .count()
+    }
+
+    /// Replace the leading prompt messages in place, preserving the checkpoint
+    /// boundary because the caller only reuses a prefix with the same length.
+    pub(super) fn replace_leading_prompt(
+        &mut self,
+        messages: &[(Role, String)],
+    ) -> anyhow::Result<()> {
+        let prompt_len = prompt_context_prefix_len(&self.history);
+        anyhow::ensure!(
+            prompt_len == messages.len(),
+            "replacement prompt has {} messages but the current prefix has {prompt_len}",
+            messages.len()
+        );
+        anyhow::ensure!(
+            messages
+                .first()
+                .is_some_and(|(role, _)| *role == Role::System),
+            "replacement prompt must start with a system message"
+        );
+        anyhow::ensure!(
+            messages
+                .iter()
+                .all(|(role, _)| matches!(role, Role::System | Role::Developer)),
+            "replacement prompt may contain only system and developer messages"
+        );
+        let timestamp = chrono::Utc::now();
+        for (item, (role, content)) in self.history.iter_mut().zip(messages) {
+            *item = ConversationItem::Message {
+                role: *role,
+                content: content.clone(),
+                id: None,
+                status: None,
+                timestamp: Some(timestamp),
+                images: Vec::new(),
+            };
+        }
+        for provenance in &mut self.provenance[..prompt_len] {
+            *provenance = RecordProvenance::consumed(None);
+        }
+        self.assert_provenance_aligned();
+        Ok(())
+    }
+
     /// The provider request derived from raw history and the active checkpoint.
     ///
     /// Raw history and its offsets stay untouched: invocation and provider-turn

@@ -33,9 +33,9 @@ use crate::session_telemetry::{
     SessionTelemetrySettings, SessionTelemetryWriter, SharedSessionTelemetryWriter,
 };
 use crate::types::{
-    ApiAttemptTerminalClass, ConversationItem, ReplaySafety, ReportedUsage, Role, SessionRecord,
-    StreamRecord, TaskCompleteData, TaskOutcome, TaskStartData, TurnUsageData, TurnUsagePurpose,
-    Usage, UsagePresence,
+    ApiAttemptTerminalClass, ConversationItem, PromptPrefixData, PromptPrefixDecision,
+    ReplaySafety, ReportedUsage, Role, SessionRecord, StreamRecord, TaskCompleteData, TaskOutcome,
+    TaskStartData, TurnUsageData, TurnUsagePurpose, Usage, UsagePresence, prompt_prefix_hash,
 };
 
 /// The request body that follows the most recent successful main-agent turn.
@@ -184,6 +184,10 @@ struct DeferredMcpTool {
 /// The `Agent` manages the conversation history, executes tool calls from the
 /// AI model, and handles streaming output. It supports multiple API backends
 /// through the `ApiType` configuration.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "prompt-prefix presence and the existing run flags are independent state"
+)]
 pub struct Agent {
     config: ResolvedModelConfig,
     runner: AgentRunner,
@@ -272,6 +276,14 @@ pub struct Agent {
     tool_choice: Option<ToolChoice>,
     /// The next-request body after the most recent successful main-agent turn.
     request_capture: Option<RequestCapture>,
+    /// One-way context fingerprint recorded with the prompt-prefix metadata.
+    prompt_prefix_fingerprint: Option<String>,
+    /// Whether the leading prompt prefix was created, reused, or rebuilt.
+    prompt_prefix_decision: PromptPrefixDecision,
+    /// Whether the leading prompt prefix ends with the runtime-context message.
+    prompt_prefix_runtime: bool,
+    /// Number of leading Developer messages in the stable prompt group.
+    prompt_prefix_stable_developer_count: usize,
     /// Whether correction turns may attach the provider's native
     /// structured-output constraint. Cleared for the rest of the run when the
     /// provider rejects the constrained request (HTTP 400); never reset.
@@ -326,6 +338,10 @@ impl Agent {
             output_schema: None,
             tool_choice: None,
             request_capture: None,
+            prompt_prefix_fingerprint: None,
+            prompt_prefix_decision: PromptPrefixDecision::Initial,
+            prompt_prefix_runtime: false,
+            prompt_prefix_stable_developer_count: 0,
             native_constraint_enabled: true,
         }
     }
@@ -364,6 +380,44 @@ impl Agent {
             hasher.update(&bytes);
         }
         hex::encode(hasher.finalize())
+    }
+
+    /// Record the context fingerprint, decision, and runtime-message presence
+    /// for the prompt-prefix metadata emitted on task start.
+    pub fn set_prompt_prefix_metadata(
+        &mut self,
+        fingerprint: String,
+        decision: PromptPrefixDecision,
+        runtime_context: bool,
+    ) {
+        self.prompt_prefix_fingerprint = Some(fingerprint);
+        self.prompt_prefix_decision = decision;
+        self.prompt_prefix_runtime = runtime_context;
+    }
+
+    /// Set whether the leading prompt prefix includes the runtime-context
+    /// Developer message.
+    pub const fn set_prompt_prefix_runtime(&mut self, runtime_context: bool) {
+        self.prompt_prefix_runtime = runtime_context;
+    }
+
+    /// The leading System and Developer messages that form the prompt prefix.
+    #[must_use]
+    pub fn leading_prompt_messages(&self) -> Vec<(Role, String)> {
+        self.conversation.leading_prompt_messages()
+    }
+
+    /// Replace the leading prompt messages in place.
+    ///
+    /// Callers only pass a prefix with the same message count as the current
+    /// one, so a checkpoint's positional boundary stays valid.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the replacement is not a system-led
+    /// system/developer group or its length differs from the current prefix.
+    pub fn replace_leading_prompt(&mut self, messages: &[(Role, String)]) -> anyhow::Result<()> {
+        self.conversation.replace_leading_prompt(messages)
     }
 
     /// Sets the directory context used for tool execution and sandboxing.
@@ -1317,54 +1371,109 @@ impl Agent {
 
     /// Emit the task start record.
     pub fn emit_task_start_record(&mut self) -> anyhow::Result<()> {
+        let prompt_prefix = self.prompt_prefix_data();
         let record = StreamRecord::TaskStart(TaskStartData {
             session_id: self.session_id.to_string(),
             task_id: self.task_id.to_string(),
             timestamp: chrono::Utc::now(),
             model: Some(self.config.model_config.model.clone()),
             model_config: self.model_config_name.clone(),
+            prompt_prefix,
         });
 
         self.stream_record(record)
     }
 
-    /// Emit append-only audit records for mutable prompt context used by this task.
-    pub fn emit_prompt_context_records(&mut self) -> anyhow::Result<()> {
+    fn prompt_prefix_data(&self) -> Option<Box<PromptPrefixData>> {
+        let fingerprint = self.prompt_prefix_fingerprint.as_ref()?;
+        let messages = self.conversation.leading_prompt_messages();
+        let (role, system_prompt) = messages.first()?;
+        if *role != Role::System {
+            return None;
+        }
+        let developer_messages: Vec<String> = messages
+            .iter()
+            .filter(|(role, _)| matches!(role, Role::Developer))
+            .map(|(_, content)| content.clone())
+            .collect();
+        let stable_developer_count = self
+            .prompt_prefix_stable_developer_count
+            .min(developer_messages.len());
+        let runtime_context = self.prompt_prefix_runtime && stable_developer_count > 0;
+        let stable_len = if runtime_context {
+            stable_developer_count.saturating_sub(1)
+        } else {
+            stable_developer_count
+        };
+        Some(Box::new(PromptPrefixData {
+            stable_developer_count,
+            runtime_context,
+            stable_prompt_hash: prompt_prefix_hash(
+                system_prompt,
+                &developer_messages[..stable_len],
+            ),
+            context_fingerprint: fingerprint.clone(),
+            decision: self.prompt_prefix_decision,
+        }))
+    }
+
+    /// Emit the stable prompt-context records before hooks append their
+    /// context. The returned count lets the caller emit only hook and
+    /// output-schema context afterward.
+    pub fn emit_stable_prompt_context_records(&mut self) -> anyhow::Result<usize> {
+        let developer_count = self.conversation.leading_developer_count();
+        self.emit_prompt_context_records_range(0, developer_count)?;
+        self.prompt_prefix_stable_developer_count = developer_count;
+        Ok(developer_count)
+    }
+
+    /// Emit prompt-context records after the stable group, for hook and
+    /// output-schema Developer messages appended during task setup.
+    pub fn emit_prompt_context_records_after(&mut self, skip: usize) -> anyhow::Result<()> {
+        self.emit_prompt_context_records_range(skip, usize::MAX)
+    }
+
+    fn emit_prompt_context_records_range(
+        &mut self,
+        skip: usize,
+        take: usize,
+    ) -> anyhow::Result<()> {
         let timestamp = chrono::Utc::now();
-        let Self {
-            conversation,
-            session_id,
-            task_id,
-            observer,
-            ..
-        } = &mut *self;
-
-        let session_id = session_id.to_string();
-        let task_id = task_id.to_string();
-
-        for item in conversation.history().iter().take_while(|item| {
-            matches!(
-                item,
+        let session_id = self.session_id.to_string();
+        let task_id = self.task_id.to_string();
+        let contents: Vec<String> = self
+            .conversation
+            .history()
+            .iter()
+            .take_while(|item| {
+                matches!(
+                    item,
+                    ConversationItem::Message {
+                        role: Role::System | Role::Developer,
+                        ..
+                    }
+                )
+            })
+            .filter_map(|item| match item {
                 ConversationItem::Message {
-                    role: Role::System | Role::Developer,
+                    role: Role::Developer,
+                    content,
                     ..
-                }
-            )
-        }) {
-            if let ConversationItem::Message {
-                role: Role::Developer,
-                content,
-                ..
-            } = item
-            {
-                observer.persist_record(&SessionRecord::PromptContext {
+                } => Some(content.clone()),
+                _ => None,
+            })
+            .skip(skip)
+            .take(take)
+            .collect();
+        for content in contents {
+            self.observer
+                .persist_record(&SessionRecord::PromptContext {
                     session_id: session_id.clone(),
                     task_id: task_id.clone(),
                     role: Role::Developer,
-                    content: content.clone(),
+                    content,
                     timestamp,
                 })?;
-            }
         }
         Ok(())
     }

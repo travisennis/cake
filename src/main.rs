@@ -46,12 +46,12 @@ use crate::program_status::{BlockedKind, State};
 use crate::prompts::resolve_system_prompt_source;
 
 use crate::session_telemetry::{
-    ContextRebindTelemetry, SessionTelemetryRecord, SessionTelemetryWriter,
+    ContextRebindTelemetry, PromptPrefixTelemetry, SessionTelemetryRecord, SessionTelemetryWriter,
 };
 
 use crate::types::{
-    ContextIdentity, CutOffError, LimitExceededError, SessionRecord, SessionRunConfig,
-    StreamRecord, TaskOutcome,
+    ContextIdentity, CutOffError, LimitExceededError, Role, SessionRecord, SessionRunConfig,
+    StreamRecord, TaskOutcome, prompt_prefix_hash,
 };
 
 use clap::{ArgGroup, Parser, ValueEnum};
@@ -190,6 +190,16 @@ pub(crate) struct CodingAssistant {
     /// context.
     #[arg(long)]
     pub strict_context_drift: bool,
+
+    /// Rebuild the leading prompt from current sources instead of reusing the
+    /// stored prefix
+    ///
+    /// A resume or fork reuses the stored System and stable Developer prompt
+    /// bytes when the full context identity and provider identity match.
+    /// This flag forces the normal rebuild for one invocation. Requires
+    /// `--resume` or `--fork`.
+    #[arg(long)]
+    pub refresh_context: bool,
 
     /// Do not save the session to disk
     #[arg(long)]
@@ -1348,6 +1358,7 @@ impl CodingAssistant {
         effective_provider_identity: Option<&crate::types::ProviderIdentity>,
         session_model_change_override: bool,
         context_rebind: Option<crate::session_telemetry::ContextRebindTelemetry>,
+        prompt_prefix: Option<PromptPrefixTelemetry>,
     ) -> Agent {
         if !run_mode.persists_session() {
             return client;
@@ -1396,6 +1407,7 @@ impl CodingAssistant {
                 .map(Box::new),
             session_model_change_override,
             context_rebind: context_rebind.map(Box::new),
+            prompt_prefix,
         };
 
         if let Err(error) = writer.append(&record) {
@@ -1508,6 +1520,7 @@ impl CodingAssistant {
             ),
             (self.allow_session_cwd_change, "--allow-session-cwd-change"),
             (self.strict_context_drift, "--strict-context-drift"),
+            (self.refresh_context, "--refresh-context"),
             (self.no_session, "--no-session"),
             (self.worktree.is_some(), "--worktree"),
             (self.reasoning_effort.is_some(), "--reasoning-effort"),
@@ -1667,6 +1680,7 @@ impl CodingAssistant {
         content: &str,
     ) -> anyhow::Result<()> {
         let setup: anyhow::Result<()> = async {
+            let stable_developer_count = client.emit_stable_prompt_context_records()?;
             if let Some(runner) = hook_runner {
                 let contexts = runner.session_start(session_start_source, content).await?;
                 client.append_developer_context(contexts);
@@ -1674,7 +1688,7 @@ impl CodingAssistant {
                 client.append_developer_context(contexts);
             }
             client.append_output_schema_context();
-            client.emit_prompt_context_records()?;
+            client.emit_prompt_context_records_after(stable_developer_count)?;
             client.emit_task_start_record()?;
             client.emit_history_repair_records()?;
             Ok(())
@@ -2203,6 +2217,82 @@ impl CodingAssistant {
         })
     }
 
+    fn resolve_context_identity_and_prefix(
+        this: &Self,
+        prepared: &PreparedRun,
+        resources: &RunResources,
+        run_session: &mut crate::cli::RunSession,
+        cli_system_prompt: Option<&Path>,
+        run_mode: &RunMode,
+    ) -> anyhow::Result<Option<ContextRebindTelemetry>> {
+        let current =
+            Self::build_context_identity(prepared, resources, run_session, cli_system_prompt);
+        let context_rebind = this.check_context_drift(
+            run_mode,
+            run_session.session.context_identity.as_ref(),
+            &current,
+            run_session.session.id,
+        )?;
+        let provider_identity_unchanged = !run_session.session_model_change_override
+            && run_session.session.provider_identity.is_some();
+        let reused = run_session.apply_prompt_prefix_reuse(
+            this.refresh_context,
+            &current,
+            provider_identity_unchanged,
+        )?;
+        Self::warn_missing_prompt_prefix(run_session, run_mode, this.refresh_context, reused);
+        run_session.session.context_identity = Some(current);
+        Ok(context_rebind)
+    }
+
+    fn warn_missing_prompt_prefix(
+        run_session: &crate::cli::RunSession,
+        run_mode: &RunMode,
+        refresh_context: bool,
+        reused: bool,
+    ) {
+        if reused || refresh_context || run_session.stored_prompt_prefix.is_some() {
+            return;
+        }
+        let source = match run_mode {
+            RunMode::Resume { session_id, .. } | RunMode::Fork { session_id } => {
+                format!("session {session_id}")
+            },
+            RunMode::ForkLatest => "the latest session".to_string(),
+            RunMode::NewSession | RunMode::Ephemeral => return,
+        };
+        eprintln!(
+            "warning: {source} has no stored prompt prefix; rebuilding the leading prompt context for this run"
+        );
+    }
+
+    fn prompt_prefix_telemetry(
+        run_session: &crate::cli::RunSession,
+    ) -> Option<PromptPrefixTelemetry> {
+        let messages = run_session.agent.leading_prompt_messages();
+        let (role, system_prompt) = messages.first()?;
+        if *role != Role::System {
+            return None;
+        }
+        let developer: Vec<String> = messages
+            .iter()
+            .filter(|(role, _)| matches!(role, Role::Developer))
+            .map(|(_, content)| content.clone())
+            .collect();
+        let runtime_context = run_session.include_runtime_context && !developer.is_empty();
+        let stable_len = if runtime_context {
+            developer.len().saturating_sub(1)
+        } else {
+            developer.len()
+        };
+        Some(PromptPrefixTelemetry {
+            decision: run_session.prompt_prefix_decision.label(),
+            stable_prompt_hash: prompt_prefix_hash(system_prompt, &developer[..stable_len]),
+            stable_developer_count: developer.len(),
+            runtime_context,
+        })
+    }
+
     fn build_context_identity(
         prepared: &PreparedRun,
         resources: &RunResources,
@@ -2465,22 +2555,18 @@ impl CodingAssistant {
         run_session.attach_output_schema(prepared.output_schema.as_ref());
         run_session.attach_tool_choice(this.tool_choice);
 
-        let current_context_identity = Self::build_context_identity(
+        let context_rebind = Self::resolve_context_identity_and_prefix(
+            this,
             &prepared,
             &resources,
-            &run_session,
+            &mut run_session,
             cli_system_prompt.as_deref(),
-        );
-        let context_rebind = this.check_context_drift(
             &context.run_mode,
-            run_session.session.context_identity.as_ref(),
-            &current_context_identity,
-            run_session.session.id,
         )?;
-        run_session.session.context_identity = Some(current_context_identity);
 
         let session_start_source =
             HookSource::SessionStart(context.run_mode.session_start_source().to_owned());
+        let prompt_prefix = Self::prompt_prefix_telemetry(&run_session);
         let effective_provider_identity = run_session.effective_provider_identity;
         let capture_provider_identity = effective_provider_identity.clone();
         let capture_backend = run_session
@@ -2507,6 +2593,7 @@ impl CodingAssistant {
             effective_provider_identity.as_ref(),
             session_model_change_override,
             context_rebind,
+            prompt_prefix,
         );
         let hook_context = HookContext {
             session_id: session.id,

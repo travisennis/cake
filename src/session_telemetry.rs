@@ -157,6 +157,18 @@ pub struct ContextRebindTelemetry {
     pub reason: String,
 }
 
+/// Prompt-prefix decision for this invocation.
+///
+/// Carries only the stable prefix digest and selection metadata; prompt text
+/// stays in the owner-only session file.
+#[derive(Debug, Clone, Serialize)]
+pub struct PromptPrefixTelemetry {
+    pub decision: &'static str,
+    pub stable_prompt_hash: String,
+    pub stable_developer_count: usize,
+    pub runtime_context: bool,
+}
+
 /// Bounded, structured metadata from a terminal `response.failed` stream event
 /// on the Responses API after an accepted HTTP 2xx.
 ///
@@ -828,6 +840,9 @@ pub enum SessionTelemetryRecord {
         /// Set when an explicit flag accepted a different working directory.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context_rebind: Option<Box<ContextRebindTelemetry>>,
+        /// Prompt-prefix reuse or rebuild decision for this invocation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt_prefix: Option<PromptPrefixTelemetry>,
     },
     ApiAttemptInFlight {
         session_id: String,

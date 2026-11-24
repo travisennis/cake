@@ -19,8 +19,8 @@ use fs4::{FileExt, TryLockError};
 
 use crate::types::ProviderIdentity;
 use crate::types::{
-    CompactionData, ContextIdentity, ContextProvenance, ContextSeed, GitState, SessionRecord,
-    SessionRunConfig, TurnUsageData, Usage,
+    CompactionData, ContextIdentity, ContextProvenance, ContextSeed, GitState, Role, SessionRecord,
+    SessionRunConfig, StoredPromptPrefix, TurnUsageData, Usage, prompt_prefix_hash,
 };
 
 /// Shared writer that holds the locked append handle for a session JSONL file.
@@ -334,6 +334,56 @@ impl Session {
                 },
                 _ => None,
             })
+    }
+
+    /// Reconstruct the latest stored stable prompt prefix, if it is complete.
+    ///
+    /// The prompt text stays in `session_meta.system_prompt` and the stable
+    /// `PromptContext` records for the latest task. Missing prefix metadata, a
+    /// missing system prompt, an incomplete stable group, or a hash mismatch
+    /// returns `None` so the caller can fall back to a normal rebuild.
+    pub fn stored_prompt_prefix(&self) -> Option<StoredPromptPrefix> {
+        let task = self.records.iter().rev().find_map(|record| match record {
+            SessionRecord::TaskStart(task) => Some(task),
+            _ => None,
+        })?;
+        let prefix_task_id = task.task_id.as_str();
+        let data = task.prompt_prefix.as_deref()?;
+        let system_prompt = self.system_prompt.clone()?;
+        let developer_messages: Vec<String> = self
+            .records
+            .iter()
+            .filter_map(|record| match record {
+                SessionRecord::PromptContext {
+                    task_id,
+                    role: Role::Developer,
+                    content,
+                    ..
+                } if task_id == prefix_task_id => Some(content.clone()),
+                _ => None,
+            })
+            .take(data.stable_developer_count)
+            .collect();
+        if developer_messages.len() != data.stable_developer_count {
+            return None;
+        }
+        let stable_len = if data.runtime_context {
+            developer_messages.len().checked_sub(1)?
+        } else {
+            developer_messages.len()
+        };
+        if prompt_prefix_hash(&system_prompt, &developer_messages[..stable_len])
+            != data.stable_prompt_hash
+        {
+            return None;
+        }
+        Some(StoredPromptPrefix {
+            system_prompt,
+            developer_messages,
+            runtime_context: data.runtime_context,
+            stable_prompt_hash: data.stable_prompt_hash.clone(),
+            context_fingerprint: data.context_fingerprint.clone(),
+        })
     }
 
     /// Returns the names of skills activated during this session.

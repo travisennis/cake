@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use sha2::{Digest, Sha256};
 
 use crate::types::compaction::{
     CompactionData, CompactionEndData, CompactionStartData, RetainedConversationRecord,
@@ -78,6 +79,78 @@ pub struct SessionRunConfig {
 )]
 const fn is_false(value: &bool) -> bool {
     !*value
+}
+
+/// How the leading prompt prefix for one task was produced.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptPrefixDecision {
+    /// The session was created with this prefix.
+    Initial,
+    /// The stored prefix was reused on resume or fork.
+    Reused,
+    /// The prefix was rebuilt from current sources.
+    Rebuilt,
+}
+
+impl PromptPrefixDecision {
+    /// Stable spelling used in telemetry and diagnostics.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Initial => "initial",
+            Self::Reused => "reused",
+            Self::Rebuilt => "rebuilt",
+        }
+    }
+}
+
+/// Selection metadata for the stable leading prompt prefix used by one task.
+///
+/// The prompt text lives in `SessionMeta.system_prompt` and the stable
+/// `PromptContext` records for the same task, so this record does not duplicate
+/// it. The context identity gates reuse; the hash proves the stable bytes match
+/// the current rebuild.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PromptPrefixData {
+    /// Number of leading Developer messages that belong to the stable prompt.
+    /// When `runtime_context` is true, the last one is the runtime message.
+    pub stable_developer_count: usize,
+    /// Whether the last stable Developer message is the runtime-context message.
+    pub runtime_context: bool,
+    /// SHA-256 of the stable System and Developer prompt bytes, excluding the
+    /// runtime message.
+    pub stable_prompt_hash: String,
+    /// One-way fingerprint of the full context snapshot used for the reuse
+    /// decision. The snapshot itself remains in `session_meta.context_identity`.
+    #[serde(default)]
+    pub context_fingerprint: String,
+    /// Whether this prefix was created, reused, or rebuilt.
+    pub decision: PromptPrefixDecision,
+}
+
+/// A stored prefix reconstructed from session records for reuse.
+#[derive(Debug, Clone)]
+pub struct StoredPromptPrefix {
+    pub system_prompt: String,
+    /// Stable Developer messages in order. Includes the stored runtime message
+    /// when `runtime_context` is true.
+    pub developer_messages: Vec<String>,
+    pub runtime_context: bool,
+    pub stable_prompt_hash: String,
+    pub context_fingerprint: String,
+}
+
+/// Hash the stable prefix bytes with unambiguous length framing.
+#[must_use]
+pub fn prompt_prefix_hash(system_prompt: &str, developer_messages: &[String]) -> String {
+    let mut hasher = Sha256::new();
+    for part in std::iter::once(system_prompt).chain(developer_messages.iter().map(String::as_str))
+    {
+        hasher.update((part.len() as u64).to_le_bytes());
+        hasher.update(part.as_bytes());
+    }
+    hex::encode(hasher.finalize())
 }
 
 /// Subtype of a task completion record.
@@ -367,6 +440,11 @@ pub struct TaskStartData {
     /// the same cases as `model`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_config: Option<String>,
+    /// Additive prefix metadata for this task. The prompt text stays in
+    /// `session_meta.system_prompt` and this task's stable `PromptContext`
+    /// records; absent on records written before prefix reuse existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_prefix: Option<Box<PromptPrefixData>>,
 }
 
 /// Shared data for `Message` records in both `StreamRecord` and `SessionRecord`.
@@ -699,9 +777,10 @@ pub enum SessionRecord {
 
     /// Initial prompt context used for one invocation.
     ///
-    /// These records are append-only audit entries. They are intentionally not
-    /// replayed from session history; each invocation rebuilds fresh prompt
-    /// context from current AGENTS.md files, skills, and environment state.
+    /// These records are append-only audit entries. They are not replayed as
+    /// conversation history; a resumed invocation either reuses the stable
+    /// prefix named by the latest task-start prefix metadata or rebuilds it
+    /// from current AGENTS.md files, skills, and environment state.
     PromptContext {
         session_id: String,
         task_id: String,
@@ -782,8 +861,9 @@ pub enum ReplayErrorKind {
 /// `session_meta` and `prompt_context`, so live output cannot be mistaken for a
 /// complete resumable session file. `cake replay` reuses the same vocabulary
 /// and additionally emits `session_meta`, `prompt_context`, `skill_activated`,
-/// `mcp_tools_activated`, and, on failure, `replay_error`. New variants and
-/// fields are additive.
+/// `mcp_tools_activated`, and, on failure, `replay_error`. A `task_start` may
+/// carry optional prompt-prefix selection metadata; it never carries prompt
+/// text. New variants and fields are additive.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamRecord {

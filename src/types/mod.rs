@@ -28,8 +28,9 @@ pub use provider_identity::ProviderIdentity;
 #[doc(inline)]
 pub use session::{
     ApiAttemptTerminalClass, CutOffError, GitState, HookEventData, LimitExceededError,
-    ReplayErrorKind, ReplaySafety, SessionRecord, SessionRunConfig, StreamRecord, TaskCompleteData,
-    TaskOutcome, TaskStartData, TurnUsageData, TurnUsagePurpose,
+    PromptPrefixData, PromptPrefixDecision, ReplayErrorKind, ReplaySafety, SessionRecord,
+    SessionRunConfig, StoredPromptPrefix, StreamRecord, TaskCompleteData, TaskOutcome,
+    TaskStartData, TurnUsageData, TurnUsagePurpose, prompt_prefix_hash,
 };
 #[doc(inline)]
 pub use usage::{InputTokensDetails, OutputTokensDetails, ReportedUsage, Usage, UsagePresence};

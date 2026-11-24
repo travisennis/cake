@@ -60,7 +60,26 @@ impl RunMode {
         Ok(mode)
     }
 
+    fn validate_refresh_flag(args: &crate::CodingAssistant, mode: &Self) -> anyhow::Result<()> {
+        if !args.refresh_context {
+            return Ok(());
+        }
+        if !matches!(
+            mode,
+            Self::Resume { .. } | Self::ForkLatest | Self::Fork { .. }
+        ) {
+            anyhow::bail!("--refresh-context requires --resume or --fork");
+        }
+        if args.reuse_last_request {
+            anyhow::bail!(
+                "--refresh-context cannot be combined with --reuse-last-request; reuse preserves the captured context"
+            );
+        }
+        Ok(())
+    }
+
     fn validate_strict_flag(args: &crate::CodingAssistant, mode: &Self) -> anyhow::Result<()> {
+        Self::validate_refresh_flag(args, mode)?;
         if !args.strict_context_drift {
             return Ok(());
         }

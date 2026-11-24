@@ -105,6 +105,15 @@ pub enum ContextIdentityCheck {
     Drift(Vec<ContextDrift>),
 }
 
+/// One-way fingerprint of a full context identity.
+///
+/// The prompt-prefix metadata stores this instead of the identity itself, so a
+/// task-start record and live stream do not repeat paths or per-file digests.
+#[must_use]
+pub fn fingerprint(identity: &ContextIdentity) -> String {
+    serde_json::to_vec(identity).map_or_else(|_| String::new(), |bytes| sha256_hex(&bytes))
+}
+
 /// Build the sanitized identity for the current run.
 #[must_use]
 pub fn build(inputs: ContextIdentityInputs<'_>) -> ContextIdentity {
