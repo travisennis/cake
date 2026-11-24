@@ -63,7 +63,15 @@ impl AgentObserver {
         }
     }
 
+    /// Whether any sink consumes a conversation item.
+    pub(super) const fn is_active(&self) -> bool {
+        self.streaming.is_some() || self.persist.is_some()
+    }
+
     pub(super) fn stream_record(&mut self, record: StreamRecord) -> anyhow::Result<()> {
+        if !self.is_active() {
+            return Ok(());
+        }
         let stream_json = self.streaming.as_ref().and_then(|_| {
             serde_json::to_string(&record)
                 .inspect_err(|e| tracing::warn!("Stream serialization failed: {e}"))

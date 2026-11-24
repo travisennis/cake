@@ -1314,6 +1314,9 @@ impl Agent {
         items: &[ConversationItem],
         replay_eligible: bool,
     ) -> anyhow::Result<()> {
+        if !self.observer.is_active() {
+            return Ok(());
+        }
         for item in items {
             let replay = self.item_replay(item, replay_eligible);
             self.stream_item_with_replay(item, replay)?;
@@ -1540,13 +1543,19 @@ fn detect_skill_read_if_configured(
 /// Skill evidence is deliberately `Read`-only: the `Read` tool carries a
 /// single path argument, while matching a known `SKILL.md` inside arbitrary
 /// shell text is a heuristic that could misattribute activation. A `Bash` read
-/// of a `SKILL.md` does not produce evidence.
+/// of a `SKILL.md` does not produce evidence. An ordinary Read is the common
+/// case, so the payload must contain `SKILL.md` before the argument parse and
+/// canonicalize run; an alias that omits the spelling is not probed, and the
+/// canonical path stays the lookup key.
 fn detect_skill_read(
     name: &str,
     arguments: &str,
     skill_locations: &std::collections::HashMap<PathBuf, crate::config::skills::Skill>,
 ) -> Option<SkillRead> {
     if name != "Read" {
+        return None;
+    }
+    if !arguments.contains("SKILL.md") {
         return None;
     }
     let path_str = read_extract_path(arguments)?;

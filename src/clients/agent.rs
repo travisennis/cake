@@ -1475,6 +1475,9 @@ impl Agent {
 
     /// Stream a conversation item as JSON via the streaming callback, if set.
     fn stream_item(&mut self, item: &ConversationItem) -> anyhow::Result<()> {
+        if !self.observer.is_active() {
+            return Ok(());
+        }
         self.observer.stream_item(item)
     }
 
@@ -1483,6 +1486,9 @@ impl Agent {
         item: &ConversationItem,
         replay: Option<ReplaySafety>,
     ) -> anyhow::Result<()> {
+        if !self.observer.is_active() {
+            return Ok(());
+        }
         self.observer.stream_item_with_replay(item, replay)
     }
 

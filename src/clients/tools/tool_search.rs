@@ -163,6 +163,7 @@ pub fn tool_search_entry(
         let active = Arc::clone(&active);
         Box::pin(async move { execute(&catalog, &pending, &active, &arguments).await })
     })
+    .tolerates_intent()
     .read_safe()
     .repairs_arguments()
 }

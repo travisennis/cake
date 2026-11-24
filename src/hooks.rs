@@ -334,6 +334,16 @@ impl HookRunner {
         arguments: &str,
         repairs_arguments: bool,
     ) -> anyhow::Result<ToolHookPlan> {
+        if !self
+            .loaded
+            .has_matching_tool_hook(HookEvent::PreToolUse, tool_name)
+        {
+            return Ok(ToolHookPlan::Execute {
+                arguments: arguments.to_string(),
+                prefix_notice: None,
+                additional_context: Vec::new(),
+            });
+        }
         let source = HookSource::Tool(tool_name.to_owned());
         let tool_input = parse_tool_input(repairs_arguments, arguments);
         let metadata = ToolHookMetadata::new(tool_use_id, tool_name, repairs_arguments, arguments);

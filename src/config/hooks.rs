@@ -30,10 +30,9 @@ impl LoadedHooks {
 
     /// Whether a tool event has at least one configured matching hook.
     pub fn has_matching_tool_hook(&self, event: HookEvent, tool_name: &str) -> bool {
-        let source = HookSource::Tool(tool_name.to_owned());
         self.groups
             .iter()
-            .any(|group| group.event == event && group.matcher.matches(&source))
+            .any(|group| group.event == event && group.matcher.matches_tool_name(tool_name))
     }
 }
 
@@ -191,6 +190,16 @@ impl HookMatcher {
         match self {
             Self::All => true,
             Self::Exact(values) => values.iter().any(|v| v == source),
+        }
+    }
+
+    /// Match a tool name without building a [`HookSource`] allocation.
+    pub fn matches_tool_name(&self, tool_name: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Exact(values) => values
+                .iter()
+                .any(|value| matches!(value, HookSource::Tool(name) if name == tool_name)),
         }
     }
 }

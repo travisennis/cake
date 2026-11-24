@@ -84,6 +84,7 @@ pub fn skill_search_entry(entries: Vec<SkillSearchEntry>) -> ToolEntry {
         let entries = entries.clone();
         Box::pin(async move { execute(&entries, &arguments) })
     })
+    .tolerates_intent()
     .read_safe()
     .repairs_arguments()
 }

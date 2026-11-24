@@ -635,6 +635,10 @@ pub(super) enum PathTouch {
 /// arguments strictly, as unsafe to offer under the read-only sandbox policy,
 /// and as non-mutating for scheduling purposes. Registration is the single
 /// place that states what a tool is.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag describes an independent tool behavior"
+)]
 #[derive(Clone)]
 pub(super) struct ToolCapabilities {
     /// The executor applies the conservative JSON repair pass before parsing
@@ -655,6 +659,10 @@ pub(super) struct ToolCapabilities {
     /// model that declares image support. A text-only model would otherwise
     /// receive a tool whose output the provider rejects.
     pub(super) requires_image_support: bool,
+    /// The tool's argument parser ignores unknown top-level fields, so the
+    /// display-only `intent` field can reach it and skip a parse-and-reserialize
+    /// pass. Strict parsers, toolbox processes, and MCP servers keep it stripped.
+    pub(super) tolerates_intent: bool,
 }
 
 impl ToolCapabilities {
@@ -665,6 +673,7 @@ impl ToolCapabilities {
             replay_safety: ReplaySafety::Never,
             path_target: None,
             requires_image_support: false,
+            tolerates_intent: false,
         }
     }
 }
@@ -725,6 +734,13 @@ impl ToolEntry {
     /// registered only for a model that declares image support.
     const fn requires_images(mut self) -> Self {
         self.capabilities.requires_image_support = true;
+        self
+    }
+
+    /// Declare that the executor's parser ignores unknown top-level fields, so
+    /// the display-only `intent` field can be left in place.
+    const fn tolerates_intent(mut self) -> Self {
+        self.capabilities.tolerates_intent = true;
         self
     }
 
@@ -869,7 +885,11 @@ impl ToolRegistry {
             return Err(ToolError::new(format!("Unknown tool: {name}")));
         };
 
-        let arguments = strip_intent(arguments);
+        let arguments = if entry.capabilities.tolerates_intent {
+            arguments.to_string()
+        } else {
+            strip_intent(arguments)
+        };
         (entry.execute)(context, call_id.to_string(), arguments).await
     }
 
@@ -1739,21 +1759,25 @@ fn record_removed_builtins(
 /// tool names (#277).
 pub(super) fn default_tool_registry() -> ToolRegistry {
     let entries = vec![
-        ToolEntry::new(bash::bash_tool(), execute_bash_tool),
-        ToolEntry::new(bash_session::bash_session_tool(), execute_bash_session_tool),
+        ToolEntry::new(bash::bash_tool(), execute_bash_tool).tolerates_intent(),
+        ToolEntry::new(bash_session::bash_session_tool(), execute_bash_session_tool)
+            .tolerates_intent(),
         ToolEntry::new(edit::edit_tool(), execute_edit_tool)
             .repairs_arguments()
             .mutates_path(edit::mutating_target),
         ToolEntry::new(read::read_tool(), execute_read_tool)
+            .tolerates_intent()
             .read_safe()
             .replay_safe()
             .observes_path(read::path_target),
         ToolEntry::new(read_image::read_image_tool(), execute_read_image_tool)
+            .tolerates_intent()
             .read_safe()
             .replay_safe()
             .observes_path(read_image::path_target)
             .requires_images(),
         ToolEntry::new(write::write_tool(), execute_write_tool)
+            .tolerates_intent()
             .repairs_arguments()
             .mutates_path(write::mutating_target),
     ];
