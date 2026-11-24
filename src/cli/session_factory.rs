@@ -12,7 +12,7 @@ use tracing::info;
 
 use crate::cli::context_identity;
 use crate::cli::run_mode::{RunMode, SessionPersistencePlan};
-use crate::clients::mcp::McpServer;
+use crate::clients::mcp::{LazyMcpRuntime, McpServer};
 use crate::clients::{Agent, ToolContext};
 use crate::config::provider_identity::{self, SessionProviderIdentityCheck};
 use crate::config::settings::{ResolvedImagePolicy, SkillSettings};
@@ -279,6 +279,7 @@ impl crate::CodingAssistant {
         tool_context: Arc<ToolContext>,
         toolbox_tools: Vec<ToolboxTool>,
         mcp_servers: Vec<McpServer>,
+        mcp_runtime: Option<Arc<LazyMcpRuntime>>,
         enabled_tools: Option<&[String]>,
         include_runtime_context: bool,
         task_id: uuid::Uuid,
@@ -296,6 +297,7 @@ impl crate::CodingAssistant {
             .with_tool_context(tool_context)
             .with_toolbox_tools(toolbox_tools)
             .with_mcp_servers(mcp_servers)
+            .with_lazy_mcp_servers(mcp_runtime)
             .with_enabled_tools(enabled_tools)
             .with_active_mcp_tools(activated_mcp_tools)
             .with_context_seed(seed)
@@ -339,6 +341,7 @@ impl crate::CodingAssistant {
         tool_context: Arc<ToolContext>,
         toolbox_tools: Vec<ToolboxTool>,
         mcp_servers: Vec<McpServer>,
+        mcp_runtime: Option<Arc<LazyMcpRuntime>>,
         enabled_tools: Option<&[String]>,
         include_runtime_context: bool,
         task_id: uuid::Uuid,
@@ -350,6 +353,7 @@ impl crate::CodingAssistant {
             .with_tool_context(tool_context)
             .with_toolbox_tools(toolbox_tools)
             .with_mcp_servers(mcp_servers)
+            .with_lazy_mcp_servers(mcp_runtime)
             .with_enabled_tools(enabled_tools)
             .with_skill_locations(skill_locations);
         agent.set_prompt_prefix_runtime(include_runtime_context);
@@ -390,6 +394,7 @@ impl crate::CodingAssistant {
         tool_context: Arc<ToolContext>,
         toolbox_tools: Vec<ToolboxTool>,
         mcp_servers: Vec<McpServer>,
+        mcp_runtime: Option<Arc<LazyMcpRuntime>>,
         enabled_tools: Option<&[String]>,
         include_runtime_context: bool,
         task_id: uuid::Uuid,
@@ -402,6 +407,7 @@ impl crate::CodingAssistant {
             .with_tool_context(tool_context)
             .with_toolbox_tools(toolbox_tools)
             .with_mcp_servers(mcp_servers)
+            .with_lazy_mcp_servers(mcp_runtime)
             .with_enabled_tools(enabled_tools)
             .with_active_mcp_tools(activated_mcp_tools);
         agent.set_prompt_prefix_runtime(include_runtime_context);
@@ -492,6 +498,7 @@ impl crate::CodingAssistant {
         tool_context: &Arc<ToolContext>,
         toolbox_tools: &[ToolboxTool],
         mcp_servers: &[McpServer],
+        lazy_mcp: Option<&Arc<LazyMcpRuntime>>,
         enabled_tools: Option<&[String]>,
         task_id: uuid::Uuid,
         cli_system_prompt: Option<&Path>,
@@ -514,6 +521,7 @@ impl crate::CodingAssistant {
             tool_context,
             toolbox_tools,
             mcp_servers,
+            lazy_mcp,
             tools_enabled: enabled_tools,
             include_runtime_context: !self.no_runtime_context,
             include_project_prompt,
@@ -577,6 +585,7 @@ impl crate::CodingAssistant {
             tool_context,
             inputs.toolbox_tools.to_vec(),
             inputs.mcp_servers.to_vec(),
+            inputs.lazy_mcp.cloned(),
             inputs.tools_enabled,
             inputs.include_runtime_context,
             inputs.task_id,
@@ -643,6 +652,7 @@ impl crate::CodingAssistant {
             tool_context,
             inputs.toolbox_tools.to_vec(),
             inputs.mcp_servers.to_vec(),
+            inputs.lazy_mcp.cloned(),
             inputs.tools_enabled,
             inputs.include_runtime_context,
             inputs.task_id,
@@ -675,6 +685,7 @@ impl crate::CodingAssistant {
             Arc::clone(inputs.tool_context),
             inputs.toolbox_tools.to_vec(),
             inputs.mcp_servers.to_vec(),
+            inputs.lazy_mcp.cloned(),
             inputs.tools_enabled,
             inputs.include_runtime_context,
             inputs.task_id,
@@ -744,6 +755,7 @@ struct RunInputs<'a> {
     tool_context: &'a Arc<ToolContext>,
     toolbox_tools: &'a [ToolboxTool],
     mcp_servers: &'a [McpServer],
+    lazy_mcp: Option<&'a Arc<LazyMcpRuntime>>,
     tools_enabled: Option<&'a [String]>,
     include_runtime_context: bool,
     include_project_prompt: bool,
@@ -777,6 +789,7 @@ impl RunInputs<'_> {
             self.tool_context.sandbox_policy(),
             self.toolbox_tools,
             self.mcp_servers,
+            self.lazy_mcp.map(Arc::as_ref),
             self.tools_enabled,
             supports_images,
             self.include_runtime_context,

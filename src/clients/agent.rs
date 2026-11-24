@@ -14,11 +14,12 @@ use crate::clients::agent_runner::AgentRunner;
 use crate::clients::agent_state::{ConversationState, SourceRef, accumulate_usage};
 use crate::clients::backend::{Backend, ToolChoice};
 use crate::clients::compaction::MeasuredInput;
-use crate::clients::mcp::{McpClient, McpServer, McpTool};
+use crate::clients::mcp::{LazyMcpRuntime, McpClient, McpServer, McpTool};
 use crate::clients::tools::{
     SKILL_SEARCH_NAME, SandboxPolicy, SkillSearchEntry, TOOL_SEARCH_NAME, ToolContext,
-    ToolRegistry, ToolSearchEntry, default_tool_registry, mcp_tool_entry, skill_search_enabled,
-    skill_search_entry, tool_search_enabled, tool_search_entry, toolbox_tool_entry,
+    ToolRegistry, ToolSearchCatalog, ToolSearchEntry, default_tool_registry, mcp_tool_entry,
+    skill_search_enabled, skill_search_entry, tool_search_enabled, tool_search_entry,
+    toolbox_tool_entry,
 };
 use crate::config::model::ResolvedModelConfig;
 use crate::config::output_schema::OutputSchema;
@@ -215,6 +216,10 @@ pub struct Agent {
     deferred_mcp_tools: Vec<DeferredMcpTool>,
     /// Connected MCP servers and their latest advertised tool snapshots.
     mcp_servers: Vec<McpServer>,
+    /// Deferred MCP servers that connect on the first search or restored call.
+    lazy_mcp: Option<Arc<LazyMcpRuntime>>,
+    /// Restored MCP tool names waiting for their lazy server to connect.
+    pending_restored_mcp_tools: Vec<String>,
     /// Last tool-change generation observed for each connected server.
     mcp_tool_generations: HashMap<String, u64>,
     /// Registered names selected by `ToolSearch` during the current tool batch.
@@ -327,6 +332,8 @@ impl Agent {
             enabled_tool_names: None,
             deferred_mcp_tools: Vec::new(),
             mcp_servers: Vec::new(),
+            lazy_mcp: None,
+            pending_restored_mcp_tools: Vec::new(),
             mcp_tool_generations: HashMap::new(),
             pending_tool_activations: Arc::new(Mutex::new(Vec::new())),
             active_mcp_tools: Arc::new(Mutex::new(HashSet::new())),
@@ -564,6 +571,20 @@ impl Agent {
         self
     }
 
+    /// Registers deferred MCP servers that connect when a tool is needed.
+    ///
+    /// A lazy server contributes its prompt row and a search surface without
+    /// starting its process. `ToolSearch` and restored active tools connect
+    /// the owning server before the next request needs it.
+    pub fn with_lazy_mcp_servers(mut self, lazy: Option<Arc<LazyMcpRuntime>>) -> Self {
+        if self.tool_context.sandbox_policy() == SandboxPolicy::ReadOnly {
+            return self;
+        }
+        self.lazy_mcp = lazy;
+        self.refresh_tool_search();
+        self
+    }
+
     /// Register one MCP tool unless its name is already taken.
     fn register_mcp_tool(
         &mut self,
@@ -594,7 +615,8 @@ impl Agent {
             self.tools.remove_by_name(TOOL_SEARCH_NAME);
             self.tool_search_installed = false;
         }
-        if self.deferred_mcp_tools.is_empty() {
+        let has_lazy = self.lazy_mcp.as_ref().is_some_and(|lazy| !lazy.is_empty());
+        if self.deferred_mcp_tools.is_empty() && !has_lazy {
             return;
         }
         if !tool_search_enabled(self.enabled_tool_names.as_deref()) {
@@ -621,11 +643,11 @@ impl Agent {
                 input_schema: deferred.tool.input_schema.clone(),
             })
             .collect();
-        if entries.is_empty() {
+        if entries.is_empty() && !has_lazy {
             return;
         }
         self.tools.push_entry(tool_search_entry(
-            entries,
+            Arc::new(ToolSearchCatalog::new(entries, self.lazy_mcp.clone())),
             Arc::clone(&self.pending_tool_activations),
             Arc::clone(&self.active_mcp_tools),
         ));
@@ -668,6 +690,8 @@ impl Agent {
     /// set. A failed re-list keeps the previous surface: the server's tools
     /// remain usable, and the next notification tries again.
     pub(super) async fn refresh_changed_mcp_tools(&mut self) {
+        self.restore_pending_mcp_tools().await;
+        self.sync_lazy_mcp_servers();
         let changed_servers: Vec<String> = self
             .mcp_servers
             .iter()
@@ -697,6 +721,9 @@ impl Agent {
                 Ok(changed) => {
                     if changed {
                         self.reconcile_mcp_server_tools(&server, &previous);
+                    }
+                    if let Some(lazy) = &self.lazy_mcp {
+                        lazy.update_server(server.clone());
                     }
                     self.mcp_servers[index] = server;
                 },
@@ -861,52 +888,118 @@ impl Agent {
         if self.tool_context.sandbox_policy() == SandboxPolicy::ReadOnly {
             return self;
         }
-        let supports_images = self.config.model_config.supports_images;
         for name in names {
-            if !self.mcp_tool_enabled(&name) {
-                tracing::debug!(
-                    target: "cake",
-                    "Ignoring restored MCP tool '{name}': excluded by the tool allowlist"
-                );
-                continue;
-            }
-            if self.tools.has(&name) {
-                self.active_mcp_tools
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .insert(name);
-                continue;
-            }
-            let Some(deferred) = self
-                .deferred_mcp_tools
-                .iter()
-                .find(|deferred| deferred.tool.registered_name == name)
-                .cloned()
-            else {
-                tracing::debug!(
-                    target: "cake",
-                    "Ignoring restored MCP tool '{name}': not present in the live deferred catalog"
-                );
-                continue;
-            };
-            if self.register_mcp_tool(
-                &deferred.server,
-                &deferred.tool,
-                Arc::clone(&deferred.client),
-                supports_images,
-            ) {
-                self.active_mcp_tools
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .insert(name);
-            }
+            self.restore_active_mcp_tool(name);
         }
         self
+    }
+
+    fn restore_active_mcp_tool(&mut self, name: String) {
+        if !self.mcp_tool_enabled(&name) {
+            tracing::debug!(
+                target: "cake",
+                "Ignoring restored MCP tool '{name}': excluded by the tool allowlist"
+            );
+            return;
+        }
+        if self.tools.has(&name) {
+            self.active_mcp_tools
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(name);
+            return;
+        }
+        if self
+            .deferred_mcp_tools
+            .iter()
+            .any(|deferred| deferred.tool.registered_name == name)
+        {
+            _ = self.activate_restored_mcp_tool(&name);
+            return;
+        }
+        if self
+            .lazy_mcp
+            .as_ref()
+            .is_some_and(|lazy| lazy.owns_tool(&name))
+        {
+            self.pending_restored_mcp_tools.push(name);
+            return;
+        }
+        tracing::debug!(
+            target: "cake",
+            "Ignoring restored MCP tool '{name}': not present in the live deferred catalog"
+        );
+    }
+
+    fn activate_restored_mcp_tool(&mut self, name: &str) -> bool {
+        if !self.mcp_tool_enabled(name) {
+            return false;
+        }
+        let Some(deferred) = self
+            .deferred_mcp_tools
+            .iter()
+            .find(|deferred| deferred.tool.registered_name == name)
+            .cloned()
+        else {
+            return false;
+        };
+        if !self.register_mcp_tool(
+            &deferred.server,
+            &deferred.tool,
+            Arc::clone(&deferred.client),
+            self.config.model_config.supports_images,
+        ) {
+            return false;
+        }
+        self.active_mcp_tools
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(name.to_string());
+        true
+    }
+
+    /// Connect the lazy servers that own restored active tools, then register
+    /// those tools before the first provider request.
+    pub(super) async fn restore_pending_mcp_tools(&mut self) {
+        if self.pending_restored_mcp_tools.is_empty() {
+            return;
+        }
+        if let Some(lazy) = self.lazy_mcp.clone() {
+            lazy.connect_for_tools(&self.pending_restored_mcp_tools)
+                .await;
+            self.sync_lazy_mcp_servers();
+        }
+        let pending = std::mem::take(&mut self.pending_restored_mcp_tools);
+        for name in pending {
+            if self.activate_restored_mcp_tool(&name) {
+                tracing::info!(target: "cake", "Restored MCP tool '{name}'");
+            }
+        }
+    }
+
+    fn sync_lazy_mcp_servers(&mut self) {
+        let Some(lazy) = self.lazy_mcp.clone() else {
+            return;
+        };
+        for server in lazy.connected_servers() {
+            if self
+                .mcp_servers
+                .iter()
+                .any(|existing| existing.name == server.name)
+            {
+                continue;
+            }
+            self.mcp_tool_generations
+                .insert(server.name.clone(), server.tools_generation());
+            self.reconcile_mcp_server_tools(&server, &[]);
+            self.mcp_servers.push(server);
+        }
     }
 
     /// Register tools selected by a `ToolSearch` call before the next request.
     /// A successful batch is appended to the session so resume can restore it.
     fn activate_pending_mcp_tools(&mut self) -> anyhow::Result<()> {
+        self.sync_lazy_mcp_servers();
         let selected = {
             let mut pending = self
                 .pending_tool_activations

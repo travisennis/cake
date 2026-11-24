@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::clients::mcp::LazyMcpRuntime;
 use crate::clients::tools::{Tool, ToolEntry, ToolError, ToolResult, repair_json_args};
 
 /// Registered name of the search tool.
@@ -44,6 +45,68 @@ pub struct ToolSearchEntry {
     pub(crate) input_schema: Value,
 }
 
+/// Static deferred tools plus the servers that connect on demand.
+#[derive(Clone)]
+pub struct ToolSearchCatalog {
+    entries: Vec<ToolSearchEntry>,
+    lazy: Option<Arc<LazyMcpRuntime>>,
+}
+
+impl ToolSearchCatalog {
+    /// Build a catalog from already-connected tools and lazy servers.
+    #[must_use]
+    pub const fn new(entries: Vec<ToolSearchEntry>, lazy: Option<Arc<LazyMcpRuntime>>) -> Self {
+        Self { entries, lazy }
+    }
+
+    /// Every server a search can reach, sorted for a stable message.
+    fn server_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .entries
+            .iter()
+            .map(|entry| entry.server.clone())
+            .collect();
+        if let Some(lazy) = &self.lazy {
+            names.extend(lazy.server_names().into_iter().map(str::to_string));
+        }
+        names.sort_unstable();
+        names.dedup();
+        names
+    }
+
+    async fn entries_for_search(
+        &self,
+        server: Option<&str>,
+    ) -> (Vec<ToolSearchEntry>, Vec<String>) {
+        let mut entries = self.entries.clone();
+        let mut seen: HashSet<String> = entries
+            .iter()
+            .map(|entry| entry.registered_name.clone())
+            .collect();
+        let mut failed = Vec::new();
+        if let Some(lazy) = &self.lazy {
+            let outcome = lazy.connect(server).await;
+            failed = outcome.failed;
+            for connected in &outcome.servers {
+                for tool in &connected.tools {
+                    if !lazy.tool_enabled(&tool.registered_name)
+                        || !seen.insert(tool.registered_name.clone())
+                    {
+                        continue;
+                    }
+                    entries.push(ToolSearchEntry {
+                        server: connected.name.clone(),
+                        registered_name: tool.registered_name.clone(),
+                        description: tool.description.clone(),
+                        input_schema: tool.input_schema.clone(),
+                    });
+                }
+            }
+        }
+        (entries, failed)
+    }
+}
+
 /// Whether the exact-name allowlist permits `ToolSearch`.
 ///
 /// An absent allowlist permits it. An explicit allowlist must name it, which
@@ -59,7 +122,7 @@ pub fn tool_search_enabled(enabled_tools: Option<&[String]>) -> bool {
 /// `active` is shared with the agent so a later search can report tools that
 /// are already registered instead of claiming they will become available.
 pub fn tool_search_entry(
-    entries: Vec<ToolSearchEntry>,
+    catalog: Arc<ToolSearchCatalog>,
     pending: Arc<Mutex<Vec<String>>>,
     active: Arc<Mutex<HashSet<String>>>,
 ) -> ToolEntry {
@@ -95,10 +158,10 @@ pub fn tool_search_entry(
         }),
     };
     ToolEntry::new(definition, move |_context, _call_id, arguments| {
-        let entries = entries.clone();
+        let catalog = Arc::clone(&catalog);
         let pending = Arc::clone(&pending);
         let active = Arc::clone(&active);
-        Box::pin(async move { execute(&entries, &pending, &active, &arguments) })
+        Box::pin(async move { execute(&catalog, &pending, &active, &arguments).await })
     })
     .read_safe()
     .repairs_arguments()
@@ -114,8 +177,8 @@ struct SearchArguments {
 }
 
 /// Execute one search and record the selected names for activation.
-fn execute(
-    entries: &[ToolSearchEntry],
+async fn execute(
+    catalog: &ToolSearchCatalog,
     pending: &Mutex<Vec<String>>,
     active: &Mutex<HashSet<String>>,
     arguments: &str,
@@ -128,10 +191,15 @@ fn execute(
             "Invalid ToolSearch arguments: query must not be empty",
         ));
     }
+    let (entries, failed) = catalog.entries_for_search(args.server.as_deref()).await;
     let limit = args.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
-    let matches = search(entries, &args.query, args.server.as_deref(), usize::MAX);
+    let matches = search(&entries, &args.query, args.server.as_deref(), usize::MAX);
     if matches.is_empty() {
-        return Ok(text_result(no_match_message(entries, &args.query)));
+        return Ok(text_result(no_match_message(
+            &catalog.server_names(),
+            &failed,
+            &args.query,
+        )));
     }
     let active_names = active
         .lock()
@@ -149,11 +217,9 @@ fn execute(
                 .iter()
                 .map(|entry| entry.registered_name.clone()),
         );
-    Ok(text_result(render_matches(
-        &new_matches,
-        &active_matches,
-        &args.query,
-    )))
+    let mut output = render_matches(&new_matches, &active_matches, &args.query);
+    append_failures(&mut output, &failed);
+    Ok(text_result(output))
 }
 
 const fn text_result(output: String) -> ToolResult {
@@ -225,22 +291,30 @@ fn active_names(active_matches: &[&ToolSearchEntry]) -> String {
     names
 }
 
-fn no_match_message(entries: &[ToolSearchEntry], query: &str) -> String {
-    let servers: Vec<&str> = entries
-        .iter()
-        .map(|entry| entry.server.as_str())
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
+fn no_match_message(servers: &[String], failed: &[String], query: &str) -> String {
     if servers.is_empty() {
         return format!("No MCP tools matched '{query}'. No deferred MCP tools are available.");
     }
-    let mut servers = servers;
-    servers.sort_unstable();
-    format!(
+    let mut output = format!(
         "No MCP tools matched '{query}'. Deferred servers: {}.",
         servers.join(", ")
-    )
+    );
+    append_failures(&mut output, failed);
+    output
+}
+
+fn append_failures(output: &mut String, failed: &[String]) {
+    if failed.is_empty() {
+        return;
+    }
+    let mut failed = failed.to_vec();
+    failed.sort_unstable();
+    failed.dedup();
+    _ = write!(
+        output,
+        "\nDeferred MCP servers unavailable: {}.",
+        failed.join(", ")
+    );
 }
 
 fn concise_description(description: &str) -> String {

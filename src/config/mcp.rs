@@ -630,6 +630,15 @@ pub fn registered_tool_name(server: &str, tool: &str) -> Option<String> {
     Some(format!("{MCP_TOOL_PREFIX}{server}__{truncated}__{digest}"))
 }
 
+/// Prefix shared by every registered tool name from one server.
+///
+/// Returns `None` when the server name cannot produce a usable tool name.
+#[must_use]
+pub fn registered_server_prefix(server: &str) -> Option<String> {
+    let server = sanitize_component(server);
+    has_alphanumeric(&server).then(|| format!("{MCP_TOOL_PREFIX}{server}__"))
+}
+
 /// Replace every character that a provider function name rejects.
 fn sanitize_component(value: &str) -> String {
     value

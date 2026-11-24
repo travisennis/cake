@@ -17,6 +17,7 @@
 //! the Bash sandbox, with Cake's ambient authority.
 
 mod client;
+mod lazy;
 
 use std::sync::Arc;
 
@@ -24,6 +25,7 @@ use serde_json::Value;
 use tracing::warn;
 
 pub use client::{McpClient, ToolListChangeMode};
+pub use lazy::LazyMcpRuntime;
 
 use crate::config::mcp::{McpExposure, McpServerConfig, registered_tool_name};
 

@@ -262,7 +262,9 @@ pub(super) use scheduling::{ScheduledToolCall, schedule_tool_calls};
 pub use skill_search::{
     SKILL_SEARCH_NAME, SkillSearchEntry, skill_search_enabled, skill_search_entry,
 };
-pub use tool_search::{TOOL_SEARCH_NAME, ToolSearchEntry, tool_search_enabled, tool_search_entry};
+pub use tool_search::{
+    TOOL_SEARCH_NAME, ToolSearchCatalog, ToolSearchEntry, tool_search_enabled, tool_search_entry,
+};
 pub(super) use toolbox::toolbox_tool_entry;
 
 /// Compensation events derivable from a tool call's arguments and outcome,
@@ -1371,6 +1373,8 @@ pub struct ExternalServerInfo {
     pub tool_count: usize,
     /// Tools remaining after the exact-name allowlist.
     pub enabled_tool_count: usize,
+    /// Whether the server starts on demand and its tools are not yet known.
+    pub lazy: bool,
 }
 
 /// Format the tool list with the optional `SkillSearch` built-in.
@@ -1403,7 +1407,9 @@ pub fn format_tool_list_section_with_mcp_and_skill_search(
         .any(|tool| is_enabled_tool(&tool.name, enabled_tools));
     let summarized_servers: Vec<&ExternalServerInfo> = mcp_servers
         .iter()
-        .filter(|server| server.enabled_tool_count > 0 && server.exposure != McpExposure::Hidden)
+        .filter(|server| {
+            (server.enabled_tool_count > 0 || server.lazy) && server.exposure != McpExposure::Hidden
+        })
         .collect();
     let has_deferred_tools = tool_search_enabled(enabled_tools)
         && summarized_servers
@@ -1484,11 +1490,15 @@ fn append_mcp_server_summary(s: &mut String, servers: &[&ExternalServerInfo]) {
     }
     s.push_str("\n## MCP servers\n\n");
     for server in servers {
-        let tools = match server.enabled_tool_count {
-            1 if server.tool_count == 1 => "1 tool".to_string(),
-            count if count == server.tool_count => format!("{count} tools"),
-            1 => format!("1 of {} tools", server.tool_count),
-            count => format!("{count} of {} tools", server.tool_count),
+        let tools = if server.lazy {
+            "tools load on demand".to_string()
+        } else {
+            match server.enabled_tool_count {
+                1 if server.tool_count == 1 => "1 tool".to_string(),
+                count if count == server.tool_count => format!("{count} tools"),
+                1 => format!("1 of {} tools", server.tool_count),
+                count => format!("{count} of {} tools", server.tool_count),
+            }
         };
         let mut line = format!(
             "- **{}** (`{}`, {tools})",

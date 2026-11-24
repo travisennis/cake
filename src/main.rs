@@ -29,7 +29,9 @@ use crate::cli::{
     CliOutputSink, CmdRunner, CommandRunOptions, Commands, RunMode, SessionPersistencePlan,
     TurnResult, execute_persistence_plan, prepare_user_skills_dir,
 };
+use crate::clients::mcp::LazyMcpRuntime;
 use crate::clients::resolve_linked_worktree_dirs;
+use crate::clients::tool_search_enabled;
 use crate::clients::{Agent, SandboxPolicy, ToolContext, resolve_sandbox_policy};
 use crate::concurrency::MAX_CONCURRENT_AGENT_OPERATIONS;
 use crate::config::ResolvedModelConfig;
@@ -334,6 +336,7 @@ struct PreparedRun {
     additional_dirs: Vec<PathBuf>,
     toolbox_dirs: Vec<PathBuf>,
     mcp_config_paths: Vec<PathBuf>,
+    force_eager_mcp_servers: HashSet<String>,
     _worktree: WorktreeGuard,
     content: String,
     output_schema: Option<Arc<crate::config::OutputSchema>>,
@@ -364,6 +367,7 @@ struct RunResources {
     tool_context: Arc<ToolContext>,
     toolbox_tools: Vec<crate::config::toolbox::ToolboxTool>,
     mcp_servers: Vec<crate::clients::mcp::McpServer>,
+    mcp_runtime: Option<Arc<LazyMcpRuntime>>,
     tools_enabled: Option<Vec<String>>,
 }
 
@@ -905,6 +909,7 @@ impl CodingAssistant {
             additional_dirs,
             toolbox_dirs,
             mcp_config_paths,
+            force_eager_mcp_servers: HashSet::new(),
             _worktree: WorktreeGuard::new(worktree, original_dir),
             content: inputs.content,
             output_schema: inputs.output_schema,
@@ -1003,7 +1008,17 @@ impl CodingAssistant {
         run_mode: &RunMode,
         stored_context_identity: Option<&ContextIdentity>,
     ) -> anyhow::Result<(PreparedRun, RunResources)> {
-        let prepared = self.prepare_run(project_config_mode, session_working_dir)?;
+        let mut prepared = self.prepare_run(project_config_mode, session_working_dir)?;
+        prepared.force_eager_mcp_servers = stored_context_identity
+            .map(|identity| {
+                identity
+                    .mcp
+                    .servers
+                    .iter()
+                    .map(|server| server.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut resources = self.load_run_context(
             &prepared.current_dir,
             data_dir,
@@ -1106,6 +1121,7 @@ impl CodingAssistant {
             tool_context: Arc::new(tool_context),
             toolbox_tools: Vec::new(),
             mcp_servers: Vec::new(),
+            mcp_runtime: None,
             tools_enabled,
         })
     }
@@ -1129,23 +1145,40 @@ impl CodingAssistant {
             &resources.trust,
             resources.project_config_mode,
             resources.project_mcp_bytes.as_deref(),
+            resources.tools_enabled.as_deref(),
+            &prepared.force_eager_mcp_servers,
         );
-        let (toolbox_tools, mcp_servers) = tokio::join!(toolbox, mcp);
+        let (toolbox_tools, mcp_result) = tokio::join!(toolbox, mcp);
+        let (mcp_servers, lazy_configs) = mcp_result?;
         resources.toolbox_tools = toolbox_tools;
-        resources.mcp_servers = mcp_servers?;
+        resources.mcp_servers = mcp_servers;
+        if !lazy_configs.is_empty() {
+            resources.mcp_runtime = Some(Arc::new(LazyMcpRuntime::new(
+                prepared.current_dir.clone(),
+                lazy_configs,
+                resources.tools_enabled.as_deref(),
+            )));
+        }
         Ok(())
     }
 
-    /// Discover configured MCP servers, connect to each, and print warnings for
-    /// servers that cannot start. A broken server is skipped; it never stops the
-    /// run.
+    /// Discover configured MCP servers and connect the ones needed before the
+    /// first request. Deferred servers that the model reaches through
+    /// `ToolSearch` are returned unstarted and connect on demand.
+    ///
+    /// A broken eager server is skipped with a warning; it never stops the run.
     async fn start_mcp_servers(
         current_dir: &Path,
         mcp_config_paths: &[PathBuf],
         trust: &ProjectTrustReport,
         project_config_mode: ProjectConfigMode,
         project_mcp_bytes: Option<&[u8]>,
-    ) -> anyhow::Result<Vec<crate::clients::mcp::McpServer>> {
+        enabled_tools: Option<&[String]>,
+        force_eager: &HashSet<String>,
+    ) -> anyhow::Result<(
+        Vec<crate::clients::mcp::McpServer>,
+        Vec<crate::config::mcp::McpServerConfig>,
+    )> {
         let discovery = crate::config::mcp::discover_mcp_servers(
             mcp_config_paths,
             current_dir,
@@ -1158,22 +1191,27 @@ impl CodingAssistant {
         for warning in &discovery.warnings {
             eprintln!("warning: {warning}");
         }
+        let (eager, lazy) = Self::partition_mcp_servers(
+            discovery.servers,
+            tool_search_enabled(enabled_tools),
+            enabled_tools.is_none_or(|names| {
+                names
+                    .iter()
+                    .any(|name| name.starts_with(crate::config::mcp::MCP_TOOL_PREFIX))
+            }),
+            force_eager,
+        );
         let mut servers = Vec::new();
-        let connections = futures::stream::iter(
-            discovery
-                .servers
-                .iter()
-                .filter(|config| config.exposure != crate::config::mcp::McpExposure::Hidden),
-        )
-        .map(|config| async move {
-            (
-                config,
-                crate::clients::mcp::connect_server(config, current_dir).await,
-            )
-        })
-        .buffered(MAX_CONCURRENT_AGENT_OPERATIONS)
-        .collect::<Vec<_>>()
-        .await;
+        let connections = futures::stream::iter(eager.iter())
+            .map(|config| async move {
+                (
+                    config,
+                    crate::clients::mcp::connect_server(config, current_dir).await,
+                )
+            })
+            .buffered(MAX_CONCURRENT_AGENT_OPERATIONS)
+            .collect::<Vec<_>>()
+            .await;
         for (config, result) in connections {
             match result {
                 Ok(server) => servers.push(server),
@@ -1182,7 +1220,38 @@ impl CodingAssistant {
                 },
             }
         }
-        Ok(servers)
+        Ok((servers, lazy))
+    }
+
+    fn partition_mcp_servers(
+        servers: Vec<crate::config::mcp::McpServerConfig>,
+        tool_search: bool,
+        mcp_selected: bool,
+        force_eager: &HashSet<String>,
+    ) -> (
+        Vec<crate::config::mcp::McpServerConfig>,
+        Vec<crate::config::mcp::McpServerConfig>,
+    ) {
+        let mut eager = Vec::new();
+        let mut lazy = Vec::new();
+        for config in servers {
+            if config.exposure == crate::config::mcp::McpExposure::Hidden {
+                continue;
+            }
+            if config.exposure == crate::config::mcp::McpExposure::Deferred {
+                if !mcp_selected {
+                    continue;
+                }
+                if tool_search && !force_eager.contains(&config.name) {
+                    lazy.push(config);
+                } else {
+                    eager.push(config);
+                }
+            } else {
+                eager.push(config);
+            }
+        }
+        (eager, lazy)
     }
 
     /// Resolve `[sandbox].read_only` paths for read-only sandbox access.
@@ -2539,6 +2608,7 @@ impl CodingAssistant {
             &resources.tool_context,
             &resources.toolbox_tools,
             &resources.mcp_servers,
+            resources.mcp_runtime.as_ref(),
             resources.tools_enabled.as_deref(),
             task_id,
             cli_system_prompt.as_deref(),

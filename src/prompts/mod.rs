@@ -276,6 +276,7 @@ pub fn resolve_system_prompt_with_mcp(
     sandbox_policy: SandboxPolicy,
     toolbox_tools: &[ToolboxTool],
     mcp_servers: &[crate::clients::mcp::McpServer],
+    lazy_mcp: Option<&crate::clients::mcp::LazyMcpRuntime>,
     enabled_tools: Option<&[String]>,
     supports_images: bool,
     has_skill_search: bool,
@@ -309,6 +310,7 @@ pub fn resolve_system_prompt_with_mcp(
         sandbox_policy,
         toolbox_tools,
         mcp_servers,
+        lazy_mcp,
         enabled_tools,
         supports_images,
         has_skill_search,
@@ -352,13 +354,14 @@ fn builtin_prompt(
     sandbox_policy: SandboxPolicy,
     toolbox_tools: &[ToolboxTool],
     mcp_servers: &[crate::clients::mcp::McpServer],
+    lazy_mcp: Option<&crate::clients::mcp::LazyMcpRuntime>,
     enabled_tools: Option<&[String]>,
     supports_images: bool,
     has_skill_search: bool,
 ) -> String {
     let builtin = BUILTIN_SYSTEM_PROMPT.trim().to_string();
     if builtin.contains("{{AVAILABLE_TOOLS}}") {
-        let mcp_server_infos: Vec<ExternalServerInfo> = mcp_servers
+        let mut mcp_server_infos: Vec<ExternalServerInfo> = mcp_servers
             .iter()
             .filter(|server| server.exposure != McpExposure::Hidden)
             .filter_map(|server| {
@@ -373,9 +376,24 @@ fn builtin_prompt(
                     exposure: effective_mcp_exposure(server.exposure, enabled_tools),
                     tool_count: server.tools.len(),
                     enabled_tool_count,
+                    lazy: false,
                 })
             })
             .collect();
+        if let Some(lazy) = lazy_mcp {
+            mcp_server_infos.extend(
+                lazy.configs()
+                    .filter(|config| config.exposure != McpExposure::Hidden)
+                    .map(|config| ExternalServerInfo {
+                        name: config.name.clone(),
+                        description: config.description.clone(),
+                        exposure: effective_mcp_exposure(config.exposure, enabled_tools),
+                        tool_count: 0,
+                        enabled_tool_count: 0,
+                        lazy: true,
+                    }),
+            );
+        }
         let mcp_tools: Vec<ExternalToolInfo> = mcp_servers
             .iter()
             .filter(|server| {
@@ -446,6 +464,7 @@ pub fn build_initial_prompt_messages_with_mcp(
     sandbox_policy: SandboxPolicy,
     toolbox_tools: &[ToolboxTool],
     mcp_servers: &[crate::clients::mcp::McpServer],
+    lazy_mcp: Option<&crate::clients::mcp::LazyMcpRuntime>,
     enabled_tools: Option<&[String]>,
     supports_images: bool,
     include_runtime_context: bool,
@@ -464,6 +483,7 @@ pub fn build_initial_prompt_messages_with_mcp(
             sandbox_policy,
             toolbox_tools,
             mcp_servers,
+            lazy_mcp,
             enabled_tools,
             supports_images,
             skill_search_available,
