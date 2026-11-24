@@ -4,7 +4,9 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 
-use crate::clients::agent::{Agent, RequestCapture, TurnResult, record_turn_usage};
+use crate::clients::agent::{
+    Agent, FixedTokensCache, RequestCapture, TurnResult, record_turn_usage,
+};
 use crate::clients::agent_state::{RecordProvenance, accumulate_usage};
 use crate::clients::backend::FinalOutputConstraint;
 use crate::clients::compaction::{FixedRequest, MeasuredInput, fixed_request_tokens};
@@ -246,7 +248,6 @@ impl Agent {
                 self.refresh_request_capture();
                 return Ok(document);
             }
-            self.refresh_request_capture();
         }
     }
 
@@ -307,9 +308,13 @@ impl Agent {
 
     /// Record the body the next normal main-agent request would send.
     ///
-    /// The capture is rebuilt after every successful turn, so the final one
-    /// includes the accepted assistant items and follows any tool results.
+    /// The capture is rebuilt after the final turn, so it includes the accepted
+    /// assistant items and follows any tool results.
     fn refresh_request_capture(&mut self) {
+        if !self.capture_requests {
+            self.request_capture = None;
+            return;
+        }
         let history = self.conversation.request_context();
         let history = if self.config.model_config.supports_images {
             match prune_request_with_plan(history, &self.image_policy) {
@@ -1147,10 +1152,30 @@ impl Agent {
         let fixed_output_schema = native_constraint_attached
             .then(|| self.output_schema.as_deref().map(|schema| &schema.raw))
             .flatten();
-        let request_fixed_tokens = fixed_request_tokens(&FixedRequest {
-            tool_schemas: tool_definitions,
-            output_schema: fixed_output_schema,
-        });
+        let registry_revision = self.tools.revision();
+        let tools_disabled = turn_mode.tools_disabled();
+        let request_fixed_tokens = match self.fixed_tokens {
+            Some(cache)
+                if cache.registry_revision == registry_revision
+                    && cache.tools_disabled == tools_disabled
+                    && cache.schema_attached == native_constraint_attached =>
+            {
+                cache.tokens
+            },
+            _ => {
+                let tokens = fixed_request_tokens(&FixedRequest {
+                    tool_schemas: tool_definitions,
+                    output_schema: fixed_output_schema,
+                });
+                self.fixed_tokens = Some(FixedTokensCache {
+                    registry_revision,
+                    tools_disabled,
+                    schema_attached: native_constraint_attached,
+                    tokens,
+                });
+                tokens
+            },
+        };
         let config = &self.config;
         let session_id = self.session_id;
         let task_id = self.task_id;

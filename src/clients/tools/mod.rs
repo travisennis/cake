@@ -753,12 +753,19 @@ pub(super) struct ToolRegistry {
     entries: Vec<ToolEntry>,
     /// Cached model-facing tool definitions, computed once at construction.
     definitions: Vec<Tool>,
+    /// Monotonic revision of the model-facing surface.
+    revision: u64,
 }
 
 impl ToolRegistry {
     /// Return the cached model-facing tool definitions.
     pub(super) fn definitions(&self) -> &[Tool] {
         &self.definitions
+    }
+
+    /// Return the revision that advances whenever the definitions change.
+    pub(super) const fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// Remove every tool not declared read-safe.
@@ -812,6 +819,7 @@ impl ToolRegistry {
     /// tell the model to call a tool it cannot use. Toolbox descriptions are
     /// user-provided and are left unchanged.
     fn refresh_definitions(&mut self) {
+        self.revision = self.revision.saturating_add(1);
         let available_names: Vec<String> = self
             .entries
             .iter()
@@ -1742,6 +1750,7 @@ pub(super) fn default_tool_registry() -> ToolRegistry {
     let mut registry = ToolRegistry {
         entries,
         definitions: Vec::new(),
+        revision: 0,
     };
     registry.refresh_definitions();
     registry

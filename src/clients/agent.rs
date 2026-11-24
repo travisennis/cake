@@ -45,6 +45,19 @@ pub struct RequestCapture {
     pub turn: u32,
 }
 
+/// Memoized token estimate for the invariant part of a provider request.
+///
+/// Tool schemas dominate the fixed request surface and only change when the
+/// registry changes, so the estimate is reused until the registry revision or
+/// the active constraint changes.
+#[derive(Debug, Clone, Copy)]
+struct FixedTokensCache {
+    registry_revision: u64,
+    tools_disabled: bool,
+    schema_attached: bool,
+    tokens: u64,
+}
+
 /// Result of a single API turn (one request/response cycle).
 #[derive(Debug)]
 pub(super) struct TurnResult {
@@ -276,6 +289,10 @@ pub struct Agent {
     tool_choice: Option<ToolChoice>,
     /// The next-request body after the most recent successful main-agent turn.
     request_capture: Option<RequestCapture>,
+    /// Memoized tool-schema and output-schema token estimate.
+    fixed_tokens: Option<FixedTokensCache>,
+    /// Whether to build the next-request body for `--reuse-last-request`.
+    capture_requests: bool,
     /// One-way context fingerprint recorded with the prompt-prefix metadata.
     prompt_prefix_fingerprint: Option<String>,
     /// Whether the leading prompt prefix was created, reused, or rebuilt.
@@ -338,6 +355,8 @@ impl Agent {
             output_schema: None,
             tool_choice: None,
             request_capture: None,
+            fixed_tokens: None,
+            capture_requests: true,
             prompt_prefix_fingerprint: None,
             prompt_prefix_decision: PromptPrefixDecision::Initial,
             prompt_prefix_runtime: false,
@@ -1037,6 +1056,15 @@ impl Agent {
     /// one.
     pub const fn take_request_capture(&mut self) -> Option<RequestCapture> {
         self.request_capture.take()
+    }
+
+    /// Enable or disable building the next-request body.
+    ///
+    /// The capture only serves a later `--reuse-last-request` run, which must
+    /// persist the session. A run that does not persist one skips the work.
+    pub const fn with_request_capture(mut self, enabled: bool) -> Self {
+        self.capture_requests = enabled;
+        self
     }
 
     /// Sets the session ID for a restored session.

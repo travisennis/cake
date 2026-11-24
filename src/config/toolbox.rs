@@ -22,6 +22,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use futures::StreamExt;
 use tracing::{debug, warn};
 
 use crate::types::ReplaySafety;
@@ -243,9 +244,15 @@ fn is_executable(_metadata: &std::fs::Metadata) -> bool {
 /// filename within a directory) wins and the duplicate is skipped with a
 /// warning.
 pub async fn load_toolbox_tools(dirs: &[PathBuf]) -> Vec<ToolboxTool> {
+    let entries = discover_toolbox_entries(dirs);
+    let results = futures::stream::iter(entries.iter())
+        .map(|entry| async move { describe_entry(entry).await })
+        .buffered(crate::concurrency::MAX_CONCURRENT_AGENT_OPERATIONS)
+        .collect::<Vec<_>>()
+        .await;
     let mut tools: Vec<ToolboxTool> = Vec::new();
-    for entry in discover_toolbox_entries(dirs) {
-        match describe_entry(&entry).await {
+    for (entry, result) in entries.iter().zip(results) {
+        match result {
             Ok(tool) => {
                 if let Some(existing) = tools.iter().find(|t| t.original_name == tool.original_name)
                 {

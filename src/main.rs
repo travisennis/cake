@@ -20,6 +20,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+use futures::StreamExt;
+
 use crate::cli::context_identity::{
     self, ContextDrift, ContextIdentityCheck, ContextIdentityInputs, ContextPreflightInputs,
 };
@@ -29,6 +31,7 @@ use crate::cli::{
 };
 use crate::clients::resolve_linked_worktree_dirs;
 use crate::clients::{Agent, SandboxPolicy, ToolContext, resolve_sandbox_policy};
+use crate::concurrency::MAX_CONCURRENT_AGENT_OPERATIONS;
 use crate::config::ResolvedModelConfig;
 use crate::config::settings::LoadedSettings;
 use crate::config::trust::{
@@ -1119,16 +1122,17 @@ impl CodingAssistant {
             }
             return Ok(());
         }
-        resources.toolbox_tools =
-            crate::config::toolbox::load_toolbox_tools(&prepared.toolbox_dirs).await;
-        resources.mcp_servers = Self::start_mcp_servers(
+        let toolbox = crate::config::toolbox::load_toolbox_tools(&prepared.toolbox_dirs);
+        let mcp = Self::start_mcp_servers(
             &prepared.current_dir,
             &prepared.mcp_config_paths,
             &resources.trust,
             resources.project_config_mode,
             resources.project_mcp_bytes.as_deref(),
-        )
-        .await?;
+        );
+        let (toolbox_tools, mcp_servers) = tokio::join!(toolbox, mcp);
+        resources.toolbox_tools = toolbox_tools;
+        resources.mcp_servers = mcp_servers?;
         Ok(())
     }
 
@@ -1155,11 +1159,23 @@ impl CodingAssistant {
             eprintln!("warning: {warning}");
         }
         let mut servers = Vec::new();
-        for config in &discovery.servers {
-            if config.exposure == crate::config::mcp::McpExposure::Hidden {
-                continue;
-            }
-            match crate::clients::mcp::connect_server(config, current_dir).await {
+        let connections = futures::stream::iter(
+            discovery
+                .servers
+                .iter()
+                .filter(|config| config.exposure != crate::config::mcp::McpExposure::Hidden),
+        )
+        .map(|config| async move {
+            (
+                config,
+                crate::clients::mcp::connect_server(config, current_dir).await,
+            )
+        })
+        .buffered(MAX_CONCURRENT_AGENT_OPERATIONS)
+        .collect::<Vec<_>>()
+        .await;
+        for (config, result) in connections {
+            match result {
                 Ok(server) => servers.push(server),
                 Err(error) => {
                     eprintln!("warning: skipping MCP server '{}': {error}", config.name);
@@ -2546,7 +2562,8 @@ impl CodingAssistant {
         run_session.agent = run_session
             .agent
             .with_limits(&resources.loaded.limits)
-            .with_image_policy(&resources.loaded.images);
+            .with_image_policy(&resources.loaded.images)
+            .with_request_capture(context.run_mode.persists_session());
         run_session.agent = Self::apply_compaction_policy(
             run_session.agent,
             &resources.loaded,

@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -207,11 +208,11 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument(
         "--profiler",
-        choices=("samply", "instruments"),
+        choices=("samply", "instruments", "none"),
         default="samply",
         help=(
-            "profiler to run: samply for the primary CPU workflow or instruments "
-            "for optional macOS allocation inspection"
+            "profiler to run: samply for the primary CPU workflow, instruments "
+            "for optional macOS allocation inspection, or none for a timing-only run"
         ),
     )
     result.add_argument(
@@ -240,6 +241,8 @@ def profiler_command(
         "profile",
         "Read the profiling fixture and report what you found.",
     ]
+    if profiler == "none":
+        return cake_args
     if profiler == "samply":
         return [
             "samply",
@@ -290,7 +293,7 @@ def main() -> int:
         print(f"error: profiling binary does not exist: {binary}", file=sys.stderr)
         return 2
 
-    if not profiler_is_available(args.profiler):
+    if args.profiler != "none" and not profiler_is_available(args.profiler):
         if args.profiler == "samply":
             print(
                 "error: samply is not installed; install it with `cargo install samply --locked`",
@@ -317,7 +320,9 @@ def main() -> int:
         )
 
         server = ProfileServer(fixture, args.tool_calls)
-        settings = workspace / ".cake" / "settings.toml"
+        home = root / "home"
+        settings = home / ".config" / "cake" / "settings.toml"
+        settings.parent.mkdir(parents=True)
         settings.write_text(
             "\n".join(
                 [
@@ -338,7 +343,6 @@ def main() -> int:
         server_thread = threading.Thread(target=server.serve_forever, daemon=True)
         server_thread.start()
         environment = os.environ.copy()
-        home = root / "home"
         environment.update(
             {
                 "HOME": str(home),
@@ -351,7 +355,9 @@ def main() -> int:
 
         try:
             command = profiler_command(args.profiler, binary, output)
+            started = time.perf_counter()
             completed = subprocess.run(command, cwd=workspace, env=environment, check=False)
+            elapsed = time.perf_counter() - started
         finally:
             server.shutdown()
             server.server_close()
@@ -366,6 +372,15 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 1
+
+        if args.profiler == "none":
+            print(
+                f"Elapsed {elapsed:.3f}s for {args.tool_calls} tool calls "
+                f"(exit {completed.returncode})"
+            )
+
+    if args.profiler == "none":
+        return 0
 
     # samply writes a file; xctrace writes an Instruments .trace bundle directory.
     if not output.exists():
