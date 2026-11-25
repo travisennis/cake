@@ -30,7 +30,7 @@ use crate::clients::{
 };
 use crate::config::mcp::McpExposure;
 use crate::config::toolbox::ToolboxTool;
-use crate::config::{AgentsFile, SkillCatalog, SkillCatalogBudget};
+use crate::config::{AgentsFile, ScopedAgentsFile, SkillCatalog, SkillCatalogBudget};
 use crate::types::Role;
 
 /// Built-in default system prompt, embedded at compile time from `system.md`.
@@ -575,4 +575,89 @@ fn format_agents_context(agents_files: &[AgentsFile]) -> String {
     }
 
     context
+}
+
+/// Format scoped `AGENTS.md` files discovered by a successful tool batch.
+///
+/// The injection is appended after the batch's tool outputs, so it extends the
+/// prior provider request without rewriting its prefix. Content is capped at
+/// 64 KiB per injection; the file that crosses the cap is truncated at a UTF-8
+/// boundary and later files are named in an omission notice.
+pub fn format_scoped_agents_context(agents_files: &[ScopedAgentsFile]) -> String {
+    let non_empty_files: Vec<_> = agents_files
+        .iter()
+        .filter(|file| !file.content.trim().is_empty())
+        .collect();
+    if non_empty_files.is_empty() {
+        return String::new();
+    }
+
+    let mut rendered = String::from("## Scoped Project Instructions\n\n");
+    rendered.push_str(
+        "The task has entered the following project scopes. These instructions apply under the \
+         named directory and override workspace instructions for that subtree, but they do not \
+         override user-level or configuration-level instructions. When scoped files conflict, the \
+         more specific nested file wins.\n\n",
+    );
+
+    let mut remaining = SCOPED_AGENTS_CONTENT_LIMIT_BYTES;
+    let mut omitted = Vec::new();
+    for file in non_empty_files {
+        if remaining == 0 {
+            omitted.push(file.path.as_str());
+            continue;
+        }
+
+        let text = file.content.trim();
+        let cut = scoped_content_cut(text, remaining);
+        if cut == 0 {
+            omitted.push(file.path.as_str());
+            remaining = 0;
+            continue;
+        }
+        rendered.push_str("### ");
+        rendered.push_str(&file.path);
+        rendered.push_str("\n\n<instructions>\n");
+        rendered.push_str(text.get(..cut).unwrap_or_default());
+        if cut < text.len() {
+            rendered.push_str(SCOPED_AGENTS_TRUNCATION_NOTICE);
+        }
+        rendered.push_str("\n</instructions>\n\n");
+        remaining -= cut;
+    }
+
+    if !omitted.is_empty() {
+        rendered.push_str("### Omitted scoped instructions\n\n<instructions>\n");
+        rendered.push_str(
+            "The following AGENTS.md files were not injected because scoped instruction content \
+             reached the 64 KiB limit:\n",
+        );
+        for path in omitted {
+            rendered.push_str("- ");
+            rendered.push_str(path);
+            rendered.push('\n');
+        }
+        rendered.push_str("</instructions>\n");
+    }
+
+    rendered
+}
+
+/// Largest scoped instruction content included in one injection, in bytes.
+const SCOPED_AGENTS_CONTENT_LIMIT_BYTES: usize = 64 * 1024;
+
+/// Visible marker appended when scoped instruction content is truncated.
+const SCOPED_AGENTS_TRUNCATION_NOTICE: &str =
+    "\n\n[truncated: scoped AGENTS.md content reached the 64 KiB injection limit]";
+
+/// Return the largest UTF-8 boundary at or below `limit`.
+const fn scoped_content_cut(content: &str, limit: usize) -> usize {
+    if limit >= content.len() {
+        return content.len();
+    }
+    let mut cut = limit;
+    while cut > 0 && !content.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    cut
 }

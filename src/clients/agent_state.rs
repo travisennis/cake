@@ -585,24 +585,28 @@ impl ConversationState {
         &mut self,
         contexts: Vec<String>,
         source_task: Option<&str>,
-    ) {
+    ) -> Vec<ConversationItem> {
         let timestamp = chrono::Utc::now();
+        let mut items = Vec::new();
         for content in contexts {
             if content.is_empty() {
                 continue;
             }
-            self.history.push(ConversationItem::Message {
+            let item = ConversationItem::Message {
                 role: Role::Developer,
                 content,
                 id: None,
                 status: None,
                 timestamp: Some(timestamp),
                 images: Vec::new(),
-            });
+            };
+            self.history.push(item.clone());
             self.provenance
                 .push(RecordProvenance::consumed(source_task.map(str::to_owned)));
+            items.push(item);
         }
         self.assert_provenance_aligned();
+        items
     }
 
     /// Restore a persisted conversation and its latest checkpoint.

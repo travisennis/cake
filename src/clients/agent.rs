@@ -208,6 +208,8 @@ pub struct Agent {
     observer: AgentObserver,
     /// Conversation history using typed items
     conversation: ConversationState,
+    /// Canonical scoped `AGENTS.md` paths already injected in this invocation.
+    scoped_agents_loaded: HashSet<PathBuf>,
     tools: ToolRegistry,
     /// Optional exact-name selection applied to tools added after the initial
     /// registry is filtered.
@@ -328,6 +330,7 @@ impl Agent {
             config,
             observer: AgentObserver::default(),
             conversation: ConversationState::new(initial_messages),
+            scoped_agents_loaded: HashSet::new(),
             tools,
             enabled_tool_names: None,
             deferred_mcp_tools: Vec::new(),
@@ -1356,10 +1359,14 @@ impl Agent {
     }
 
     /// Append hook-provided developer context before the next provider request.
-    pub fn append_developer_context(&mut self, contexts: Vec<String>) {
+    ///
+    /// Returns the items that were appended so a caller that needs live
+    /// persistence can feed them to the same streaming path as other
+    /// conversation items. Empty contexts append nothing.
+    pub fn append_developer_context(&mut self, contexts: Vec<String>) -> Vec<ConversationItem> {
         let task_id = self.task_id.to_string();
         self.conversation
-            .append_developer_context(contexts, Some(&task_id));
+            .append_developer_context(contexts, Some(&task_id))
     }
 
     /// Append developer context stating the output-schema requirement for the

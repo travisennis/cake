@@ -99,6 +99,9 @@ struct ToolRunResult {
     /// rereads after the activation telemetry was already emitted.
     skill_read: Option<SkillRead>,
     skill_activation: Option<SkillActivation>,
+    /// Directory entered by a successful call, used for scoped `AGENTS.md`
+    /// discovery after the batch's tool outputs are recorded.
+    scope: Option<PathBuf>,
     telemetry: ToolCallTelemetry,
     compensation_events: Vec<CompensationEventTelemetry>,
     permission_denials: Vec<String>,
@@ -164,6 +167,7 @@ fn immediate_tool_error_result(
         images: Vec::new(),
         skill_read: None,
         skill_activation: None,
+        scope: None,
         compensation_events: Vec::new(),
         permission_denials: Vec::new(),
     }
@@ -196,6 +200,7 @@ impl Agent {
     /// Returns an error if the API request fails, the response cannot be parsed,
     /// or a tool execution fails critically.
     pub async fn send(&mut self, content: String) -> anyhow::Result<String> {
+        self.scoped_agents_loaded.clear();
         let invocation_start = self.conversation.history().len();
         let task_id = self.task_id.to_string();
         let user_item = self.conversation.push_user_message(content, Some(&task_id));
@@ -600,7 +605,63 @@ impl Agent {
     ) -> anyhow::Result<()> {
         self.enforce_limits(function_calls.len(), invocation_start)?;
         let results = self.execute_function_calls(function_calls).await?;
+        let scopes = results
+            .iter()
+            .filter_map(|result| result.scope.clone())
+            .collect();
         self.record_tool_results(results)?;
+        self.append_scoped_agents_context(scopes)?;
+        Ok(())
+    }
+
+    /// Inject every newly entered scope's `AGENTS.md` after a tool batch.
+    ///
+    /// One Developer message follows the batch's tool outputs. Files are
+    /// deduplicated by canonical path for the current invocation, ordered
+    /// parent-first, and capped by the prompt renderer before the message is
+    /// persisted and streamed.
+    fn append_scoped_agents_context(&mut self, mut scopes: Vec<PathBuf>) -> anyhow::Result<()> {
+        if scopes.is_empty() {
+            return Ok(());
+        }
+        scopes.sort_by(|left, right| {
+            left.components()
+                .count()
+                .cmp(&right.components().count())
+                .then_with(|| left.cmp(right))
+        });
+        scopes.dedup();
+
+        let mut files = Vec::new();
+        for scope in scopes {
+            for file in crate::config::read_scoped_agents_files(&self.tool_context.cwd, &scope) {
+                if !self.scoped_agents_loaded.contains(&file.canonical_path) {
+                    files.push(file);
+                }
+            }
+        }
+        files.sort_by(|left, right| {
+            left.canonical_path
+                .components()
+                .count()
+                .cmp(&right.canonical_path.components().count())
+                .then_with(|| left.path.cmp(&right.path))
+        });
+        files.dedup_by(|left, right| left.canonical_path == right.canonical_path);
+
+        let context = crate::prompts::format_scoped_agents_context(&files);
+        for file in &files {
+            self.scoped_agents_loaded
+                .insert(file.canonical_path.clone());
+        }
+        if context.is_empty() {
+            return Ok(());
+        }
+
+        let items = self.append_developer_context(vec![context]);
+        for item in items {
+            self.stream_item(&item)?;
+        }
         Ok(())
     }
 
@@ -793,6 +854,17 @@ impl Agent {
         results
     }
 
+    fn successful_call_scope(
+        &self,
+        name: &str,
+        arguments: &str,
+        was_error: bool,
+    ) -> Option<PathBuf> {
+        (!was_error)
+            .then(|| self.tools.scope_target(&self.tool_context, name, arguments))
+            .flatten()
+    }
+
     async fn run_tool_call(
         &self,
         call_id: String,
@@ -831,6 +903,7 @@ impl Agent {
                 .await;
 
                 let was_error = result.is_err();
+                let scope = self.successful_call_scope(&name, &arguments, was_error);
                 let (mut compensation_events, permission_denials, mut output, images) = match result
                 {
                     Ok(result) => (
@@ -891,6 +964,7 @@ impl Agent {
                     images,
                     skill_read,
                     skill_activation,
+                    scope,
                     compensation_events,
                     permission_denials,
                 }

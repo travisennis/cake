@@ -35,7 +35,7 @@ pub mod worktree;
 use std::path::PathBuf;
 
 #[doc(inline)]
-pub use agents::{AgentsFile, read_agents_files};
+pub use agents::{AgentsFile, ScopedAgentsFile, read_agents_files, read_scoped_agents_files};
 #[doc(inline)]
 pub use blob_store::BlobStore;
 #[doc(inline)]

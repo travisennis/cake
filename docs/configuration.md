@@ -533,6 +533,10 @@ Cake reads optional agent instructions from:
 
 Non-empty files are included as mutable developer context. They complement one another rather than replacing earlier files.
 
+Cake also discovers scoped `AGENTS.md` files lazily from the directories a task enters. After a successful `Read`, `Edit`, or `Write` inside the working directory, or a `Bash` call whose effective `cwd` is inside it, Cake walks parent-first from that directory toward the working directory and appends any newly encountered `AGENTS.md` files as one Developer message after that tool batch. The workspace-root `AGENTS.md` is already in the startup context and is not repeated. A file is injected once per task, and a resumed task re-injects it on first use. Scoped discovery follows only the successful tool target or `Bash` cwd; it does not scan shell command text, `ReadImage`, `BashSession`, MCP, or toolbox output, and it ignores paths outside the invocation working directory.
+
+Scoped instructions apply under the directory named in their heading and override workspace instructions for that subtree, but they never override user-level (`~/.cake/AGENTS.md`) or configuration-level (`<config>/AGENTS.md`) instructions. When scoped files conflict, the more specific nested file wins. Scoped instruction content is capped at 64 KiB per injection: the file that crosses the cap is truncated at a UTF-8 boundary, later files are named in an omission notice, and the injection remains enabled. Scoped files are not added to the session's startup `context_identity` snapshot; they are persisted as ordinary Developer conversation records when injected.
+
 The system prompt uses the first readable source in this order:
 
 1. `--system-prompt <PATH>`

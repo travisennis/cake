@@ -629,6 +629,10 @@ type ToolExecutor = Arc<dyn Fn(Arc<ToolContext>, String, String) -> ToolFuture +
 /// arguments.
 type PathTargetFn = Arc<dyn Fn(&ToolContext, &str) -> Result<PathBuf, String> + Send + Sync>;
 
+/// Resolves the directory whose scoped `AGENTS.md` files apply after a
+/// successful tool call.
+type ScopeTargetFn = Arc<dyn Fn(&ToolContext, &str) -> Result<PathBuf, String> + Send + Sync>;
+
 /// How a scheduled call touches the canonical path its resolver returns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PathTouch {
@@ -665,6 +669,9 @@ pub(super) struct ToolCapabilities {
     /// Resolves the canonical path this call targets and how it touches that
     /// path; drives same-path serialization.
     pub(super) path_target: Option<(PathTargetFn, PathTouch)>,
+    /// Resolves the directory this call entered, so a successful call can
+    /// lazily load that directory's scoped `AGENTS.md` instructions.
+    pub(super) scope_target: Option<ScopeTargetFn>,
     /// The tool sends image bytes to the provider, so it is only offered to a
     /// model that declares image support. A text-only model would otherwise
     /// receive a tool whose output the provider rejects.
@@ -682,6 +689,7 @@ impl ToolCapabilities {
             read_safe: false,
             replay_safety: ReplaySafety::Never,
             path_target: None,
+            scope_target: None,
             requires_image_support: false,
             tolerates_intent: false,
         }
@@ -771,6 +779,16 @@ impl ToolEntry {
         target: impl Fn(&ToolContext, &str) -> Result<PathBuf, String> + Send + Sync + 'static,
     ) -> Self {
         self.capabilities.path_target = Some((Arc::new(target), PathTouch::Observe));
+        self
+    }
+
+    /// Attach the resolver for the directory whose scoped `AGENTS.md` files
+    /// apply after this tool succeeds.
+    fn scopes_path(
+        mut self,
+        target: impl Fn(&ToolContext, &str) -> Result<PathBuf, String> + Send + Sync + 'static,
+    ) -> Self {
+        self.capabilities.scope_target = Some(Arc::new(target));
         self
     }
 }
@@ -946,6 +964,20 @@ impl ToolRegistry {
     ) -> Option<(Result<PathBuf, String>, PathTouch)> {
         let (target, touch) = self.find(name)?.capabilities.path_target.as_ref()?;
         Some((target(context, arguments), *touch))
+    }
+
+    /// Return the directory a registered tool's successful call entered for
+    /// scoped `AGENTS.md` discovery, using the resolver declared at
+    /// registration. Unknown tools, tools with no scope, and unresolvable
+    /// arguments return `None`.
+    pub(super) fn scope_target(
+        &self,
+        context: &ToolContext,
+        name: &str,
+        arguments: &str,
+    ) -> Option<PathBuf> {
+        let target = self.find(name)?.capabilities.scope_target.as_ref()?;
+        target(context, arguments).ok()
     }
 
     /// Return how a registered tool's calls touch the canonical path its
@@ -1769,17 +1801,21 @@ fn record_removed_builtins(
 /// tool names (#277).
 pub(super) fn default_tool_registry() -> ToolRegistry {
     let entries = vec![
-        ToolEntry::new(bash::bash_tool(), execute_bash_tool).tolerates_intent(),
+        ToolEntry::new(bash::bash_tool(), execute_bash_tool)
+            .tolerates_intent()
+            .scopes_path(bash::scope_cwd),
         ToolEntry::new(bash_session::bash_session_tool(), execute_bash_session_tool)
             .tolerates_intent(),
         ToolEntry::new(edit::edit_tool(), execute_edit_tool)
             .repairs_arguments()
-            .mutates_path(edit::mutating_target),
+            .mutates_path(edit::mutating_target)
+            .scopes_path(edit::mutating_target),
         ToolEntry::new(read::read_tool(), execute_read_tool)
             .tolerates_intent()
             .read_safe()
             .replay_safe()
-            .observes_path(read::path_target),
+            .observes_path(read::path_target)
+            .scopes_path(read::path_target),
         ToolEntry::new(read_image::read_image_tool(), execute_read_image_tool)
             .tolerates_intent()
             .read_safe()
@@ -1789,7 +1825,8 @@ pub(super) fn default_tool_registry() -> ToolRegistry {
         ToolEntry::new(write::write_tool(), execute_write_tool)
             .tolerates_intent()
             .repairs_arguments()
-            .mutates_path(write::mutating_target),
+            .mutates_path(write::mutating_target)
+            .scopes_path(write::mutating_target),
     ];
     let mut registry = ToolRegistry {
         entries,

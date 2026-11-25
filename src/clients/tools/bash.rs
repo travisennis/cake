@@ -162,6 +162,29 @@ fn resolve_bash_cwd(
     Ok(canonical)
 }
 
+/// Resolve the directory a successful Bash call entered for scoped
+/// `AGENTS.md` discovery.
+///
+/// The scope depends only on the optional `cwd` argument; the command text is
+/// not inspected. Invalid arguments or an unresolvable directory yield `Err`,
+/// which the registry treats as no scope because the tool call did not succeed
+/// in that directory.
+pub(super) fn scope_cwd(context: &super::ToolContext, arguments: &str) -> Result<PathBuf, String> {
+    #[derive(Deserialize)]
+    struct ScopeArgs {
+        #[serde(default)]
+        cwd: Option<String>,
+    }
+
+    let args: ScopeArgs =
+        serde_json::from_str(arguments).map_err(|e| format!("Invalid bash arguments: {e}"))?;
+    resolve_bash_cwd(
+        context,
+        context.sandbox_config(),
+        args.cwd.as_deref().map(Path::new),
+    )
+}
+
 /// Parse one Bash call, build the sandbox configuration once, and resolve the
 /// effective working directory.
 ///
