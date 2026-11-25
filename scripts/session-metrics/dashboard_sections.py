@@ -330,7 +330,10 @@ def tokens_section(data: cakelib.Dataset, start: datetime, end: datetime) -> dic
 
 
 def cache_section(data: cakelib.Dataset, start: datetime, end: datetime) -> dict:
-    scan = cache_breaks.scan([inv for inv in data.invocations if inv.active_between(start, end)])
+    scan = cache_breaks.scan(
+        [inv for inv in data.invocations if inv.active_between(start, end)],
+        data.sessions,
+    )
     sessions = {session.id: session for session in data.sessions}
     intervals = _build_intervals(data)
     causes = defaultdict(list)

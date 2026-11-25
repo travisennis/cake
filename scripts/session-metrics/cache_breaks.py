@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Detect prompt-cache breaks from telemetry api_attempt usage.
 
-The scan is intentionally diagnostic. It uses provider-reported token counts,
-never reads prompts, and never writes to session or telemetry files.
+The scan is intentionally diagnostic. It uses provider-reported token counts
+and transcript timestamps, never reads prompts, and never writes to session or
+telemetry files.
 """
 
 from __future__ import annotations
@@ -19,8 +20,14 @@ NOISE_FLOOR_TOKENS = 1_024
 CACHE_TTL_MS = 5 * 60 * 1_000
 
 CAUSE_MODEL_SWITCH = "model switch"
+CAUSE_CHECKPOINT = "checkpoint"
+CAUSE_MCP_ACTIVATION = "MCP activation"
+CAUSE_RESUME = "resume"
 CAUSE_IDLE_TTL = "idle >= 5m"
 CAUSE_GENERIC = "generic"
+
+EVENT_CHECKPOINT = "checkpoint"
+EVENT_MCP_ACTIVATION = "mcp_activation"
 
 
 @dataclass(frozen=True)
@@ -32,6 +39,8 @@ class _Turn:
     timestamp: datetime | None
     usage: dict
     sequence: int
+    invocation_start: bool
+    prefix_decision: str | None
 
 
 @dataclass(frozen=True)
@@ -91,6 +100,8 @@ def _terminal_turns(invocation: cakelib.Invocation, sequence_start: int) -> list
         turn_index = attempt.get("turn_index")
         if not isinstance(usage, dict) or not isinstance(turn_index, int):
             continue
+        if attempt.get("purpose") == "compaction":
+            continue
         attempt_number = _token_count(attempt.get("attempt"))
         current = (attempt_number, sequence, attempt)
         previous = by_turn.get(turn_index)
@@ -98,6 +109,12 @@ def _terminal_turns(invocation: cakelib.Invocation, sequence_start: int) -> list
             by_turn[turn_index] = current
         sequence += 1
 
+    prefix = (invocation.init or {}).get("prompt_prefix")
+    prefix_decision = (
+        prefix.get("decision")
+        if isinstance(prefix, dict) and isinstance(prefix.get("decision"), str)
+        else None
+    )
     turns = []
     for turn_index, (_, sequence, attempt) in by_turn.items():
         turns.append(_Turn(
@@ -108,6 +125,8 @@ def _terminal_turns(invocation: cakelib.Invocation, sequence_start: int) -> list
             timestamp=cakelib.parse_ts(attempt.get("timestamp")),
             usage=attempt["usage"],
             sequence=sequence,
+            invocation_start=turn_index == 1,
+            prefix_decision=prefix_decision,
         ))
     return turns
 
@@ -118,7 +137,50 @@ def _idle_ms(previous: _Turn, current: _Turn) -> int:
     return max(0, int((current.timestamp - previous.timestamp).total_seconds() * 1_000))
 
 
-def _cache_miss(previous: _Turn, current: _Turn, reported_cache: bool) -> CacheMiss | None:
+def _session_events(
+    sessions: list[cakelib.Session] | None,
+) -> dict[str, list[tuple[datetime, str]]]:
+    events: dict[str, list[tuple[datetime, str]]] = defaultdict(list)
+    for session in sessions or []:
+        for record in session.records:
+            record_type = record.get("type")
+            if record_type == "compaction":
+                kind = EVENT_CHECKPOINT
+            elif record_type == "mcp_tools_activated":
+                kind = EVENT_MCP_ACTIVATION
+            else:
+                continue
+            timestamp = cakelib.parse_ts(record.get("timestamp"))
+            if timestamp is not None:
+                events[session.id].append((timestamp, kind))
+    for session_events in events.values():
+        session_events.sort(key=lambda event: event[0])
+    return events
+
+
+def _rewrite_cause(
+    events: list[tuple[datetime, str]], previous: _Turn, current: _Turn
+) -> str | None:
+    if previous.timestamp is None or current.timestamp is None:
+        return None
+    found = {
+        kind
+        for timestamp, kind in events
+        if previous.timestamp < timestamp <= current.timestamp
+    }
+    if EVENT_CHECKPOINT in found:
+        return CAUSE_CHECKPOINT
+    if EVENT_MCP_ACTIVATION in found:
+        return CAUSE_MCP_ACTIVATION
+    return None
+
+
+def _cache_miss(
+    previous: _Turn,
+    current: _Turn,
+    reported_cache: bool,
+    events: list[tuple[datetime, str]],
+) -> CacheMiss | None:
     usage = current.usage
     prompt_tokens = _token_count(usage.get("input_tokens"))
     details = _input_details(usage)
@@ -136,10 +198,17 @@ def _cache_miss(previous: _Turn, current: _Turn, reported_cache: bool) -> CacheM
         return None
 
     idle_ms = _idle_ms(previous, current)
+    rewrite_cause = _rewrite_cause(events, previous, current)
     if current.model != previous.model:
         cause = CAUSE_MODEL_SWITCH
+    elif rewrite_cause is not None:
+        cause = rewrite_cause
+    elif current.invocation_start and current.prefix_decision == "rebuilt":
+        cause = CAUSE_RESUME
     elif idle_ms >= CACHE_TTL_MS:
         cause = CAUSE_IDLE_TTL
+    elif current.invocation_start:
+        cause = CAUSE_RESUME
     else:
         cause = CAUSE_GENERIC
 
@@ -156,8 +225,15 @@ def _cache_miss(previous: _Turn, current: _Turn, reported_cache: bool) -> CacheM
     )
 
 
-def scan(invocations: list[cakelib.Invocation]) -> CacheBreakSummary:
-    """Scan usage-bearing provider turns in chronological session order.
+def scan(
+    invocations: list[cakelib.Invocation],
+    sessions: list[cakelib.Session] | None = None,
+) -> CacheBreakSummary:
+    """Scan main-agent provider turns in chronological session order.
+
+    Compaction summary attempts are audit data, not main-agent context, so they
+    are excluded. Session records supply committed checkpoint and MCP-activation
+    timestamps; without them, only resume and time-based causes are available.
 
     The cache-reporting latch is per session. It prevents a provider that never
     reports cache activity from producing false misses, while still allowing a
@@ -171,6 +247,7 @@ def scan(invocations: list[cakelib.Invocation]) -> CacheBreakSummary:
         by_session[invocation.session_id].extend(turns)
         sequence += len(invocation.attempts)
 
+    events_by_session = _session_events(sessions)
     misses: list[CacheMiss] = []
     for turns in by_session.values():
         turns.sort(key=lambda turn: (
@@ -191,7 +268,12 @@ def scan(invocations: list[cakelib.Invocation]) -> CacheBreakSummary:
             has_cache_activity = cached_tokens > 0 or cache_write_tokens > 0
 
             if previous is not None:
-                miss = _cache_miss(previous, current, reported_cache)
+                miss = _cache_miss(
+                    previous,
+                    current,
+                    reported_cache,
+                    events_by_session.get(current.session_id, []),
+                )
                 if miss is not None:
                     misses.append(miss)
 
@@ -219,7 +301,7 @@ def run(data: cakelib.Dataset) -> None:
         print("\nNo telemetry api_attempt records in window.")
         return
 
-    summary = scan(data.invocations)
+    summary = scan(data.invocations, data.sessions)
     print(f"\nDetected misses: {fmt_int(summary.miss_count)}")
     print(f"Missed prompt tokens: {fmt_int(summary.missed_tokens)}")
     if summary.misses:
