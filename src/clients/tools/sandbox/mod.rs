@@ -11,8 +11,6 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::clients::tools::ToolContext;
-
 mod grants_report;
 pub use grants_report::{GrantReport, GrantReportInputs};
 
@@ -141,6 +139,9 @@ pub(super) struct SandboxConfig {
     /// Linux strategy derives every rule from the path lists alone.
     #[cfg(target_os = "macos")]
     pub policy: SandboxPolicy,
+    /// The generated Seatbelt profile, shared by every Bash call in the run.
+    #[cfg(target_os = "macos")]
+    profile: std::sync::Arc<std::sync::OnceLock<String>>,
     /// Directories the user granted directly --- `settings_dirs`,
     /// `additional_dirs`, and `skill_dirs` --- in lexical and canonical form.
     ///
@@ -516,12 +517,6 @@ impl PathGrants {
 }
 
 impl SandboxConfig {
-    /// Build a sandbox configuration for the current context from its cached
-    /// grant table.
-    pub fn build(context: &ToolContext) -> Self {
-        Self::from_grants(context.path_grants())
-    }
-
     /// Project the shared grants into the Bash-facing path classes.
     ///
     /// The OS sandbox does not apply the in-process credential deny list:
@@ -551,6 +546,8 @@ impl SandboxConfig {
             read_execute,
             #[cfg(target_os = "macos")]
             policy: grants.policy,
+            #[cfg(target_os = "macos")]
+            profile: std::sync::Arc::new(std::sync::OnceLock::new()),
             user_grants: grants.user_grants.clone(),
         };
 
@@ -561,6 +558,20 @@ impl SandboxConfig {
         }
 
         config
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl SandboxConfig {
+    /// Return the Seatbelt profile for this run's fixed grants.
+    ///
+    /// The profile depends only on the cached grant paths and policy, so it is
+    /// generated on the first Bash call and reused by later calls. A path that
+    /// changes kind during the run keeps the grant it had when the profile was
+    /// generated; grants are resolved once at context construction.
+    pub(super) fn profile(&self) -> &str {
+        self.profile
+            .get_or_init(|| MacOsSandbox::generate_profile(self))
     }
 }
 

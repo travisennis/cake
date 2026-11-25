@@ -172,11 +172,10 @@ fn resolve_bash_cwd(
 fn parse_bash_call(
     context: &super::ToolContext,
     arguments: &str,
-) -> Result<(BashExecutionArgs, PathBuf, super::sandbox::SandboxConfig), String> {
+) -> Result<(BashExecutionArgs, PathBuf), String> {
     let args = BashExecutionArgs::from_json(arguments, context.sandbox_policy())?;
-    let config = super::sandbox::SandboxConfig::build(context);
-    let cwd = resolve_bash_cwd(context, &config, args.cwd.as_deref())?;
-    Ok((args, cwd, config))
+    let cwd = resolve_bash_cwd(context, context.sandbox_config(), args.cwd.as_deref())?;
+    Ok((args, cwd))
 }
 
 /// Returns the Bash tool definition
@@ -840,12 +839,12 @@ pub(super) async fn execute_bash_for_call(
     arguments: &str,
     call_id: Option<String>,
 ) -> Result<super::ToolResult, super::ToolError> {
-    let (args, cwd, sandbox_config) = parse_bash_call(context, arguments)?;
+    let (args, cwd) = parse_bash_call(context, arguments)?;
     Box::pin(execute_bash_with_args(
         context,
         args,
         cwd,
-        &sandbox_config,
+        context.sandbox_config(),
         call_id,
     ))
     .await

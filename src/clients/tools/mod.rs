@@ -87,6 +87,9 @@ pub struct ToolContext {
     /// The single resolved grant table shared by the OS sandbox and the
     /// in-process file tools, built once at construction.
     path_grants: sandbox::PathGrants,
+    /// The Bash-facing projection of `path_grants`, built once because every
+    /// Bash call in the run consumes the same fixed grants.
+    sandbox_config: sandbox::SandboxConfig,
     /// The ordered command-policy pipeline for the Bash preflight. `None` when
     /// the run has no gate configured; the Bash tool fails closed on an absent
     /// pipeline rather than running a command ungated.
@@ -132,6 +135,11 @@ impl ToolContext {
     /// the same value in the validator.
     const fn path_grants(&self) -> &sandbox::PathGrants {
         &self.path_grants
+    }
+
+    /// The cached Bash sandbox configuration derived from `path_grants`.
+    const fn sandbox_config(&self) -> &sandbox::SandboxConfig {
+        &self.sandbox_config
     }
 
     /// Attach the command-policy pipeline used by the Bash preflight.
@@ -186,10 +194,12 @@ impl ToolContext {
             settings_dirs,
             skill_dirs,
         );
+        let sandbox_config = sandbox::SandboxConfig::from_grants(&path_grants);
         Self {
             cwd,
             sandbox_policy,
             path_grants,
+            sandbox_config,
             gates: None,
             limits: ToolLimits::defaults(),
             read_tracker: Arc::new(read_tracker::ReadTracker::default()),

@@ -237,8 +237,8 @@ impl MacOsSandbox {
         profile.blank();
     }
 
-    /// Generate a deny-default sandbox profile (.sb file content) from the configuration
-    fn generate_profile(config: &SandboxConfig) -> String {
+    /// Generate a deny-default sandbox profile (.sb file content) from the configuration.
+    pub(super) fn generate_profile(config: &SandboxConfig) -> String {
         let mut profile = SeatbeltProfileBuilder::new();
         profile.version(1);
         profile.deny_default();
@@ -394,10 +394,10 @@ impl SandboxStrategy for MacOsSandbox {
         command: &mut tokio::process::Command,
         config: &SandboxConfig,
     ) -> Result<SandboxGuard, String> {
-        let profile = Self::generate_profile(config);
+        let profile = config.profile();
         tracing::debug!("Generated sandbox profile:\n{profile}");
 
-        let temp_file = Self::write_profile_to_temp(&profile)?;
+        let temp_file = Self::write_profile_to_temp(profile)?;
         let profile_path = temp_file.path().to_path_buf();
 
         let original_args: Vec<String> = command
