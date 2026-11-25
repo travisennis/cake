@@ -559,7 +559,7 @@ fn format_session_blob_diagnostics(session: &SessionBlobDiagnostics, output: &mu
 }
 
 /// Build the warning for authority-bearing project configuration that was ignored.
-fn project_trust_warning_message(trust: &ProjectTrustReport) -> Option<String> {
+pub(super) fn project_trust_warning_message(trust: &ProjectTrustReport) -> Option<String> {
     matches!(
         trust.state,
         TrustState::Untrusted | TrustState::Changed | TrustState::Invalid

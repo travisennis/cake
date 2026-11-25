@@ -48,13 +48,15 @@ The two modes conflict and fail closed. When authority-bearing configuration is 
 
 ```bash
 cake doctor
+cake doctor --json | jq '.data.groups'
 cake doctor --json | jq '.checks'
 cake --profile review doctor --json | jq '.data.grants'
 ```
 
-The report lists each settings source with its path and whether it is present, the selected profile and default model, and the merged `directories`, `[sandbox].writable`, and `[sandbox].read_only` grants with resolved paths, their source setting, and a `granted`, `would-create`, `missing`, `not-a-directory`, or `excluded` status. A missing writable path is `would-create`, and doctor never creates it. These are the configured grant settings, not the complete OS-level sandbox policy; `cake debug grants` reports the full effective grant value and every source behind it.
+The text report has four fixed groups in order: Settings, Model, Sandbox, and Project. Every group shows passing checks, so a healthy report is explicit rather than empty. Each non-ok check carries one `fix:` hint; hints are advisory data, and doctor never executes one. The Settings group lists each settings source with its path and presence, the selected profile, and any unknown-key warnings. The Model group lists the selected model (`--model` first, then `default_model`) and whether the selected model's configured `api_key_env` variable is present. Doctor inspects only presence; it never resolves, stores, or emits the value, and never uses it for provider authentication. The Sandbox group lists the resolved policy and the merged `directories`, `[sandbox].writable`, and `[sandbox].read_only` grants with resolved paths and a `granted`, `would-create`, `missing`, `not-a-directory`, or `excluded` status. A missing writable path is `would-create`, and doctor never creates it. These are
+the configured grant settings, not the complete effective grant value or OS-level sandbox policy; `cake debug grants` reports the complete effective value and every source behind it. The Project group reports the project trust state, including authority-bearing configuration that was not applied.
 
-Unknown keys and grant path problems are warnings: they appear in `checks` and exit `0`. An unreadable, unparsable, or self-contradictory settings file is an error document and exits `3`. Doctor resolves no credential value, calls no provider or gate, runs no hook or toolbox `describe`, connects no MCP server, and opens no session. Untrusted project authority is reported but not applied; `--trust-project` accepts it for one report, and `--no-project-config` omits it.
+Unknown-key, missing-model, credential, grant-path, and project-trust findings are warnings: they appear in the report and in `checks`, and exit `0`. A settings load failure is an error and exits `3`; its partial text report is written to stdout and the fatal diagnostic remains on stderr. Doctor calls no provider, gate, hook, toolbox `describe`, MCP server, or session process, opens no socket, starts no child process, and creates no configured directory. The text footer repeats the local-only boundary. `--trust-project` accepts project authority for one report, and `--no-project-config` reports the project file as not read.
 
 ## Effective configuration
 

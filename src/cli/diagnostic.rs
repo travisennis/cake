@@ -37,6 +37,15 @@ pub const CHECK_SETTINGS_UNKNOWN_KEY: &str = "settings.unknown_key";
 /// Check id for settings that could not be loaded or parsed.
 pub const CHECK_SETTINGS_LOAD_FAILED: &str = "settings.load_failed";
 
+/// Check id for the global settings file a doctor invocation reads.
+pub const CHECK_SETTINGS_GLOBAL: &str = "settings.global";
+
+/// Check id for the project settings file a doctor invocation reads.
+pub const CHECK_SETTINGS_PROJECT: &str = "settings.project";
+
+/// Check id for the profile a doctor invocation selects.
+pub const CHECK_SETTINGS_PROFILE: &str = "settings.profile";
+
 /// Check id for a skill discovery, parse, or selection diagnostic.
 pub const CHECK_SKILLS_DISCOVERY: &str = "skills.discovery_failed";
 
@@ -44,8 +53,26 @@ pub const CHECK_SKILLS_DISCOVERY: &str = "skills.discovery_failed";
 /// could not be inspected.
 pub const CHECK_GRANTS_PATH: &str = "grants.path_problem";
 
+/// Check id for a configured grant source path that is granted.
+pub const CHECK_GRANTS_PATH_OK: &str = "grants.path";
+
+/// Check id for the resolved sandbox policy.
+pub const CHECK_GRANTS_POLICY: &str = "grants.policy";
+
+/// Check id for no configured directory, writable, or read-only grant settings.
+pub const CHECK_GRANTS_NONE: &str = "grants.none";
+
 /// Check id for a selected model name that the loaded settings do not define.
 pub const CHECK_CONFIG_MODEL: &str = "config.model_unavailable";
+
+/// Check id for a selected model name that the loaded settings define.
+pub const CHECK_CONFIG_MODEL_CONFIGURED: &str = "config.model";
+
+/// Check id for a doctor invocation with no selected model.
+pub const CHECK_CONFIG_MODEL_MISSING: &str = "config.model_missing";
+
+/// Check id for credential presence for a configured model.
+pub const CHECK_CONFIG_CREDENTIAL: &str = "config.credential";
 
 /// Check id for a hook file that could not be read or parsed.
 pub const CHECK_CONFIG_HOOKS: &str = "config.hooks_invalid";
@@ -170,35 +197,71 @@ impl DiagnosticStatus {
     }
 }
 
+/// One structured repair hint attached to a non-ok finding.
+///
+/// `summary` is required and non-empty. `command` is a static string that is
+/// never interpolated with a path, setting, or environment name and is never
+/// executed by Cake.
+#[derive(Clone, Debug, Serialize)]
+pub struct DiagnosticFix {
+    pub summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<&'static str>,
+}
+
 /// One structured finding in a diagnostic document.
 ///
 /// `id` is a stable machine-readable identifier, `status` its severity, and
 /// `message` the human-readable detail. Consumers switch on `id`; the
 /// identifiers this module defines are stable for their schema version.
+/// `group` and `fix` are optional, command-specific extensions: they are
+/// skipped when absent, so other diagnostic commands keep their existing
+/// shape.
 #[derive(Clone, Debug, Serialize)]
 pub struct DiagnosticCheck {
     pub id: String,
     pub status: DiagnosticStatus,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fix: Option<DiagnosticFix>,
 }
 
 impl DiagnosticCheck {
-    /// A non-fatal finding: the invocation still exits successfully.
-    pub fn warning(id: &str, message: impl Into<String>) -> Self {
+    /// Build a finding with the given status and no group or fix.
+    pub fn new(id: &str, status: DiagnosticStatus, message: impl Into<String>) -> Self {
         Self {
             id: id.to_string(),
-            status: DiagnosticStatus::Warning,
+            status,
             message: message.into(),
+            group: None,
+            fix: None,
         }
+    }
+
+    /// Attach the report group this finding belongs to.
+    #[must_use]
+    pub const fn with_group(mut self, group: &'static str) -> Self {
+        self.group = Some(group);
+        self
+    }
+
+    /// Attach a structured repair hint.
+    #[must_use]
+    pub fn with_fix(mut self, fix: DiagnosticFix) -> Self {
+        self.fix = Some(fix);
+        self
+    }
+
+    /// A non-fatal finding: the invocation still exits successfully.
+    pub fn warning(id: &str, message: impl Into<String>) -> Self {
+        Self::new(id, DiagnosticStatus::Warning, message)
     }
 
     /// A fatal finding: the invocation reports a problem and exits nonzero.
     pub fn error(id: &str, message: impl Into<String>) -> Self {
-        Self {
-            id: id.to_string(),
-            status: DiagnosticStatus::Error,
-            message: message.into(),
-        }
+        Self::new(id, DiagnosticStatus::Error, message)
     }
 }
 

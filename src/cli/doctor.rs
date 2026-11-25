@@ -1,4 +1,4 @@
-//! `cake doctor`: configured settings health and configured filesystem grants.
+//! `cake doctor`: grouped local settings, model, sandbox, and trust health.
 //!
 //! The command validates the global and project settings files and the
 //! selected profile through the ordinary settings loader, so it reports the
@@ -7,34 +7,38 @@
 //! `[sandbox].writable`, and `[sandbox].read_only` grants through the same
 //! [`crate::clients::GrantReport`] value `cake debug grants` renders.
 //!
-//! It is read-only: it starts no session, resolves no credential value, calls
-//! no provider or gate, executes no hook or toolbox `describe`, connects no MCP
-//! server, and creates no configured directory. The configured grants it
-//! prints are the settings values for this project, not the complete OS-level
-//! sandbox policy.
+//! The report has fixed groups with visible passing checks, and every non-ok
+//! check carries a structured fix hint. Credential reporting inspects only
+//! whether the selected model's configured `api_key_env` variable is present;
+//! the value is never resolved, stored, or emitted.
+//!
+//! It is read-only: it starts no session, calls no provider or gate, executes
+//! no hook or toolbox `describe`, connects no MCP server, and creates no
+//! configured directory. The configured grants it prints are the settings
+//! values for this project, not the complete OS-level sandbox policy.
 
 use crate::cli::debug::grants;
-use crate::cli::debug::print_project_trust_warning;
-use crate::cli::{
-    CHECK_GRANTS_PATH, CHECK_SETTINGS_LOAD_FAILED, CmdRunner, CommandRunOptions, DiagnosticCheck,
-    DiagnosticDocument, settings_warnings,
-};
+use crate::cli::{CmdRunner, CommandRunOptions};
 use crate::clients::GrantReport;
 use crate::config::DataDir;
 use crate::config::SettingsLoader;
-use crate::config::settings::{SettingsLoad, SettingsOrigin};
+use crate::config::settings::{LoadedSettings, ModelDefinition, SettingsLoad, SettingsOrigin};
 use crate::config::trust::{ProjectConfigMode, ProjectTrustReport};
 use clap::Parser;
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::fmt::Write as _;
 use std::path::Path;
 
-/// Validate configured settings and report the configured filesystem grants.
+mod checks;
+mod render;
+mod report;
+
+/// Inspect grouped local settings, model, sandbox, and project health.
 #[derive(Clone, Debug, Parser)]
 #[command(after_help = "\
 Examples:
   cake doctor
+  cake doctor --json | jq '.data.groups'
   cake doctor --json | jq '.checks'
   cake --profile review doctor --json | jq '.data.grants'
 
@@ -92,27 +96,76 @@ impl ConfiguredGrants {
             read_only: entries_for(report, &["sandbox_read_only"]),
         }
     }
+}
 
-    /// Path problems and notices from the configured grant sources.
-    fn warnings(report: &GrantReport) -> Vec<String> {
-        let configured = ["directories", "sandbox_writable", "sandbox_read_only"];
-        let mut warnings = Vec::new();
-        for source in report
-            .sources
-            .iter()
-            .filter(|source| configured.contains(&source.id))
-        {
-            warnings.extend(source.notices.iter().cloned());
-            warnings.extend(
-                source
-                    .entries
-                    .iter()
-                    .filter(|entry| entry.status.label() != "granted")
-                    .filter_map(|entry| entry.detail.clone()),
-            );
+/// The selected model and, when it is defined, its credential presence.
+struct ModelFact {
+    name: Option<String>,
+    source: Option<&'static str>,
+    configured: bool,
+    credential: Option<CredentialFact>,
+}
+
+impl ModelFact {
+    /// Select `--model` first, then `default_model`, and inspect presence.
+    fn build(loaded: &LoadedSettings, selected: Option<&str>) -> Self {
+        let (name, source) = selected.map_or_else(
+            || {
+                loaded
+                    .default_model
+                    .as_deref()
+                    .map_or((None, None), |default| {
+                        (Some(default.to_string()), Some("default_model"))
+                    })
+            },
+            |model| (Some(model.to_string()), Some("--model")),
+        );
+        let definition = name.as_deref().and_then(|name| loaded.models.get(name));
+        let credential = definition.map(credential_fact);
+        Self {
+            name,
+            source,
+            configured: definition.is_some(),
+            credential,
         }
-        warnings
     }
+}
+
+/// Credential presence for one configured model.
+#[derive(Debug, Serialize)]
+struct CredentialFact {
+    /// Credential source label; always `environment`.
+    source: &'static str,
+    /// Environment variable name; never the value.
+    name: String,
+    present: bool,
+}
+
+/// Collected inputs for the success report.
+struct DoctorFacts<'a> {
+    workspace: &'a Path,
+    sources: &'a [SettingsSourceReport],
+    load: &'a SettingsLoad,
+    profile: Option<&'a str>,
+    project_config_mode: ProjectConfigMode,
+    model: ModelFact,
+    grants: &'a GrantReport,
+}
+
+/// Collected inputs for the settings-load failure report.
+struct DoctorFailureFacts<'a> {
+    workspace: &'a Path,
+    sources: &'a [SettingsSourceReport],
+    profile: Option<&'a str>,
+    failed_source: Option<&'a str>,
+    message: String,
+}
+
+/// A settings load failure plus the report material that names it.
+struct DoctorLoadFailure {
+    error: anyhow::Error,
+    failed_source: Option<String>,
+    message: String,
 }
 
 fn entries_for(report: &GrantReport, ids: &[&str]) -> Vec<ConfiguredGrant> {
@@ -139,34 +192,96 @@ fn run_doctor(
     let current_dir = std::env::current_dir()
         .map_err(|error| anyhow::anyhow!("Failed to get current directory: {error}"))?;
     let sources = settings_sources(&current_dir, options.project_config_mode);
-    let load = load_settings_for_doctor(json_output, &sources, &current_dir, options)?;
-    let report = grants::build_report(
-        None,
-        &[],
-        &load.settings,
-        Vec::new(),
-        &current_dir,
-        data_dir,
-    );
-    let configured = ConfiguredGrants::from_report(&report);
-
-    if json_output {
-        print!(
-            "{}",
-            render_json(&load, &sources, &configured, &report, options.profile)?
-        );
-    } else {
-        load.settings.print_warnings();
-        for warning in ConfiguredGrants::warnings(&report) {
-            eprintln!("warning: {warning}");
-        }
-        print_project_trust_warning(&load.trust);
-        print!(
-            "{}",
-            render_text(&load, &sources, &configured, &report, options.profile)
-        );
+    match load_settings_for_doctor(&sources, &current_dir, options) {
+        Ok(load) => run_success(
+            json_output,
+            data_dir,
+            options,
+            &current_dir,
+            &sources,
+            &load,
+        ),
+        Err(failure) => run_failure(json_output, options, &current_dir, &sources, failure),
     }
+}
+
+fn run_success(
+    json_output: bool,
+    data_dir: &DataDir,
+    options: &CommandRunOptions<'_>,
+    current_dir: &Path,
+    sources: &[SettingsSourceReport],
+    load: &SettingsLoad,
+) -> anyhow::Result<()> {
+    let grant_report =
+        grants::build_report(None, &[], &load.settings, Vec::new(), current_dir, data_dir);
+    let configured = ConfiguredGrants::from_report(&grant_report);
+    let facts = DoctorFacts {
+        workspace: current_dir,
+        sources,
+        load,
+        profile: options.profile,
+        project_config_mode: options.project_config_mode,
+        model: ModelFact::build(&load.settings, options.model),
+        grants: &grant_report,
+    };
+    let report = checks::build_success(&facts);
+    let data = json!({
+        "settings_sources": sources,
+        "profile": options.profile,
+        "model": facts.model.name.as_deref(),
+        "grants": configured,
+        "project_trust": trust_payload(&load.trust),
+        "default_model": load.settings.default_model.as_deref(),
+        "model_source": facts.model.source,
+        "model_configured": facts.model.configured,
+        "credential": facts.model.credential.as_ref(),
+    });
+    let output = if json_output {
+        render::render_json(&report, data)?
+    } else {
+        render::render_text(&report)
+    };
+    print!("{output}");
     Ok(())
+}
+
+fn run_failure(
+    json_output: bool,
+    options: &CommandRunOptions<'_>,
+    current_dir: &Path,
+    sources: &[SettingsSourceReport],
+    failure: DoctorLoadFailure,
+) -> anyhow::Result<()> {
+    let facts = DoctorFailureFacts {
+        workspace: current_dir,
+        sources,
+        profile: options.profile,
+        failed_source: failure.failed_source.as_deref(),
+        message: failure.message,
+    };
+    let report = checks::build_failure(&facts);
+    let data = json!({
+        "settings_sources": sources,
+        "failed_source": facts.failed_source,
+    });
+    let output = if json_output {
+        render::render_json(&report, data)?
+    } else {
+        render::render_text(&report)
+    };
+    print!("{output}");
+    Err(failure.error)
+}
+
+fn credential_fact(definition: &ModelDefinition) -> CredentialFact {
+    let env_name = definition.api_key_env.clone();
+    let present = std::env::var(&env_name).is_ok_and(|value| !value.is_empty());
+    CredentialFact {
+        source: "environment",
+        name: env_name,
+        present,
+    }
 }
 
 /// The settings files this invocation reads, in loader order.
@@ -197,49 +312,29 @@ fn settings_sources(current_dir: &Path, mode: ProjectConfigMode) -> Vec<Settings
     sources
 }
 
-/// Load settings, keeping the failure report actionable.
-///
-/// The loader reports one failure at a time, so the document carries the
-/// settings files that were read beside the failure. The original error is
-/// still returned, which keeps its exit classification.
+/// Load settings without printing; the caller owns both report streams.
 fn load_settings_for_doctor(
-    json_output: bool,
     sources: &[SettingsSourceReport],
     current_dir: &Path,
     options: &CommandRunOptions<'_>,
-) -> anyhow::Result<SettingsLoad> {
-    match SettingsLoader::load_with_project_config(
+) -> Result<SettingsLoad, DoctorLoadFailure> {
+    SettingsLoader::load_with_project_config(
         current_dir,
         options.profile,
         options.no_gate,
         &crate::config::config_dir(),
         options.project_config_mode,
-    ) {
-        Ok(load) => Ok(load),
-        Err(error) => {
-            let error: anyhow::Error = error.into();
-            let failed = failed_source(sources);
-            let message = failure_message(&error, sources, failed.as_deref());
-            if json_output {
-                DiagnosticDocument::new(
-                    "doctor",
-                    json!({
-                        "settings_source_count": sources.len(),
-                        "warning_count": 0,
-                    }),
-                    vec![DiagnosticCheck::error(CHECK_SETTINGS_LOAD_FAILED, message)],
-                    json!({
-                        "settings_sources": sources,
-                        "failed_source": failed,
-                    }),
-                )
-                .print();
-            } else {
-                eprint!("{}", format_settings_sources(sources, None));
-            }
-            Err(error)
-        },
-    }
+    )
+    .map_err(|error| {
+        let error: anyhow::Error = error.into();
+        let failed_source = failed_source(sources);
+        let message = failure_message(&error, sources, failed_source.as_deref());
+        DoctorLoadFailure {
+            error,
+            failed_source,
+            message,
+        }
+    })
 }
 
 /// The settings file whose own parse or read fails, when one does.
@@ -272,132 +367,10 @@ fn failure_message(
     format!("{error} (settings sources: {})", paths.join(", "))
 }
 
-fn render_json(
-    load: &SettingsLoad,
-    sources: &[SettingsSourceReport],
-    configured: &ConfiguredGrants,
-    report: &GrantReport,
-    profile: Option<&str>,
-) -> anyhow::Result<String> {
-    let loaded = &load.settings;
-    let mut checks = settings_warnings(&loaded.warnings);
-    checks.extend(
-        ConfiguredGrants::warnings(report)
-            .into_iter()
-            .map(|warning| DiagnosticCheck::warning(CHECK_GRANTS_PATH, warning)),
-    );
-
-    DiagnosticDocument::new(
-        "doctor",
-        json!({
-            "settings_source_count": sources.len(),
-            "warning_count": checks.len(),
-            "profile": profile,
-            "model": loaded.default_model,
-            "policy": configured.policy,
-            "policy_source": configured.policy_source,
-            "configured_writable_count": configured.writable.len(),
-            "configured_read_only_count": configured.read_only.len(),
-        }),
-        checks,
-        json!({
-            "settings_sources": sources,
-            "profile": profile,
-            "model": loaded.default_model,
-            "grants": configured,
-            "project_trust": trust_payload(&load.trust),
-        }),
-    )
-    .render()
-}
-
 fn trust_payload(trust: &ProjectTrustReport) -> Value {
     json!({
         "state": trust.state.label(),
         "authority": trust.authority,
         "changes": trust.changes,
     })
-}
-
-fn render_text(
-    load: &SettingsLoad,
-    sources: &[SettingsSourceReport],
-    configured: &ConfiguredGrants,
-    report: &GrantReport,
-    profile: Option<&str>,
-) -> String {
-    let loaded = &load.settings;
-    let warning_count = loaded.warnings.len() + ConfiguredGrants::warnings(report).len();
-    let mut output = format_settings_sources(sources, profile);
-    _ = writeln!(
-        output,
-        "  Model: {}",
-        loaded.default_model.as_deref().unwrap_or("(none)")
-    );
-    if warning_count == 0 {
-        output.push_str("  Status: ok\n");
-    } else {
-        _ = writeln!(
-            output,
-            "  Status: warning ({warning_count} finding(s); see stderr)"
-        );
-    }
-
-    output.push_str("\nConfigured grants\n");
-    _ = writeln!(
-        output,
-        "  Policy: {} (from {})",
-        configured.policy, configured.policy_source
-    );
-    append_grants(&mut output, "Writable", &configured.writable);
-    append_grants(&mut output, "Read-only", &configured.read_only);
-    if configured.writable.is_empty() && configured.read_only.is_empty() {
-        output.push_str("  (no configured grant settings)\n");
-    }
-    output.push_str(
-        "  These are the configured grant settings resolved for this project; they are not the complete OS-level sandbox policy.\n",
-    );
-    output
-}
-
-fn format_settings_sources(sources: &[SettingsSourceReport], profile: Option<&str>) -> String {
-    let mut output = String::from("Settings health\n");
-    for source in sources {
-        let label = if source.origin == "global" {
-            "Global settings"
-        } else {
-            "Project settings"
-        };
-        _ = writeln!(
-            output,
-            "  {label}: {} ({})",
-            source.path,
-            if source.present { "present" } else { "missing" }
-        );
-    }
-    if let Some(profile) = profile {
-        _ = writeln!(output, "  Profile: {profile}");
-    } else {
-        output.push_str("  Profile: (none)\n");
-    }
-    output
-}
-
-fn append_grants(output: &mut String, title: &str, entries: &[ConfiguredGrant]) {
-    _ = writeln!(output, "  {title}");
-    if entries.is_empty() {
-        output.push_str("    (none)\n");
-        return;
-    }
-    for entry in entries {
-        _ = write!(
-            output,
-            "    [{}] {} ({})",
-            entry.source, entry.path, entry.status
-        );
-        if let Some(detail) = &entry.detail {
-            _ = write!(output, ": {detail}");
-        }
-        output.push('\n');
-    }
 }
