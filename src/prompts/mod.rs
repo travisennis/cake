@@ -441,12 +441,13 @@ fn effective_mcp_exposure(exposure: McpExposure, enabled_tools: Option<&[String]
 /// Builds all initial prompt messages for the AI agent.
 ///
 /// The first message is the stable system prompt. Mutable context such as
-/// AGENTS.md contents, available skills, and environment context is emitted as
+/// AGENTS.md contents, available skills, and runtime context is emitted as
 /// separate developer messages so it is not tied to the system prompt. The
 /// optional exact-name tool allowlist narrows which tools are advertised to the
 /// model; `None` preserves the full registry. `supports_images` gates tools that
 /// send image input to the provider. `include_runtime_context` controls the
-/// final Developer message that describes the process environment.
+/// final Developer message that describes the process environment and effective
+/// sandbox policy.
 /// Build initial prompt messages, optionally skipping automatic project content.
 /// Build initial prompt messages with MCP server tools in the tool list.
 #[expect(
@@ -528,6 +529,7 @@ pub fn build_initial_prompt_messages_with_mcp(
     if include_runtime_context {
         let today = Local::now().format("%Y-%m-%d").to_string();
         let working_dir_str = working_dir.to_string_lossy();
+        let sandbox_policy_label = sandbox_policy.label();
         let platform = std::env::consts::OS;
         let arch = std::env::consts::ARCH;
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "unknown".to_string());
@@ -536,6 +538,7 @@ pub fn build_initial_prompt_messages_with_mcp(
             .unwrap_or_else(|_| "unknown".to_string());
         let env_message = format!(
             "Current working directory: {working_dir_str}\n\
+             Sandbox policy: {sandbox_policy_label}\n\
              Today's date: {today}\n\
              Platform: {platform}\n\
              Architecture: {arch}\n\

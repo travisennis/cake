@@ -59,7 +59,7 @@ Run `cake --help` for the authoritative flag list.
 
 ### Transcript-only subcalls
 
-`--no-runtime-context` omits the per-invocation Developer message that reports the working directory, date, platform, architecture, shell, and terminal. The system prompt, `AGENTS.md` context, skill catalog, tool list, and session behavior are unchanged. Use it for tool-less or transcript-only subcalls; it is not a sandbox or security control and does not remove environment variables from tool execution.
+`--no-runtime-context` omits the per-invocation Developer message that reports the working directory, effective sandbox policy, date, platform, architecture, shell, and terminal. The system prompt, `AGENTS.md` context, skill catalog, tool list, and session behavior are unchanged. Use it for tool-less or transcript-only subcalls; it is not a sandbox or security control and does not remove environment variables from tool execution.
 
 ### Sessions
 
