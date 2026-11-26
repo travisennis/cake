@@ -15,6 +15,7 @@ use crate::clients::agent_state::{ConversationState, SourceRef, accumulate_usage
 use crate::clients::backend::{Backend, ToolChoice};
 use crate::clients::compaction::MeasuredInput;
 use crate::clients::mcp::{LazyMcpRuntime, McpClient, McpServer, McpTool};
+use crate::clients::tool_output::ToolOutputStore;
 use crate::clients::tools::{
     SKILL_SEARCH_NAME, SandboxPolicy, SkillSearchEntry, TOOL_SEARCH_NAME, ToolContext,
     ToolRegistry, ToolSearchCatalog, ToolSearchEntry, default_tool_registry, mcp_tool_entry,
@@ -234,6 +235,8 @@ pub struct Agent {
     /// Whether this agent installed the `SkillSearch` entry.
     skill_search_installed: bool,
     tool_context: Arc<ToolContext>,
+    /// Session-scoped index of canonical oversized tool outputs.
+    tool_outputs: Arc<ToolOutputStore>,
     /// Session ID for tracking
     session_id: uuid::Uuid,
     /// Task ID for the current CLI invocation.
@@ -325,6 +328,11 @@ impl Agent {
     pub fn new(config: ResolvedModelConfig, initial_messages: &[(Role, String)]) -> Self {
         let mut tools = default_tool_registry();
         tools.retain_model_supported_tools(config.model_config.supports_images);
+        let session_id = uuid::Uuid::new_v4();
+        let tool_outputs = Arc::new(ToolOutputStore::default());
+        let tool_context = Arc::new(
+            ToolContext::from_current_process().with_tool_outputs(Arc::clone(&tool_outputs)),
+        );
         Self {
             runner: AgentRunner::new(Backend::from_api_type(config.model_config.api_type)),
             config,
@@ -342,8 +350,9 @@ impl Agent {
             active_mcp_tools: Arc::new(Mutex::new(HashSet::new())),
             tool_search_installed: false,
             skill_search_installed: false,
-            tool_context: Arc::new(ToolContext::from_current_process()),
-            session_id: uuid::Uuid::new_v4(),
+            tool_context,
+            tool_outputs,
+            session_id,
             task_id: uuid::Uuid::new_v4(),
             model_config_name: None,
             total_usage: Usage::default(),
@@ -455,11 +464,19 @@ impl Agent {
     /// removed from the registry: they mutate files in-process, outside the
     /// OS sandbox that only wraps Bash, so they must not be offered at all
     /// for the policy's no-mutation guarantee to hold.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the builder API takes ownership like the other Agent constructors"
+    )]
     pub fn with_tool_context(mut self, context: Arc<ToolContext>) -> Self {
         if context.sandbox_policy() == SandboxPolicy::ReadOnly {
             self.tools.retain_read_safe_tools();
         }
-        self.tool_context = context;
+        let context = context
+            .as_ref()
+            .clone()
+            .with_tool_outputs(Arc::clone(&self.tool_outputs));
+        self.tool_context = Arc::new(context);
         self
     }
 
@@ -1250,7 +1267,14 @@ impl Agent {
     pub fn with_context_seed(mut self, seed: crate::types::ContextSeed) -> anyhow::Result<Self> {
         self.conversation.with_restored_context(seed)?;
         self.last_measurement = None;
+        self.sync_tool_output_store();
         Ok(self)
+    }
+
+    /// Rebuild the retrieval index from the canonical conversation history.
+    fn sync_tool_output_store(&self) {
+        self.tool_outputs
+            .replace(self.conversation.tool_output_entries());
     }
 
     /// Replace retired history with a validated checkpoint and invalidate the

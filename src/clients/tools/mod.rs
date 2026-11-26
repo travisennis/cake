@@ -9,8 +9,10 @@
 //! # Available Tools
 //!
 //! - `Bash` - Execute shell commands with timeout and output capture
+//! - `BashSession` - Manage yielded Bash sessions
 //! - `Read` - Read file contents with line range support
 //! - `ReadImage` - Read an image file for a vision-capable model
+//! - `ReadToolOutput` - Retrieve a projected oversized tool result
 //! - `Edit` - Make targeted edits to files using literal search-replace
 //! - `Write` - Create or overwrite files with content
 //!
@@ -35,6 +37,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
+use crate::clients::tool_output::{READ_TOOL_OUTPUT_NAME, ToolOutputStore, is_projectable_tool};
 use crate::config::mcp::McpExposure;
 use crate::config::settings::ToolLimits;
 use crate::gates::composer::GatePipeline;
@@ -103,6 +106,10 @@ pub struct ToolContext {
     /// preserves observations from the current run.
     read_tracker: Arc<read_tracker::ReadTracker>,
     bash_sessions: bash_session_core::SessionRegistry,
+    /// Session-scoped index rebuilt from canonical tool outputs before each
+    /// tool batch. It lets `ReadToolOutput` retrieve a projected result
+    /// without exposing paths, digests, or a session id to the model.
+    tool_outputs: Arc<ToolOutputStore>,
 }
 
 impl ToolContext {
@@ -145,6 +152,17 @@ impl ToolContext {
     /// Attach the command-policy pipeline used by the Bash preflight.
     pub fn with_gates(mut self, gates: Option<Arc<GatePipeline>>) -> Self {
         self.gates = gates;
+        self
+    }
+
+    /// Return the current session's projected tool-output index.
+    pub(crate) fn tool_outputs(&self) -> &ToolOutputStore {
+        self.tool_outputs.as_ref()
+    }
+
+    /// Attach the session-scoped projected tool-output index.
+    pub(crate) fn with_tool_outputs(mut self, tool_outputs: Arc<ToolOutputStore>) -> Self {
+        self.tool_outputs = tool_outputs;
         self
     }
 
@@ -210,6 +228,7 @@ impl ToolContext {
                     ToolLimits::defaults().bash_session_exited_ttl_seconds,
                 ),
             ),
+            tool_outputs: Arc::new(ToolOutputStore::default()),
         }
     }
 
@@ -254,6 +273,7 @@ mod json_repair;
 pub(in crate::clients) mod mcp;
 mod read;
 mod read_image;
+mod read_tool_output;
 mod read_tracker;
 mod scheduling;
 mod script_evidence;
@@ -846,12 +866,16 @@ impl ToolRegistry {
     }
 
     /// Retain selected names, including `BashSession` when Bash is selected so
-    /// every yielded command has a model-visible controller.
+    /// every yielded command has a model-visible controller. A first-phase
+    /// tool also retains `ReadToolOutput` so an externalized result remains
+    /// retrievable under an exact-name selection.
     pub(super) fn retain_enabled_tools(&mut self, enabled: &[String]) {
         let bash_enabled = enabled.iter().any(|name| name == "Bash");
+        let retrieval_enabled = enabled.iter().any(|name| is_projectable_tool(name));
         self.entries.retain(|entry| {
             enabled.iter().any(|name| name == &entry.definition.name)
                 || (bash_enabled && entry.definition.name == "BashSession")
+                || (retrieval_enabled && entry.definition.name == READ_TOOL_OUTPUT_NAME)
         });
         self.refresh_definitions();
     }
@@ -1380,6 +1404,20 @@ fn execute_read_tool(context: Arc<ToolContext>, _call_id: String, arguments: Str
     })
 }
 
+fn execute_read_tool_output(
+    context: Arc<ToolContext>,
+    _call_id: String,
+    arguments: String,
+) -> ToolFuture {
+    Box::pin(async move {
+        tokio::task::spawn_blocking(move || {
+            read_tool_output::execute_read_tool_output(&context, &arguments)
+        })
+        .await
+        .map_err(|e| ToolError::new(format!("Task join error: {e}")))?
+    })
+}
+
 fn execute_read_image_tool(
     context: Arc<ToolContext>,
     _call_id: String,
@@ -1616,7 +1654,15 @@ fn append_tool_availability_footer(s: &mut String, has_tools: bool, has_deferred
     }
 }
 
-const BUILTIN_TOOL_NAMES: &[&str] = &["Bash", "BashSession", "Read", "ReadImage", "Edit", "Write"];
+const BUILTIN_TOOL_NAMES: &[&str] = &[
+    "Bash",
+    "BashSession",
+    "Read",
+    "ReadImage",
+    READ_TOOL_OUTPUT_NAME,
+    "Edit",
+    "Write",
+];
 
 fn filter_builtin_description(
     tool_name: &str,
@@ -1805,6 +1851,13 @@ pub(super) fn default_tool_registry() -> ToolRegistry {
             .scopes_path(bash::scope_cwd),
         ToolEntry::new(bash_session::bash_session_tool(), execute_bash_session_tool)
             .tolerates_intent(),
+        ToolEntry::new(
+            read_tool_output::read_tool_output_tool(),
+            execute_read_tool_output,
+        )
+        .tolerates_intent()
+        .read_safe()
+        .replay_safe(),
         ToolEntry::new(edit::edit_tool(), execute_edit_tool)
             .repairs_arguments()
             .mutates_path(edit::mutating_target)

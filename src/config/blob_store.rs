@@ -36,7 +36,8 @@ use crate::types::session::{FunctionCallOutputData, SessionRecord};
 /// remove `.tmp-*` files without risking a published blob or an unknown file.
 const TEMP_PREFIX: &str = ".tmp-";
 
-/// Tool outputs at or above this size move to the session blob store.
+/// Tool outputs at or above this size move to the session blob store and are
+/// replaced by a bounded summary in live provider requests.
 ///
 /// A 2,597-session scan put 5,552 outputs at or above 16 KiB (140.5 MB, 25.4%
 /// of all output bytes); an 8 KiB cutoff would move 52%. The point matches

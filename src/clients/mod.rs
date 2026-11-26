@@ -25,6 +25,7 @@ mod responses;
 mod responses_types;
 pub mod retry;
 pub mod termination;
+pub mod tool_output;
 mod tools;
 
 pub use agent::Agent;

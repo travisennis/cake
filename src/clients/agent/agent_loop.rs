@@ -751,6 +751,7 @@ impl Agent {
         &mut self,
         function_calls: Vec<FunctionCall>,
     ) -> anyhow::Result<Vec<ToolRunResult>> {
+        self.sync_tool_output_store();
         self.tool_call_count += u32::try_from(function_calls.len()).unwrap_or(u32::MAX);
         let tool_plans = self.plan_tool_calls(function_calls).await?;
         self.record_hook_blocked_denials(&tool_plans);
@@ -1187,6 +1188,7 @@ impl Agent {
     /// a resumed session carries the same explanation the model saw.
     fn recover_from_image_rejection(&mut self, error: &anyhow::Error) -> anyhow::Result<()> {
         let dropped = self.conversation.drop_images();
+        self.sync_tool_output_store();
         let detail = image_rejection_detail(error);
         tracing::warn!(
             target: "cake",

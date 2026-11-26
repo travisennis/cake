@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 
 use crate::clients::compaction::{ImageConsumption, InvocationPin, InvocationPinKind};
+use crate::clients::tool_output::{self, ToolOutputEntry};
 use crate::types::compaction::prompt_context_prefix_len;
 use crate::types::compaction::{
     MessageOrigin, PinReason, RetainedConversationRecord, RetainedRecord, SkillRead,
@@ -265,19 +266,36 @@ impl ConversationState {
     /// Raw history and its offsets stay untouched: invocation and provider-turn
     /// attribution keep indexing the raw vector, never the projection. A run
     /// without a checkpoint borrows the raw vector, so today's requests cost no
-    /// copy.
+    /// copy. Oversized phase-one tool results become bounded summaries here;
+    /// the canonical item and every persistence surface keep the full text.
     pub(super) fn request_context(&self) -> Cow<'_, [ConversationItem]> {
-        let Some(checkpoint) = self.checkpoint.as_ref() else {
-            return Cow::Borrowed(&self.history);
-        };
-        Cow::Owned(project_context(
-            &self.history,
-            Some(checkpoint),
-            self.checkpoint_boundary,
-        ))
+        let base = self.checkpoint.as_ref().map_or_else(
+            || Cow::Borrowed(self.history.as_slice()),
+            |checkpoint| {
+                Cow::Owned(project_context(
+                    &self.history,
+                    Some(checkpoint),
+                    self.checkpoint_boundary,
+                ))
+            },
+        );
+        if !tool_output::has_candidate_output(base.as_ref()) {
+            return base;
+        }
+        let mut projected = base.into_owned();
+        _ = tool_output::project_request(&self.history, &mut projected);
+        Cow::Owned(projected)
+    }
+
+    /// The canonical oversized tool outputs in this session's retrieval index.
+    pub(super) fn tool_output_entries(&self) -> Vec<ToolOutputEntry> {
+        tool_output::collect_entries(&self.history)
     }
 
     /// Source refs aligned with [`Self::request_context`].
+    ///
+    /// Projection replaces text inside an item and never changes the item
+    /// count, so these refs stay aligned with the provider request.
     ///
     /// The request path uses this to map an admission plan's item index back to
     /// the raw or retained record it came from. It derives the same order as
