@@ -1,4 +1,3 @@
-Create a new file or overwrite an existing one with the given content. Automatically creates parent directories if they don't exist. Prefer the Edit tool for targeted modifications to existing files — it sends only the diff.
-
-Guidance:
-- Use for new files and complete rewrites.
+Create or overwrite a file with the complete content. Creates parent directories.
+Use Write for new files or complete rewrites.
+Use Edit for targeted changes to existing files.

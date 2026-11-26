@@ -489,9 +489,8 @@ pub struct Tool {
 const INTENT_PROPERTY: &str = "intent";
 
 /// Schema description for [`INTENT_PROPERTY`].
-const INTENT_PROPERTY_DESCRIPTION: &str = "Optional. One short, user-facing sentence in the present progressive describing what this \
-     call does, for example \"Reading the parser tests\". Shown to the user instead of the raw \
-     arguments.";
+const INTENT_PROPERTY_DESCRIPTION: &str =
+    "Optional. One short, present-progressive sentence describing this call for the user.";
 
 /// Add the optional, display-only `intent` property to one tool schema.
 ///
@@ -1499,9 +1498,9 @@ pub fn format_tool_list_section_with_mcp_and_skill_search(
         || has_skill_search;
     if has_tools {
         s.push_str(
-            "\nEvery tool call may include an optional `intent` string: one short, \
-             present-progressive sentence describing what the call does, written for the user. \
-             Include it on every call when you can.\n",
+            "\nEvery tool call may include an optional `intent` string: a short, \
+             present-progressive sentence describing the call for the user, for example \
+             \"Reading the parser tests\". Include it on every call when you can.\n",
         );
     }
     append_tool_availability_footer(&mut s, has_tools, has_deferred_tools);
@@ -1608,10 +1607,10 @@ fn append_tool_availability_footer(s: &mut String, has_tools: bool, has_deferred
     if has_deferred_tools {
         s.push_str(
             "\nOnly these tools are available directly. Use `ToolSearch` to load tools from \
-             deferred MCP servers. There is no Glob, Grep, or LS tool.",
+             deferred MCP servers.",
         );
     } else if has_tools {
-        s.push_str("\nOnly these tools are available. There is no Glob, Grep, or LS tool.");
+        s.push_str("\nOnly these tools are available.");
     } else {
         s.push_str("\nNo tools are available.");
     }

@@ -216,7 +216,7 @@ pub(super) fn bash_tool() -> super::Tool {
                 },
                 "cwd": {
                     "type": "string",
-                    "description": "Optional working directory for this command. Relative paths resolve from the invocation working directory. The directory must be the invocation working directory or a directory the sandbox already grants (`--add-dir`, settings, or a skill directory)."
+                    "description": "Working directory for this call. Relative paths resolve from it. Must be the invocation working directory or a directory the sandbox grants."
                 },
                 "timeout": {
                     "type": "number",
@@ -228,7 +228,7 @@ pub(super) fn bash_tool() -> super::Tool {
                 },
                 "reason": {
                     "type": "string",
-                    "description": "Optional self-report of why this command is being run. Untrusted: the model's stated intent is a hint for the configured policy gate, never a justification. Supply it for state-changing, destructive-looking, or remote-effect commands, stating the intended effect. Omit it for clearly safe, read-only commands."
+                    "description": "Optional, untrusted self-report for the policy gate. Supply it for state-changing, destructive-looking, or remote-effect commands; it is not authorization."
                 }
             },
             "required": ["command"]

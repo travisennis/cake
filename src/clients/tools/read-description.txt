@@ -1,13 +1,6 @@
-Read a file's contents as unnumbered text. Supports reading specific line ranges to avoid loading large files entirely.
+Read a text file as unnumbered lines, optionally a line range. Defaults to the configured window from `start_line` (500 lines by default). Use Read instead of cat.
 
-Behavior:
-- Returns the selected lines verbatim under a `File:` header and a `Lines X-Y/Z` range line. The header and footer are metadata, not file content; do not include them in Edit old_text.
-- Defaults to reading lines 1-500 (the configured read_default_end_line window; configurable in [limits]). Provide start_line/end_line for large files.
-- Returns a "N more lines; continue with start_line=X" note when the file extends beyond the delivered range; large files may report "at least N more lines" because the exact total is not read to the end of the file.
-- When read_max_output_bytes stops delivery, the output ends at a complete line and names the byte cap and the start_line to resume from. Configurable in [limits].
-- Truncates any line longer than the configured read_max_line_bytes cap with a "... (line truncated to N bytes)" marker, so a single huge line cannot exhaust the window. Configurable in [limits].
-- Rejects files with null bytes. Detection covers at least the first 8 KiB and all bytes read for the requested range; large ranged reads stop at a bounded point.
-- Rejects invalid ranges (line numbers below 1, start_line greater than end_line, or start_line past EOF) and reports the file's line count.
-- Rejects directory paths (use Bash with ls, find, or tree for directory listings).
-
-Warning: The body has no synthetic line-number prefixes. Ranged and truncated reads return only the requested region; use only exact returned lines as Edit old_text, and omit the Read header and footer. Content outside the returned lines will not match.
+The `File:` and `Lines X-Y/Z` lines are metadata, not file content.
+Do not include them in Edit text.
+A truncated result names the next `start_line` to read. Ranged and truncated reads return only that region; use exact returned lines for later edits.
+Rejects binary files and directories.

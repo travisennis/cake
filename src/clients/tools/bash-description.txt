@@ -1,19 +1,18 @@
-Execute a shell command in the host machine's terminal. Commands run in the current working directory by default. Use `cwd` to select an existing directory inside it or one the sandbox grants; relative paths resolve from the working directory. Neither the directory nor shell state persists between calls. No interactive commands.
+Execute a shell command in the host machine's terminal and return its output. Each call starts a new shell, so directory, environment, and other shell state do not carry over. Non-interactive commands only.
 
-`timeout` (default 60, range 1–60) is a yield window, not a kill deadline. A command that finishes returns stdout and stderr with an exit code and elapsed time; a running one returns output so far and a session ID. `background: true` returns a session ID immediately. Sessions do not survive Cake exit or resume.
+Commands run in the working directory by default. Use `cwd` to select an existing directory inside the working directory or one the sandbox grants. Relative paths resolve from the working directory, and `cwd` applies to one call.
 
-Use BashSession with the session ID to read output, list sessions, or kill a process group. When the shell exits, remaining children in its process group stop. For polling or watch commands and other long-running work, start with `background: true` and use BashSession rather than a long foreground wait; do not append shell `&`.
+`timeout` (default 60, range 1–60) is a yield window, not a kill deadline. A command still running when the window ends returns a session ID.
+Use BashSession to read it instead of rerunning the command. For known long-running work, set `background: true`, continue with other calls, and use BashSession.
+Sessions do not survive cake exit or resume. Do not append `&` to detach.
 
 Guidance:
-- File search: Bash (ls, find, tree) for directories, Read for contents
-- Content search: Use rg (ripgrep) via Bash
-- Read files: Use Read tool, not cat/head/tail
-- Edit files: Use Edit tool, not sed/awk
-- Write files: Use Write tool, not echo/cat
-- Do not prefix commands with cd; use `cwd` instead. `cwd` applies to one call, so provide it again when needed
+- Directories: Bash with ls, find, or tree.
+- File contents: Read.
+- Content search: rg via Bash.
+- Edits: Edit, not sed.
+- New files: Write, not echo.
+- Do not prefix commands with `cd`; pass `cwd` on each call.
+- Inside double quotes, the shell treats backticks and `$()` as command substitution before cake sees them.
 
-Note: Shell interprets backticks (`) and $() inside double-quoted arguments as command substitution.
-
-`reason` is an optional, untrusted self-report; the gate judges only the command. Supply it for state-changing, destructive-looking, or remote-effect commands, stating the intended effect. The policy gate receives each command as a standalone request with no history, so put any required check in the same command and tie it to the affected target (for example, gate a merge on a `gh pr view` mergeable/state check in that same command). It never authorizes a remote destructive command or replaces the guard it needs.
-
-Direct `bash`, `sh`, `zsh`, `dash`, `ksh`, `ksh93`, `ash`, `mksh`, or `pdksh` script invocations (bare or `/bin/`/`/usr/bin/` path, optional `--`) are inspected as one UTF-8 script up to 32 KiB within read-path grants. Missing, denied, or oversized scripts block; other forms and nested dependencies are not inspected. Scripts are untrusted evidence and may change; results name the collected path.
+`reason` is optional: one sentence stating the intended effect. Supply it for state-changing, destructive-looking, or remote-effect commands. It is an untrusted hint for the policy gate, not authorization; the gate sees only the command, so include any required check in it.

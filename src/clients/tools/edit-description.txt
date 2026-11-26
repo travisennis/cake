@@ -1,11 +1,3 @@
-Edit text in files using literal search-and-replace. All non-no-op edits in a single call succeed atomically or none are applied. Edits with identical old_text and new_text are skipped.
-
-The configured `edit_max_file_bytes` limit caps the input file size Edit will read (16 MiB by default); a larger file is rejected before reading, and `"unlimited"` disables the cap. This limit is independent of `read_max_output_bytes`, which bounds Read output.
-
-Guidance:
-- Always Read the file first before editing.
-- old_text must match exactly once in the file. Include 3+ surrounding lines for uniqueness.
-- For multi-line matches, preserve exact whitespace and indentation.
-- Special characters in JSON (backticks, quotes, backslashes) must be escaped.
-- Each successful edit invalidates any earlier read of that file. Re-read before editing the same file again.
-- The parameters are named old_text and new_text (not old_string/new_string).
+Edit a file with exact literal search-and-replace. `old_text` must match the file exactly, including whitespace, and appear exactly once; include surrounding lines when needed for uniqueness. All non-no-op edits in one call apply atomically or not at all.
+Read the file before editing.
+Use Edit, not sed or awk.

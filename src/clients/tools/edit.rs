@@ -33,7 +33,7 @@ pub(super) fn edit_tool() -> super::Tool {
                 },
                 "edits": {
                     "type": "array",
-                    "description": "The edits to make to the file. Edits with identical old_text and new_text are no-ops; they are skipped and reported without changing the file. The max number of edits you can do at once is 20.",
+                    "description": "The edits to make. Applied atomically; identical old_text and new_text pairs are skipped. Maximum 20.",
                     "minItems": 1,
                     "maxItems": MAX_EDITS_PER_CALL,
                     "items": {

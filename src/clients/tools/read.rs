@@ -31,7 +31,7 @@ pub(super) fn read_tool() -> super::Tool {
                 "end_line": {
                     "type": "integer",
                     "minimum": 1,
-                    "description": "Last line to read (1-indexed, inclusive). Default: the configured read_default_end_line window (500 out of the box; start_line+window-1 when start_line given)"
+                    "description": "Last line to read (1-indexed, inclusive). Defaults to the configured window from `start_line` (500 lines by default)."
                 }
             },
             "required": ["path"]
