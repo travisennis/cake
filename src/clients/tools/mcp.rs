@@ -10,15 +10,17 @@ use base64::Engine as _;
 use serde_json::Value;
 
 use crate::clients::mcp::{McpClient, McpTool};
+use crate::clients::tool_output::not_retained_preview;
 use crate::clients::tools::{
     Tool, ToolContext, ToolEntry, ToolError, ToolResult, push_output_truncation_event_if,
     repair_json_args,
 };
+use crate::config::blob_store::TOOL_OUTPUT_PRODUCER_LIMIT_BYTES;
 use crate::types::ImagePart;
 
-/// Cap on text returned to the model, matching the toolbox and Bash inline
-/// limits.
-const MAX_OUTPUT_BYTES: usize = 50_000;
+/// Cap on text returned to the model, matching the shared Bash and toolbox
+/// producer boundary.
+const MAX_OUTPUT_BYTES: usize = TOOL_OUTPUT_PRODUCER_LIMIT_BYTES;
 
 /// MIME types providers accept for inline images.
 const SUPPORTED_IMAGE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
@@ -93,6 +95,7 @@ async fn execute_mcp_tool(
     })?;
     let rendered = render_content(
         &result,
+        registered_name,
         supports_images,
         context.limits.read_image_max_bytes,
     );
@@ -170,6 +173,7 @@ struct RenderedContent {
 /// Convert every MCP content block into text and inline images.
 fn render_content(
     result: &McpCallResult,
+    tool_name: &str,
     supports_images: bool,
     image_limit: Option<usize>,
 ) -> RenderedContent {
@@ -189,7 +193,7 @@ fn render_content(
     } else {
         parts.join("\n")
     };
-    let (output, truncated) = truncate(output);
+    let (output, truncated) = truncate(output, tool_name);
     RenderedContent {
         output,
         images,
@@ -332,18 +336,11 @@ fn pretty_json(value: &Value) -> String {
     serde_json::to_string_pretty(value).unwrap_or_else(|_| compact_json(value))
 }
 
-/// Truncate oversized text at a character boundary with an explicit marker.
-fn truncate(mut output: String) -> (String, bool) {
+/// Replace oversized text with a shared not-retained preview.
+fn truncate(output: String, tool_name: &str) -> (String, bool) {
     if output.len() <= MAX_OUTPUT_BYTES {
         return (output, false);
     }
-    let mut cut = MAX_OUTPUT_BYTES;
-    while !output.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    output.truncate(cut);
-    output.push_str("\n[... mcp output truncated at ");
-    output.push_str(&MAX_OUTPUT_BYTES.to_string());
-    output.push_str(" bytes ...]");
-    (output, true)
+    let reason = format!("mcp result exceeds the {MAX_OUTPUT_BYTES} byte shared producer cap");
+    (not_retained_preview(tool_name, &output, &reason), true)
 }

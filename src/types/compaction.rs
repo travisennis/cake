@@ -17,6 +17,7 @@
 //! both call it, so resume and fork cannot drift from a live request.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -308,7 +309,7 @@ impl RetainedRecord {
             RetainedConversationRecord::FunctionCallOutput(data) => {
                 ConversationItem::FunctionCallOutput {
                     call_id: data.call_id.clone(),
-                    output: data.output.clone(),
+                    output: Arc::from(data.output.as_str()),
                     timestamp: data.timestamp,
                     images: data.images.clone(),
                 }

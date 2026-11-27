@@ -312,7 +312,7 @@ fn source_items(
             if let Some(summary) = projections.get(index).and_then(Option::as_ref)
                 && let ConversationItem::FunctionCallOutput { output, .. } = &mut item
             {
-                *output = summary.to_string();
+                *output = Arc::clone(summary);
             }
             item
         })

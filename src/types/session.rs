@@ -6,6 +6,7 @@
 
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -1300,7 +1301,7 @@ impl StreamRecord {
                 images,
             } => Self::FunctionCallOutput(FunctionCallOutputData {
                 call_id: call_id.clone(),
-                output: output.clone(),
+                output: output.to_string(),
                 content_id: None,
                 replay,
                 timestamp: *timestamp,
@@ -1474,7 +1475,7 @@ impl SessionRecord {
                 images,
             }) => Some(ConversationItem::FunctionCallOutput {
                 call_id: call_id.clone(),
-                output: output.clone(),
+                output: Arc::from(output.as_str()),
                 timestamp: *timestamp,
                 images: images.clone(),
             }),

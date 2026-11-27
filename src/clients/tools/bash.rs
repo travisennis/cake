@@ -7,6 +7,7 @@ use tokio::process::{Child, Command};
 use tokio::time::{Duration, timeout};
 use tracing::debug;
 
+use crate::clients::tool_output::TOOL_OUTPUT_PREVIEW_BYTES;
 use crate::clients::tools::secure_temp_dir::secure_temp_dir;
 use crate::gates::composer::{
     GateMode, GatePipelineError, GateRequest, PipelineAuthorization, StageOutcome,
@@ -1062,7 +1063,7 @@ async fn execute_bash_with_args(
             &reservation.id,
             &read,
             preflight,
-            context.limits.bash_output_max_bytes,
+            context.limits.bash_output_cap(),
             note,
         ));
     }
@@ -1137,15 +1138,19 @@ fn format_yielded(
     id: &str,
     read: &super::bash_session_core::SessionRead,
     preflight: GatePreflight,
-    max_bytes: Option<usize>,
+    max_bytes: usize,
     note: Option<&str>,
 ) -> super::ToolResult {
     let mut events = preflight.compensation_events;
-    let (mut output, truncated) = super::bash_session::cap_output(&read.output.output, max_bytes);
+    let (mut output, truncated) = super::bash_session::cap_output(
+        &read.output.output,
+        max_bytes,
+        read.output.dropped_bytes > 0,
+    );
     if truncated {
         match spill_output(&read.output.output) {
             Ok(path) => {
-                _ = write!(output, "\nFull output saved to: {}", path.display());
+                _ = write!(output, "\nCaptured output saved to: {}", path.display());
             },
             Err(e) => debug!("Failed to spill yielded Bash output: {e}"),
         }
@@ -1239,14 +1244,11 @@ fn format_completed(
         result.push_str(note);
     }
     let result = append_journal_gap(result, read.output.dropped_bytes);
-    let spilled = meta
-        .context
-        .limits
-        .bash_output_max_bytes
-        .is_some_and(|max| result.len() > max);
+    let spilled = result.len() > meta.context.limits.bash_output_cap();
     let result = truncate_output(
         &result,
-        meta.context.limits.bash_output_max_bytes,
+        meta.context.limits.bash_output_cap(),
+        read.output.dropped_bytes > 0,
         exit_code,
         read.elapsed.as_millis(),
         should_warn_exit_zero_stderr(success, stderr),
@@ -1280,10 +1282,7 @@ fn format_completed_binary(
         should_warn_exit_zero_stderr(exit_code == 0, &read.stderr),
     );
     let result = append_journal_gap(result, read.output.dropped_bytes);
-    let spilled = context
-        .limits
-        .bash_output_max_bytes
-        .is_some_and(|max| read.output.raw.len() > max);
+    let spilled = read.output.raw.len() > context.limits.bash_output_cap();
     push_truncation_event_if(&mut events, "Bash", read.output.dropped_bytes > 0, spilled);
     super::ToolResult {
         output: prepend_safety_warnings(result, warnings),
@@ -1573,59 +1572,56 @@ fn gate_tool_error(
 
 /// If `output` exceeds `max_bytes`, write the full text to a temporary file
 /// and return a summary pointing to that file. Otherwise return the output
-/// with the metadata footer appended. `max_bytes` is the `[limits]
-/// bash_output_max_bytes` budget; `None` (unlimited) passes everything
-/// through. The temp file receives only the raw command output (no footer);
-/// the footer is included in the inline summary so it is always visible in
-/// the tool response.
+/// with the metadata footer appended. `max_bytes` is the effective
+/// `bash_output_max_bytes` budget after the shared producer ceiling is
+/// applied. `force` returns the spill summary even when the captured text fits,
+/// for a capture that already dropped earlier bytes. The temp file receives
+/// only the raw command output (no footer); the footer is included in the
+/// inline summary so it is always visible in the tool response.
 pub(super) fn truncate_output(
     output: &str,
-    max_bytes: Option<usize>,
+    max_bytes: usize,
+    force: bool,
     exit_code: i32,
     elapsed_ms: u128,
     warn_exit_zero_stderr: bool,
 ) -> String {
-    let Some(max_bytes) = max_bytes else {
-        return append_metadata(output, exit_code, elapsed_ms, warn_exit_zero_stderr);
-    };
-    if output.len() <= max_bytes {
+    if !force && output.len() <= max_bytes {
         return append_metadata(output, exit_code, elapsed_ms, warn_exit_zero_stderr);
     }
 
     let footer = format_metadata_suffix(exit_code, elapsed_ms, warn_exit_zero_stderr);
     let total_bytes = output.len();
     let total_lines = output.lines().count();
+    let intro = if force {
+        "Captured output not retained"
+    } else {
+        "Output too long"
+    };
+    let half = TOOL_OUTPUT_PREVIEW_BYTES / 2;
+    let head_end = output.floor_char_boundary(half);
+    let tail_start = output.ceil_char_boundary(total_bytes.saturating_sub(half));
+    let head = output.get(..head_end).unwrap_or("");
+    let tail = output.get(tail_start..).unwrap_or("");
 
     let write_result = spill_output(output);
 
     match write_result {
-        Ok(tmp_path) => {
-            let preview = max_bytes / 4;
-            let head_end = output.floor_char_boundary(preview);
-            let tail_start = output.ceil_char_boundary(total_bytes - preview);
-            let (head, _) = output.split_at(head_end);
-            let (_, tail) = output.split_at(tail_start);
-            format!(
-                "[Output too long — {total_bytes} bytes, {total_lines} lines.]\n\
-                 Full output saved to: {path}\n\
-                 You can search it with `grep` or view portions with `head`/`tail`.\n\
-                 Consider reformulating the command to produce less output.\n\n\
-                 --- first ~{preview} bytes ---\n{head}\n\n\
-                 --- last ~{preview} bytes ---\n{tail}\n{footer}",
-                path = tmp_path.display(),
-            )
-        },
+        Ok(tmp_path) => format!(
+            "[{intro} — {total_bytes} bytes, {total_lines} lines; result not retained in \
+             the session.]\n\
+             Captured output saved to: {path}\n\
+             You can search it with `grep` or view portions with `head`/`tail`.\n\
+             Consider reformulating the command to produce less output.\n\n\
+             --- first ~{half} bytes ---\n{head}\n\n\
+             --- last ~{half} bytes ---\n{tail}\n{footer}",
+            path = tmp_path.display(),
+        ),
         Err(e) => {
             debug!("Failed to write overflow output to temp file: {e}");
-
-            let half = max_bytes / 2;
-            let head_end = output.floor_char_boundary(half);
-            let tail_start = output.ceil_char_boundary(total_bytes - half);
-            let (head, _) = output.split_at(head_end);
-            let (_, tail) = output.split_at(tail_start);
             format!(
-                "[Output too long — {total_bytes} bytes, {total_lines} lines. \
-                 The command was too verbose; reformulate with less output \
+                "[{intro} — {total_bytes} bytes, {total_lines} lines; result not retained in \
+                 the session. The command was too verbose; reformulate with less output \
                  (e.g. pipe through `head`, `tail`, or `grep`).]\n\n\
                  --- first ~{half} bytes ---\n{head}\n\n\
                  --- last ~{half} bytes ---\n{tail}\n{footer}",

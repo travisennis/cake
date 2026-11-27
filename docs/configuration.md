@@ -220,9 +220,9 @@ Tool limits have built-in defaults. Byte caps accept `"unlimited"`; Bash session
 
 ```toml
 [limits]
-bash_output_max_bytes = 50000 # Bash inline output cap (bytes; default 50000)
+bash_output_max_bytes = 2088960 # Shared producer cap (bytes; default 2088960)
 bash_read_cap = 100000 # Legacy key; parsed but no longer limits Bash sessions
-bash_session_output_max_bytes = 1048576 # Unread output kept per session
+bash_session_output_max_bytes = 2088960 # Unread output kept per session
 bash_session_max = 16 # Concurrent running commands
 bash_session_max_seconds = 3600 # Hard wall clock per command
 bash_session_exited_ttl_seconds = 600 # Retention after exit
@@ -234,9 +234,9 @@ read_image_max_bytes = 33554432 # ReadImage source cap (bytes; default 32 MiB)
 hook_output_limit = 65536 # Hook stdout/stderr cap per hook (bytes; default 65536)
 ```
 
-- `bash_output_max_bytes`: maximum bytes of Bash or BashSession output returned inline. Output exceeding the cap is written to a secure temp file; completed Bash results include a head+tail preview, while yielded Bash and BashSession results include a head preview. `"unlimited"` disables the spill.
+- `bash_output_max_bytes`: maximum bytes of Bash or BashSession output returned through the shared producer boundary. Values above the shared producer cap are clamped to it. Output above the effective cap is written to a secure temp file and replaced by a head/tail preview that says the result was not retained; the summary also reports a dropped-oldest gap when the capture exceeded the session journal. `"unlimited"` is clamped to the shared cap.
 - `bash_read_cap`: retained for settings compatibility. Session-managed Bash commands no longer use it or kill a command for producing too much output.
-- `bash_session_output_max_bytes`: maximum unread bytes held for one Bash session. Overflow drops the oldest bytes at a UTF-8 boundary and reports the gap on the next read.
+- `bash_session_output_max_bytes`: maximum unread bytes held for one Bash session, clamped to the shared producer cap. Overflow drops the oldest bytes at a UTF-8 boundary; a read that lost bytes is returned as a not-retained preview and reports the gap.
 - `bash_session_max`: maximum concurrently running Bash sessions. Completed sessions are retained up to four times this count.
 - `bash_session_max_seconds`: hard wall clock in seconds; reaching it terminates the process group.
 - `bash_session_exited_ttl_seconds`: seconds a completed session remains available for late or repeated reads, subject to the completed-session count cap.
@@ -247,7 +247,9 @@ hook_output_limit = 65536 # Hook stdout/stderr cap per hook (bytes; default 6553
 - `read_image_max_bytes`: maximum bytes of an image file the ReadImage tool will read. This is a source-read cap, not a per-request cap; `[images]` bounds what a request sends. A larger file is rejected with a model-visible error, and the read itself stops at the cap plus one byte. An image within the cap whose longest edge exceeds 2048 pixels is decoded and downscaled in memory, so a large screenshot reaches the model as a readable picture instead of a rejected request, and the source file is never modified. A source image whose header claims more than 100,000,000 decoded pixels is rejected before a full decode. `"unlimited"` disables the byte cap.
 - `hook_output_limit`: maximum bytes of hook stdout and stderr captured per hook invocation. `"unlimited"` disables truncation.
 
-When a project overrides a global limit back to no cap, `"unlimited"` is the explicit value that does so.
+The shared tool-output boundary is a build constant, not a settings key. A producer's payload is capped at 2,088,960 bytes: the 2 MiB hard ceiling minus an 8 KiB reserve for footers and markers. A retained full result at or above 16 KiB is externalized to the session blob. A result above the producer cap is replaced by a head/tail preview that says it was not retained; Bash and BashSession also write the captured overflow to a secure temp file. A session's canonical history may retain at most 64 MiB of oversized tool-result text; later oversized results become not-retained previews with no retrieval handle, except for the bounded `ReadToolOutput` result itself. The `bash_output_max_bytes` and `bash_session_output_max_bytes` values are clamped to the producer cap and cannot raise it.
+
+For keys outside the shared tool-output boundary, when a project overrides a global limit back to no cap, `"unlimited"` is the explicit value that does so.
 
 ## Images
 

@@ -17,16 +17,18 @@ use tokio::process::Command;
 use tokio::time::{Duration, timeout};
 use tracing::warn;
 
+use crate::clients::tool_output::not_retained_preview;
 use crate::clients::tools::{Tool, ToolEntry, ToolError, ToolResult, repair_json_args};
+use crate::config::blob_store::TOOL_OUTPUT_PRODUCER_LIMIT_BYTES;
 use crate::config::toolbox::{
     BoundedStreams, ToolboxFormat, ToolboxProcessGuard, ToolboxTool, place_in_own_process_group,
     read_streams_bounded, validate_text_argument_name,
 };
 
-/// Cap on output returned to the model, matching the Bash tool's inline
-/// limit. Reading stops and the tool is killed once stdout exceeds this;
-/// the captured output is truncated with a marker.
-const MAX_OUTPUT_BYTES: usize = 50_000;
+/// Cap on output returned to the model, matching the shared Bash, `BashSession`,
+/// and MCP producer boundary. Reading stops and the tool is killed once stdout
+/// exceeds this; the captured output is truncated with a not-retained marker.
+const MAX_OUTPUT_BYTES: usize = TOOL_OUTPUT_PRODUCER_LIMIT_BYTES;
 
 /// Cap on captured stderr; beyond this stderr is drained but discarded.
 const MAX_STDERR_BYTES: usize = 10_000;
@@ -190,7 +192,10 @@ fn finish_toolbox_result(
     );
 
     Ok(ToolResult {
-        output: truncate_output(String::from_utf8_lossy(&streams.stdout).into_owned()),
+        output: truncate_output(
+            String::from_utf8_lossy(&streams.stdout).into_owned(),
+            tool_name,
+        ),
         images: Vec::new(),
         compensation_events,
         permission_denials: Vec::new(),
@@ -261,18 +266,13 @@ fn render_text_argument(key: &str, value: &serde_json::Value) -> Result<String, 
     }
 }
 
-/// Truncate oversized output at a char boundary with an explicit marker.
-fn truncate_output(mut output: String) -> String {
+/// Replace oversized output with a shared not-retained preview.
+fn truncate_output(output: String, tool_name: &str) -> String {
     if output.len() <= MAX_OUTPUT_BYTES {
         return output;
     }
-    let mut cut = MAX_OUTPUT_BYTES;
-    while !output.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    output.truncate(cut);
-    output.push_str("\n[... toolbox output truncated at ");
-    output.push_str(&MAX_OUTPUT_BYTES.to_string());
-    output.push_str(" bytes ...]");
-    output
+    let reason = format!(
+        "toolbox output exceeded the {MAX_OUTPUT_BYTES} byte shared producer cap; later bytes were not captured"
+    );
+    not_retained_preview(tool_name, &output, &reason)
 }

@@ -189,7 +189,7 @@ impl ToolContext {
     pub fn with_limits(mut self, limits: ToolLimits) -> Self {
         self.bash_sessions = bash_session_core::SessionRegistry::new(
             limits.bash_session_max,
-            limits.bash_session_output_max_bytes,
+            limits.bash_session_output_cap(),
             std::time::Duration::from_secs(limits.bash_session_exited_ttl_seconds),
         );
         self.limits = limits;

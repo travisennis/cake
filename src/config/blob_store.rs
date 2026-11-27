@@ -44,6 +44,29 @@ const TEMP_PREFIX: &str = ".tmp-";
 /// `fx`'s `large_result_threshold_bytes`.
 pub const TOOL_OUTPUT_EXTERNALIZATION_THRESHOLD_BYTES: usize = 16 * 1024;
 
+/// Hard ceiling for one tool result retained in the live conversation and
+/// session blob.
+///
+/// A producer may return at most [`TOOL_OUTPUT_PRODUCER_LIMIT_BYTES`] so its
+/// footer or truncation marker still fits under this ceiling. The conversation
+/// boundary replaces anything above it with a head/tail preview that says the
+/// result was not retained.
+pub const TOOL_OUTPUT_RETENTION_CEILING_BYTES: usize = 2 * 1024 * 1024;
+
+/// Per-producer output cap used by Bash, `BashSession`, MCP, and toolbox tools.
+///
+/// The reserve covers metadata footers and truncation markers so the final
+/// model-visible string stays below the hard retention ceiling.
+pub const TOOL_OUTPUT_PRODUCER_LIMIT_BYTES: usize = TOOL_OUTPUT_RETENTION_CEILING_BYTES - 8 * 1024;
+
+/// Total full-text bytes one session's canonical history may retain across
+/// oversized tool results.
+///
+/// Results above this budget are replaced by a bounded preview with an explicit
+/// not-retained marker before they enter canonical history, so the budget
+/// bounds live memory rather than only the retrieval index.
+pub const TOOL_OUTPUT_SESSION_BUDGET_BYTES: usize = 64 * 1024 * 1024;
+
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A validated lowercase SHA-256 digest.

@@ -152,6 +152,10 @@ pub(super) struct ConversationState {
     /// record was created. Later image recovery cannot make a result projected
     /// that resume would leave inline.
     projections: Vec<Option<ToolOutputProjection>>,
+    /// Full-text bytes counted against the session's retained-output budget.
+    /// Restored from canonical history and extended only when an oversized
+    /// result is admitted at its full size.
+    retained_tool_output_bytes: usize,
     /// Cached request summaries aligned with `checkpoint.retained`.
     retained_projections: Vec<Option<ToolOutputProjection>>,
 }
@@ -180,6 +184,7 @@ impl ConversationState {
             retained_image_consumption: Vec::new(),
             checkpoint_boundary: 0,
             projections: vec![None; initial_messages.len()],
+            retained_tool_output_bytes: 0,
             retained_projections: Vec::new(),
         }
     }
@@ -306,7 +311,7 @@ impl ConversationState {
             if let Some(ConversationItem::FunctionCallOutput { output, .. }) =
                 projected.get_mut(index)
             {
-                *output = projection.summary.to_string();
+                *output = Arc::clone(&projection.summary);
             }
         }
         Cow::Owned(projected)
@@ -838,6 +843,7 @@ impl ConversationState {
             self.checkpoint = Some(checkpoint);
         }
         self.projections = tool_output::project_history(&self.history);
+        self.retained_tool_output_bytes = tool_output::retained_bytes(&self.history);
         self.retained_projections = self
             .checkpoint
             .as_ref()
@@ -983,6 +989,12 @@ impl ConversationState {
         provenance: RecordProvenance,
     ) -> (ConversationItem, Option<ToolOutputEntry>) {
         let timestamp = chrono::Utc::now();
+        let admitted =
+            tool_output::admit_output(tool_name, output, self.retained_tool_output_bytes);
+        self.retained_tool_output_bytes = self
+            .retained_tool_output_bytes
+            .saturating_add(admitted.retained_bytes);
+        let output = admitted.output;
         let projection = images
             .is_empty()
             .then(|| tool_output::project_output(tool_name, &call_id, Some(&timestamp), &output))
@@ -1082,7 +1094,7 @@ fn retained_record_from_source(
             images,
         } => RetainedConversationRecord::FunctionCallOutput(FunctionCallOutputData {
             call_id: call_id.clone(),
-            output: output.clone(),
+            output: output.to_string(),
             content_id: None,
             replay: provenance.replay,
             timestamp: *timestamp,
@@ -1182,7 +1194,7 @@ fn repair_items_for_incomplete_calls(
         .into_iter()
         .map(|(call_id, name)| ConversationItem::FunctionCallOutput {
             call_id: call_id.to_string(),
-            output: incomplete_tool_call_repair_output(name, call_id),
+            output: Arc::from(incomplete_tool_call_repair_output(name, call_id)),
             timestamp: Some(timestamp),
             images: Vec::new(),
         })

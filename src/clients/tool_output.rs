@@ -1,8 +1,11 @@
-//! Cached request projection and session index for oversized tool outputs.
+//! Shared tool-output retention, request projection, and session retrieval.
 //!
-//! An eligible output is summarized once when it is appended or restored.
-//! Request construction and compaction estimates consume the cached summary,
-//! so a growing session never re-hashes canonical tool text per request.
+//! A tool result is admitted once: full text up to the hard ceiling is shared
+//! with canonical history, oversized results that would exceed the session
+//! budget become explicit not-retained previews, and eligible retained results
+//! are summarized once when appended or restored. Request construction and
+//! compaction estimates consume the cached summary, so a growing session never
+//! re-hashes canonical tool text per request.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -11,7 +14,10 @@ use std::sync::{Arc, Mutex};
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 
-use crate::config::blob_store::TOOL_OUTPUT_EXTERNALIZATION_THRESHOLD_BYTES;
+use crate::config::blob_store::{
+    TOOL_OUTPUT_EXTERNALIZATION_THRESHOLD_BYTES, TOOL_OUTPUT_RETENTION_CEILING_BYTES,
+    TOOL_OUTPUT_SESSION_BUDGET_BYTES,
+};
 use crate::types::ConversationItem;
 
 /// Registered name of the tool that retrieves a projected output.
@@ -22,6 +28,22 @@ pub const TOOL_OUTPUT_PREVIEW_BYTES: usize = 4 * 1024;
 
 /// Marker every appended `PreToolUse` and `PostToolUse` context follows.
 pub const HOOK_CONTEXT_MARKER: &str = "\n\nAdditional hook context:\n";
+
+/// Markers that identify a producer-truncated or non-retained result.
+///
+/// Historical sessions can contain these markers without the shared admission
+/// metadata, so projection refuses them and never claims that the full result
+/// is retained.
+const TRUNCATION_MARKERS: &[&str] = &[
+    "[tool result not retained:",
+    "[Output too long —",
+    "[Captured output not retained —",
+    "[Output not retained —",
+    "[... mcp output truncated at",
+    "[... toolbox output truncated at",
+    "[... output truncated at",
+    "[Oldest output was dropped:",
+];
 
 const TOOL_OUTPUT_PREVIEW_HALF_BYTES: usize = TOOL_OUTPUT_PREVIEW_BYTES / 2;
 
@@ -47,20 +69,20 @@ pub struct ToolOutputEntry {
     pub tool_name: String,
     /// Provider call id that produced the output.
     pub call_id: String,
-    /// Full canonical UTF-8 output text.
+    /// Full canonical UTF-8 output text, shared with the conversation item.
     pub output: Arc<str>,
     /// Number of lines in `output`.
     pub line_count: usize,
 }
 
 impl ToolOutputEntry {
-    fn new(handle: String, tool_name: String, call_id: String, output: &str) -> Self {
+    fn new(handle: String, tool_name: String, call_id: String, output: Arc<str>) -> Self {
         Self {
             handle,
             tool_name,
             call_id,
-            output: Arc::from(output),
-            line_count: line_count(output),
+            line_count: line_count(&output),
+            output,
         }
     }
 }
@@ -125,7 +147,104 @@ impl ToolOutputStore {
 
 /// Whether a tool's output is in the phase-one projection set.
 pub fn is_projectable_tool(name: &str) -> bool {
-    name == "Bash" || name.starts_with("mcp__") || name.starts_with("tb__")
+    name == "Bash" || name == "BashSession" || name.starts_with("mcp__") || name.starts_with("tb__")
+}
+
+/// One tool result after the shared retention boundary admits it.
+#[derive(Debug)]
+pub struct AdmittedOutput {
+    /// Text stored in canonical history and the retrieval index.
+    pub output: Arc<str>,
+    /// Full-text bytes this result adds to the session budget, or zero when
+    /// the result is smaller than the externalization threshold.
+    pub retained_bytes: usize,
+}
+
+/// Apply the one hard ceiling and per-session budget to a tool result.
+///
+/// A result above the ceiling, or an oversized result that would exceed the
+/// session budget, becomes a bounded head/tail preview carrying an explicit
+/// `not retained` marker. The preview is shorter than the projection
+/// threshold, so it never receives a retrieval handle. `ReadToolOutput`
+/// results are never previewed: the tool bounds its own output and must remain
+/// usable at the budget edge, though its bytes still count toward the budget.
+pub fn admit_output(tool_name: &str, output: String, retained_bytes: usize) -> AdmittedOutput {
+    let original_bytes = output.len();
+    if tool_name == READ_TOOL_OUTPUT_NAME {
+        return AdmittedOutput {
+            output: Arc::from(output),
+            retained_bytes: if original_bytes >= TOOL_OUTPUT_EXTERNALIZATION_THRESHOLD_BYTES {
+                original_bytes
+            } else {
+                0
+            },
+        };
+    }
+    if original_bytes > TOOL_OUTPUT_RETENTION_CEILING_BYTES {
+        let reason = format!(
+            "output exceeds the {TOOL_OUTPUT_RETENTION_CEILING_BYTES} byte retention ceiling"
+        );
+        return AdmittedOutput {
+            output: Arc::from(not_retained_preview(tool_name, &output, &reason)),
+            retained_bytes: 0,
+        };
+    }
+    let counts_toward_budget = original_bytes >= TOOL_OUTPUT_EXTERNALIZATION_THRESHOLD_BYTES;
+    if counts_toward_budget
+        && retained_bytes.saturating_add(original_bytes) > TOOL_OUTPUT_SESSION_BUDGET_BYTES
+    {
+        let reason = format!(
+            "retaining it would exceed the {TOOL_OUTPUT_SESSION_BUDGET_BYTES} byte session budget \
+             (already {retained_bytes} bytes)"
+        );
+        return AdmittedOutput {
+            output: Arc::from(not_retained_preview(tool_name, &output, &reason)),
+            retained_bytes: 0,
+        };
+    }
+    AdmittedOutput {
+        output: Arc::from(output),
+        retained_bytes: if counts_toward_budget {
+            original_bytes
+        } else {
+            0
+        },
+    }
+}
+
+/// Sum the oversized tool-output bytes retained by canonical history.
+pub fn retained_bytes(items: &[ConversationItem]) -> usize {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            ConversationItem::FunctionCallOutput { output, .. }
+                if output.len() >= TOOL_OUTPUT_EXTERNALIZATION_THRESHOLD_BYTES =>
+            {
+                Some(output.len())
+            },
+            _ => None,
+        })
+        .sum()
+}
+
+/// Build a bounded preview that explicitly says the result was not retained.
+pub fn not_retained_preview(tool_name: &str, output: &str, reason: &str) -> String {
+    let original_bytes = output.len();
+    let lines = line_count(output);
+    let (head, tail) = if output.len() <= TOOL_OUTPUT_PREVIEW_BYTES {
+        (output, "")
+    } else {
+        (
+            utf8_head(output, TOOL_OUTPUT_PREVIEW_HALF_BYTES),
+            utf8_tail(output, TOOL_OUTPUT_PREVIEW_HALF_BYTES),
+        )
+    };
+    format!(
+        "[tool result not retained: {tool_name}; captured={original_bytes} bytes, {lines} lines; {reason}]\n\
+         This result was not retained in the session, so no ReadToolOutput handle is available. \
+         Re-run the tool with a narrower request.\n\
+         --- head ---\n{head}\n--- tail ---\n{tail}\n[end not retained tool result]"
+    )
 }
 
 /// Compute the cached projection for every eligible raw-history output.
@@ -168,7 +287,7 @@ pub fn entry_for(
         projection.handle.clone(),
         projection.tool_name.clone(),
         call_id.clone(),
-        output,
+        Arc::clone(output),
     ))
 }
 
@@ -202,7 +321,11 @@ pub fn project_output(
     timestamp: Option<&DateTime<Utc>>,
     output: &str,
 ) -> Option<ToolOutputProjection> {
-    if output.len() < TOOL_OUTPUT_EXTERNALIZATION_THRESHOLD_BYTES || !is_projectable_tool(tool_name)
+    if output.len() < TOOL_OUTPUT_EXTERNALIZATION_THRESHOLD_BYTES
+        || !is_projectable_tool(tool_name)
+        || TRUNCATION_MARKERS
+            .iter()
+            .any(|marker| output.contains(marker))
     {
         return None;
     }
@@ -288,7 +411,7 @@ fn summarize(tool_name: &str, call_id: &str, handle: &str, output: &str) -> Stri
     let mut summary = format!(
         "[externalized tool result: {tool_name}; call_id={call_id}; original={original_bytes} bytes, \
          {lines} lines; handle={handle}; omitted={omitted} bytes{hook_detail}]\n\
-         The result returned to Cake is retained in this session. Use ReadToolOutput with this handle and an \
+         The full result is retained in this session. Use ReadToolOutput with this handle and an \
          optional start_line/end_line range, start_byte/end_byte window, or literal search.\n\
          --- head ---\n{head}\n--- tail ---\n{tail}"
     );

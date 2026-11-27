@@ -1,4 +1,4 @@
-Read a bounded range, byte window, or literal-search result from a tool result that was replaced by an externalized summary. Use this when a Bash, MCP, or toolbox result of at least 16 KiB shows a retrieval handle instead of its full text.
+Read a bounded range, byte window, or literal-search result from a tool result that was replaced by an externalized summary. Use this when a Bash, BashSession, MCP, or toolbox result of at least 16 KiB shows a retrieval handle instead of its full text.
 
 Pass the handle from the summary. Return a 1-indexed inclusive line range with `start_line` and `end_line`, or pass `search` to find literal, case-sensitive text and include limited context. Set `context_lines` from 0 to 5; it defaults to 2.
 

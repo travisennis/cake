@@ -7,6 +7,7 @@ use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::config::blob_store::TOOL_OUTPUT_PRODUCER_LIMIT_BYTES;
 use crate::config::expand_home;
 use crate::config::model::{
     ApiType, ModelConfig, ModelProvider, ProviderHeaders, ReasoningEffort, ResolvedModelConfig,
@@ -696,17 +697,17 @@ pub struct LimitsSettingsOverlay {
     #[serde(default)]
     pub max_tool_calls: Option<Limit>,
     /// Maximum bytes of Bash tool output returned inline before the rest
-    /// spills to a temp file. Absent uses the compiled default of 50,000;
-    /// `"unlimited"` disables the spill entirely.
+    /// spills to a temp file. Absent uses the shared producer cap;
+    /// `"unlimited"` is clamped to that cap.
     #[serde(default)]
     pub bash_output_max_bytes: Option<Limit>,
     /// Maximum bytes of Bash output read before the process is killed and the
-    /// capture ends. Absent uses the compiled default of 100,000 (2× the
-    /// inline cap, so a spill has enough data for a head+tail preview);
-    /// `"unlimited"` reads until the process exits.
+    /// capture ends. Retained for settings compatibility; session-managed Bash
+    /// commands do not use it.
     #[serde(default)]
     pub bash_read_cap: Option<Limit>,
-    /// Maximum unread bytes retained per running Bash session.
+    /// Maximum unread bytes retained per running Bash session. Absent uses the
+    /// shared producer cap; configured values above it are clamped.
     #[serde(default)]
     pub bash_session_output_max_bytes: Option<PositiveLimit>,
     /// Maximum concurrent Bash sessions.
@@ -1129,11 +1130,13 @@ pub struct ResolvedLimits {
 /// Bash session bounds are mandatory positive values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct ToolLimits {
-    /// Maximum bytes of Bash output returned inline (default 50,000).
+    /// Maximum bytes of Bash output returned inline (shared producer cap).
     pub bash_output_max_bytes: Option<usize>,
-    /// Maximum bytes of Bash output read before the process is killed
-    /// (default 100,000).
+    /// Retained for settings compatibility; session-managed Bash commands do
+    /// not use it.
     pub bash_read_cap: Option<usize>,
+    /// Maximum unread bytes held for one Bash session, clamped to the shared
+    /// producer cap.
     pub bash_session_output_max_bytes: usize,
     pub bash_session_max: usize,
     pub bash_session_max_seconds: u64,
@@ -1155,11 +1158,18 @@ pub struct ToolLimits {
 
 /// Compiled defaults for the tool limits, used when the matching `[limits]`
 /// key is absent.
-pub const DEFAULT_BASH_OUTPUT_MAX_BYTES: u32 = 50_000;
-/// Compiled default for [`ToolLimits::bash_read_cap`]: 2× the inline cap so
-/// `truncate_output()` has enough data for a useful head+tail preview.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the producer cap is a compile-time 2 MiB constant"
+)]
+pub const DEFAULT_BASH_OUTPUT_MAX_BYTES: u32 = TOOL_OUTPUT_PRODUCER_LIMIT_BYTES as u32;
+/// Legacy Bash read-cap default. Session-managed Bash no longer uses it.
 pub const DEFAULT_BASH_READ_CAP: u32 = 100_000;
-pub const DEFAULT_BASH_SESSION_OUTPUT_MAX_BYTES: u32 = 1_048_576;
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the producer cap is a compile-time 2 MiB constant"
+)]
+pub const DEFAULT_BASH_SESSION_OUTPUT_MAX_BYTES: u32 = TOOL_OUTPUT_PRODUCER_LIMIT_BYTES as u32;
 pub const DEFAULT_BASH_SESSION_MAX: u32 = 16;
 pub const DEFAULT_BASH_SESSION_MAX_SECONDS: u32 = 3_600;
 pub const DEFAULT_BASH_SESSION_EXITED_TTL_SECONDS: u32 = 600;
@@ -1184,6 +1194,23 @@ pub const DEFAULT_READ_IMAGE_MAX_BYTES: u32 = 32 * 1024 * 1024;
 pub const DEFAULT_HOOK_OUTPUT_LIMIT: u32 = 64 * 1024;
 
 impl ToolLimits {
+    /// The effective Bash/BashSession output cap after applying the shared
+    /// producer ceiling.
+    #[must_use]
+    pub fn bash_output_cap(&self) -> usize {
+        self.bash_output_max_bytes
+            .map_or(TOOL_OUTPUT_PRODUCER_LIMIT_BYTES, |value| {
+                value.min(TOOL_OUTPUT_PRODUCER_LIMIT_BYTES)
+            })
+    }
+
+    /// The effective unread-output cap for one Bash session.
+    #[must_use]
+    pub fn bash_session_output_cap(&self) -> usize {
+        self.bash_session_output_max_bytes
+            .min(TOOL_OUTPUT_PRODUCER_LIMIT_BYTES)
+    }
+
     /// The compiled defaults, matching the constants the `[limits]` keys
     /// replaced. `ToolContext` starts here; configured settings override it.
     pub const fn defaults() -> Self {

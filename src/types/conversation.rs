@@ -3,6 +3,8 @@
 //! These are backend-agnostic types describing a conversation between the
 //! user, the assistant, tools, and the model's reasoning output.
 
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -217,7 +219,7 @@ pub enum ConversationItem {
     },
     FunctionCallOutput {
         call_id: String,
-        output: String,
+        output: Arc<str>,
         /// Timestamp when this item was created
         #[serde(skip_serializing_if = "Option::is_none")]
         timestamp: Option<DateTime<Utc>>,

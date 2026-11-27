@@ -707,8 +707,7 @@ fn apply_omissions(
         for image_index in omissions.into_iter().rev() {
             images.remove(image_index);
         }
-        let text = item_text_mut(history, item_index)?;
-        append_markers(text, &markers);
+        append_item_text(history, item_index, &markers)?;
     }
     Ok(())
 }
@@ -1143,20 +1142,26 @@ fn image_vector_mut(
     }
 }
 
-fn item_text_mut(
+fn append_item_text(
     history: &mut [ConversationItem],
     item_index: usize,
-) -> anyhow::Result<&mut String> {
+    markers: &[String],
+) -> anyhow::Result<()> {
     let item = history.get_mut(item_index).ok_or_else(|| {
         anyhow::anyhow!("image plan owner {item_index} is outside the request history")
     })?;
     match item {
-        ConversationItem::Message { content, .. } => Ok(content),
-        ConversationItem::FunctionCallOutput { output, .. } => Ok(output),
+        ConversationItem::Message { content, .. } => append_markers(content, markers),
+        ConversationItem::FunctionCallOutput { output, .. } => {
+            let mut text = output.to_string();
+            append_markers(&mut text, markers);
+            *output = text.into();
+        },
         ConversationItem::FunctionCall { .. } | ConversationItem::Reasoning { .. } => {
             anyhow::bail!("image plan owner {item_index} has no text")
         },
     }
+    Ok(())
 }
 
 fn append_markers(text: &mut String, markers: &[String]) {

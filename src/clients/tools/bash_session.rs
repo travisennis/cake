@@ -2,6 +2,7 @@ use serde::Deserialize;
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
+use crate::clients::tool_output::TOOL_OUTPUT_PREVIEW_BYTES;
 use crate::clients::tools::bash_session_core::{SessionRead, SessionRegistry};
 use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
 use crate::time_format::format_seconds_tenths;
@@ -52,7 +53,7 @@ pub(super) async fn execute(
             Ok(format_read(
                 &session,
                 &read,
-                context.limits.bash_output_max_bytes,
+                context.limits.bash_output_cap(),
             ))
         },
         Action::Kill { session } => {
@@ -74,7 +75,7 @@ pub(super) async fn execute(
             Ok(format_read(
                 &session,
                 &read,
-                context.limits.bash_output_max_bytes,
+                context.limits.bash_output_cap(),
             ))
         },
         Action::List => Ok(super::ToolResult {
@@ -86,17 +87,17 @@ pub(super) async fn execute(
     }
 }
 
-pub(super) fn format_read(
-    id: &str,
-    read: &SessionRead,
-    max_bytes: Option<usize>,
-) -> super::ToolResult {
+pub(super) fn format_read(id: &str, read: &SessionRead, max_bytes: usize) -> super::ToolResult {
     let mut events = Vec::new();
-    let (mut output, truncated) = cap_output(&read.output.output, max_bytes);
+    let (mut output, truncated) = cap_output(
+        &read.output.output,
+        max_bytes,
+        read.output.dropped_bytes > 0,
+    );
     if truncated {
         match super::bash::spill_output(&read.output.output) {
             Ok(path) => {
-                _ = write!(output, "\nFull output saved to: {}", path.display());
+                _ = write!(output, "\nCaptured output saved to: {}", path.display());
             },
             Err(e) => tracing::debug!("Failed to spill BashSession output: {e}"),
         }
@@ -131,21 +132,41 @@ pub(super) fn format_read(
     }
 }
 
-pub(super) fn cap_output(output: &str, max_bytes: Option<usize>) -> (String, bool) {
-    let Some(max) = max_bytes else {
-        return (output.to_string(), false);
-    };
-    if output.len() <= max {
+/// Return the full captured output or a bounded preview that says it was not
+/// retained. `force` previews a capture that already dropped earlier bytes.
+pub(super) fn cap_output(output: &str, max_bytes: usize, force: bool) -> (String, bool) {
+    if !force && output.len() <= max_bytes {
         return (output.to_string(), false);
     }
-    let end = output.floor_char_boundary(max);
+    let lines = crate::clients::tool_output::line_count(output);
+    let half = TOOL_OUTPUT_PREVIEW_BYTES / 2;
     (
         format!(
-            "{}\n[... output truncated at {max} bytes ...]",
-            output.get(..end).unwrap_or("")
+            "[Output not retained — {} bytes captured, {lines} lines.]\n\
+             --- first ~{half} bytes ---\n{}\n\
+             --- last ~{half} bytes ---\n{}",
+            output.len(),
+            utf8_head(output, half),
+            utf8_tail(output, half),
         ),
         true,
     )
+}
+
+fn utf8_head(text: &str, max_bytes: usize) -> &str {
+    let mut end = max_bytes.min(text.len());
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.get(..end).unwrap_or_default()
+}
+
+fn utf8_tail(text: &str, max_bytes: usize) -> &str {
+    let mut start = text.len().saturating_sub(max_bytes);
+    while start < text.len() && !text.is_char_boundary(start) {
+        start += 1;
+    }
+    text.get(start..).unwrap_or_default()
 }
 
 fn format_list(registry: &SessionRegistry) -> String {
