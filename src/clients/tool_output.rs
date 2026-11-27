@@ -288,7 +288,7 @@ fn summarize(tool_name: &str, call_id: &str, handle: &str, output: &str) -> Stri
     let mut summary = format!(
         "[externalized tool result: {tool_name}; call_id={call_id}; original={original_bytes} bytes, \
          {lines} lines; handle={handle}; omitted={omitted} bytes{hook_detail}]\n\
-         The full result is retained in this session. Use ReadToolOutput with this handle and an \
+         The result returned to Cake is retained in this session. Use ReadToolOutput with this handle and an \
          optional start_line/end_line range, start_byte/end_byte window, or literal search.\n\
          --- head ---\n{head}\n--- tail ---\n{tail}"
     );
