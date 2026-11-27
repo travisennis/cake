@@ -10,6 +10,9 @@ use crate::config::blob_store::TOOL_OUTPUT_EXTERNALIZATION_THRESHOLD_BYTES;
 /// Maximum retrieval body bytes returned to the model.
 const MAX_RETRIEVAL_BYTES: usize = TOOL_OUTPUT_EXTERNALIZATION_THRESHOLD_BYTES;
 
+/// Bytes held back from the body so a truncation footer stays inside the cap.
+const FOOTER_RESERVE_BYTES: usize = 256;
+
 /// Maximum retrieval handle characters accepted from the model.
 const MAX_HANDLE_CHARS: usize = 128;
 
@@ -24,6 +27,9 @@ const MAX_REQUESTED_LINES: usize = 10_000;
 
 /// Maximum number of search matches rendered in one result.
 const MAX_SEARCH_MATCHES: usize = 20;
+
+/// Maximum bytes rendered from one long line in a search result.
+const MAX_SEARCH_EXCERPT_BYTES: usize = 1024;
 
 /// Returns the `ReadToolOutput` definition.
 pub(super) fn read_tool_output_tool() -> Tool {
@@ -51,11 +57,21 @@ pub(super) fn read_tool_output_tool() -> Tool {
                     "minimum": 1,
                     "description": "Last line to return (1-indexed, inclusive). Defaults to the end of the result, bounded by the retrieval cap."
                 },
+                "start_byte": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "0-based byte offset to continue a result whose single line exceeded the cap. Use alone or with end_byte."
+                },
+                "end_byte": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "0-based exclusive byte offset that bounds a start_byte window."
+                },
                 "search": {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": MAX_SEARCH_CHARS,
-                    "description": "Literal, case-sensitive text to find within the result. Matching lines include limited context."
+                    "description": "Literal, case-sensitive text to find within the result. Matching lines include limited context and excerpt a long line around the match."
                 },
                 "context_lines": {
                     "type": "integer",
@@ -76,6 +92,10 @@ struct ReadArguments {
     start_line: Option<usize>,
     #[serde(default)]
     end_line: Option<usize>,
+    #[serde(default)]
+    start_byte: Option<usize>,
+    #[serde(default)]
+    end_byte: Option<usize>,
     #[serde(default)]
     search: Option<String>,
     #[serde(default)]
@@ -162,43 +182,112 @@ fn bounded_label(value: &str) -> String {
 }
 
 fn range_output(entry: &ToolOutputEntry, args: &ReadArguments) -> Result<String, ToolError> {
+    if args.start_byte.is_some() {
+        return byte_output(entry, args);
+    }
+    if args.end_byte.is_some() {
+        return Err(ToolError::new(format!(
+            "Invalid {READ_TOOL_OUTPUT_NAME} arguments: end_byte requires start_byte"
+        )));
+    }
     let (start, end) = range_bounds(entry, args)?;
     let mut output = header(entry, &format!("Lines {start}-{end}:"));
+    let body_limit = MAX_RETRIEVAL_BYTES.saturating_sub(FOOTER_RESERVE_BYTES);
     let starts = line_starts(&entry.output);
     let mut rendered_any = false;
     let mut next_line = None;
-    let mut partial_line = None;
     for line_number in start..=end {
+        if output.len() >= body_limit {
+            next_line = Some((line_number, None));
+            break;
+        }
         let line = line_slice(&entry.output, &starts, line_number);
-        if output.len().saturating_add(line.len()) <= MAX_RETRIEVAL_BYTES {
+        let available = body_limit.saturating_sub(output.len());
+        if line.len() <= available {
             output.push_str(line);
             rendered_any = true;
             continue;
         }
-        if !rendered_any {
-            let prefix = utf8_head(line, MAX_RETRIEVAL_BYTES.saturating_sub(output.len()));
+        if rendered_any {
+            next_line = Some((line_number, None));
+        } else {
+            let prefix = utf8_head(line, available);
+            let line_start = starts
+                .get(line_number.saturating_sub(1))
+                .copied()
+                .unwrap_or(0);
+            let next_byte = line_start.saturating_add(prefix.len());
             output.push_str(prefix);
-            partial_line = Some(line_number);
+            next_line = Some((line_number, Some(next_byte)));
         }
-        next_line = Some(line_number);
         break;
     }
-    if let Some(line_number) = next_line {
-        if partial_line == Some(line_number) {
+    if let Some((line_number, next_byte)) = next_line {
+        if let Some(next_byte) = next_byte.filter(|offset| *offset < entry.output.len()) {
             _ = writeln!(
                 output,
                 "\n[line {line_number} is longer than the {MAX_RETRIEVAL_BYTES}-byte retrieval cap \
-                 and is truncated]"
+                 and was truncated; continue with start_byte={next_byte}]"
             );
         } else {
             _ = writeln!(
                 output,
-                "\n[retrieval truncated at {MAX_RETRIEVAL_BYTES} bytes; continue with \
+                "\n[retrieval truncated at the {MAX_RETRIEVAL_BYTES}-byte cap; continue with \
                  start_line={line_number}]"
             );
         }
     }
-    Ok(output)
+    Ok(finish(output))
+}
+
+fn byte_output(entry: &ToolOutputEntry, args: &ReadArguments) -> Result<String, ToolError> {
+    if args.start_line.is_some() || args.end_line.is_some() {
+        return Err(ToolError::new(format!(
+            "Invalid {READ_TOOL_OUTPUT_NAME} arguments: start_byte cannot be combined with \
+             start_line or end_line"
+        )));
+    }
+    let Some(requested_start) = args.start_byte else {
+        return Err(ToolError::new(format!(
+            "Invalid {READ_TOOL_OUTPUT_NAME} arguments: start_byte is required"
+        )));
+    };
+    let total = entry.output.len();
+    if requested_start >= total {
+        return Err(ToolError::new(format!(
+            "Invalid {READ_TOOL_OUTPUT_NAME} arguments: start_byte {requested_start} is past the \
+             {total} available bytes"
+        )));
+    }
+    let requested_end = args.end_byte.unwrap_or(total);
+    if requested_end <= requested_start {
+        return Err(ToolError::new(format!(
+            "Invalid {READ_TOOL_OUTPUT_NAME} arguments: end_byte must be after start_byte"
+        )));
+    }
+    let start = utf8_index_ceil(&entry.output, requested_start);
+    let mut output = header(
+        entry,
+        &format!("Bytes from {start} of {total} (0-based, end exclusive):"),
+    );
+    let body_limit = MAX_RETRIEVAL_BYTES.saturating_sub(FOOTER_RESERVE_BYTES);
+    let available = body_limit.saturating_sub(output.len());
+    let end = utf8_index_floor(
+        &entry.output,
+        start,
+        requested_end
+            .min(total)
+            .min(start.saturating_add(available)),
+    )
+    .max(start);
+    output.push_str(entry.output.get(start..end).unwrap_or_default());
+    if end < total {
+        _ = writeln!(
+            output,
+            "\n[returned bytes {start}-{end} of {total}; continue with start_byte={end}]"
+        );
+    }
+    Ok(finish(output))
 }
 
 fn search_output(
@@ -206,6 +295,11 @@ fn search_output(
     args: &ReadArguments,
     query: &str,
 ) -> Result<String, ToolError> {
+    if args.start_byte.is_some() || args.end_byte.is_some() {
+        return Err(ToolError::new(format!(
+            "Invalid {READ_TOOL_OUTPUT_NAME} arguments: search cannot be combined with byte offsets"
+        )));
+    }
     validate_search(query)?;
     let context = search_context(args)?;
     let (start, end) = range_bounds(entry, args)?;
@@ -220,7 +314,7 @@ fn search_output(
     );
     if matches.is_empty() {
         output.push_str("No matches.\n");
-        return Ok(output);
+        return Ok(finish(output));
     }
     let shown = matches.len().min(MAX_SEARCH_MATCHES);
     _ = writeln!(
@@ -228,16 +322,25 @@ fn search_output(
         "Showing matches{} with {context} context line(s):",
         search_scope_label(shown, matches.len())
     );
-    render_search_matches(
+    let body_limit = MAX_RETRIEVAL_BYTES.saturating_sub(FOOTER_RESERVE_BYTES);
+    let truncated = render_search_matches(
         entry,
         &starts,
         &matches,
         shown,
         context,
         (start, end),
+        query,
+        body_limit,
         &mut output,
     );
-    Ok(output)
+    if truncated {
+        output.push_str(
+            "\n[search results truncated at the retrieval cap; refine the search or use \
+             start_line or start_byte]\n",
+        );
+    }
+    Ok(finish(output))
 }
 
 fn search_context(args: &ReadArguments) -> Result<usize, ToolError> {
@@ -275,6 +378,10 @@ fn search_scope_label(shown: usize, total: usize) -> String {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "rendering needs the entry, the match selection, the scope, and the shared budget"
+)]
 fn render_search_matches(
     entry: &ToolOutputEntry,
     starts: &[usize],
@@ -282,8 +389,10 @@ fn render_search_matches(
     shown: usize,
     context: usize,
     bounds: (usize, usize),
+    query: &str,
+    body_limit: usize,
     output: &mut String,
-) {
+) -> bool {
     let mut selected = BTreeSet::new();
     for line_number in matches.iter().take(shown) {
         let first = line_number.saturating_sub(context).max(bounds.0);
@@ -293,18 +402,84 @@ fn render_search_matches(
         }
     }
     for line_number in selected {
-        let line = format!(
-            "{line_number}: {}\n",
-            line_text(line_slice(&entry.output, starts, line_number))
-        );
-        if !append_bounded(output, &line) {
-            output.push_str(
-                "\n[retrieval truncated at the byte cap; refine the search or use a \
-                             line range]\n",
-            );
-            break;
+        if output.len() >= body_limit {
+            return true;
         }
+        let available = body_limit.saturating_sub(output.len());
+        let line = line_text(line_slice(&entry.output, starts, line_number));
+        let Some(rendered) = render_search_line(line_number, line, query, available) else {
+            return true;
+        };
+        output.push_str(&rendered);
     }
+    false
+}
+
+fn render_search_line(
+    line_number: usize,
+    line: &str,
+    query: &str,
+    available: usize,
+) -> Option<String> {
+    let prefix = format!("{line_number}: ");
+    let overhead = prefix.len().saturating_add(1);
+    if available <= overhead {
+        return None;
+    }
+    let budget = available
+        .saturating_sub(overhead)
+        .min(MAX_SEARCH_EXCERPT_BYTES);
+    let body = if line.len() <= budget {
+        line.to_string()
+    } else {
+        excerpt_around(line, query, budget)
+    };
+    let mut rendered = String::with_capacity(overhead.saturating_add(body.len()));
+    rendered.push_str(&prefix);
+    rendered.push_str(&body);
+    rendered.push('\n');
+    Some(rendered)
+}
+
+fn excerpt_around(line: &str, query: &str, budget: usize) -> String {
+    if line.len() <= budget {
+        return line.to_string();
+    }
+    if budget <= 6 {
+        return utf8_head(line, budget).to_string();
+    }
+    let content_budget = budget.saturating_sub(6);
+    let Some(match_start) = line.find(query) else {
+        let mut excerpt = utf8_head(line, budget.saturating_sub(3)).to_string();
+        excerpt.push_str("...");
+        return excerpt;
+    };
+    let match_end = match_start.saturating_add(query.len()).min(line.len());
+    let (start, end) = if query.len() <= content_budget {
+        let before = content_budget.saturating_sub(query.len()) / 2;
+        let start = utf8_index_ceil(line, match_start.saturating_sub(before));
+        let mut end = utf8_index_floor(line, start, start.saturating_add(content_budget));
+        if end < match_end {
+            end = utf8_index_floor(line, start, match_end);
+        }
+        let start = utf8_index_ceil(line, end.saturating_sub(content_budget));
+        (start, end)
+    } else {
+        let start = utf8_index_ceil(line, match_start);
+        (
+            start,
+            utf8_index_floor(line, start, start.saturating_add(content_budget)),
+        )
+    };
+    let mut excerpt = String::with_capacity(budget);
+    if start > 0 {
+        excerpt.push_str("...");
+    }
+    excerpt.push_str(line.get(start..end).unwrap_or_default());
+    if end < line.len() {
+        excerpt.push_str("...");
+    }
+    excerpt
 }
 
 fn validate_search(query: &str) -> Result<(), ToolError> {
@@ -404,15 +579,12 @@ fn line_text(line: &str) -> &str {
     line.strip_suffix('\r').unwrap_or(line)
 }
 
-fn append_bounded(output: &mut String, text: &str) -> bool {
-    let remaining = MAX_RETRIEVAL_BYTES.saturating_sub(output.len());
-    if text.len() <= remaining {
-        output.push_str(text);
-        true
-    } else {
-        output.push_str(utf8_head(text, remaining));
-        false
+fn finish(mut output: String) -> String {
+    if output.len() > MAX_RETRIEVAL_BYTES {
+        let keep = utf8_head(&output, MAX_RETRIEVAL_BYTES).len();
+        output.truncate(keep);
     }
+    output
 }
 
 fn utf8_head(text: &str, max_bytes: usize) -> &str {
@@ -421,4 +593,20 @@ fn utf8_head(text: &str, max_bytes: usize) -> &str {
         end -= 1;
     }
     text.get(..end).unwrap_or_default()
+}
+
+fn utf8_index_ceil(text: &str, index: usize) -> usize {
+    let mut index = index.min(text.len());
+    while index < text.len() && !text.is_char_boundary(index) {
+        index += 1;
+    }
+    index
+}
+
+fn utf8_index_floor(text: &str, start: usize, index: usize) -> usize {
+    let mut index = index.min(text.len());
+    while index > start && !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
 }

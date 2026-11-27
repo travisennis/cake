@@ -15,6 +15,7 @@ use crate::clients::retry::{RequestOverrides, RetryReason, RetryStatus, context_
 use crate::clients::termination::{
     self, ContextPressure, IntendedLimits, TerminationVerdict, TurnEvidence,
 };
+use crate::clients::tool_output::HOOK_CONTEXT_MARKER;
 use crate::clients::tools::{
     ScheduledToolCall, Tool, ToolError, ToolRegistry, ToolResult, argument_compensation_events,
     read_extract_path, schedule_tool_calls,
@@ -320,7 +321,9 @@ impl Agent {
             self.request_capture = None;
             return;
         }
-        let history = self.conversation.request_context();
+        let history = self
+            .conversation
+            .request_context(self.tool_projection_available(TurnMode::Normal));
         let history = if self.config.model_config.supports_images {
             match prune_request_with_plan(history, &self.image_policy) {
                 Ok(plan) => plan.history,
@@ -580,9 +583,13 @@ impl Agent {
                 format!("not executed: correction turn offers no tools for {name}({call_id})");
             let task_id = self.task_id.to_string();
             let provenance = RecordProvenance::live_tool_output(Some(task_id), None, None, false);
-            let item =
-                self.conversation
-                    .push_tool_output(call_id.clone(), output, Vec::new(), provenance);
+            let (item, _) = self.conversation.push_tool_output(
+                name,
+                call_id.clone(),
+                output,
+                Vec::new(),
+                provenance,
+            );
             self.stream_item(&item)?;
         }
         if *turn_mode == TurnMode::SchemaCorrection {
@@ -751,7 +758,6 @@ impl Agent {
         &mut self,
         function_calls: Vec<FunctionCall>,
     ) -> anyhow::Result<Vec<ToolRunResult>> {
-        self.sync_tool_output_store();
         self.tool_call_count += u32::try_from(function_calls.len()).unwrap_or(u32::MAX);
         let tool_plans = self.plan_tool_calls(function_calls).await?;
         self.record_hook_blocked_denials(&tool_plans);
@@ -942,7 +948,7 @@ impl Agent {
                 if let Some(context) = post_context
                     && !context.is_empty()
                 {
-                    output.push_str("\n\nAdditional hook context:\n");
+                    output.push_str(HOOK_CONTEXT_MARKER);
                     output.push_str(&context);
                 }
                 output = append_hook_context(output, &additional_context);
@@ -986,6 +992,7 @@ impl Agent {
                 &result.compensation_events,
             );
             let replay = Some(self.tools.replay_safety(&result.telemetry.name));
+            let tool_name = result.telemetry.name.clone();
             self.append_tool_call_telemetry(result.telemetry);
             self.record_compensation_events(result.compensation_events);
             if let Some(skill_activation) = result.skill_activation {
@@ -999,7 +1006,8 @@ impl Agent {
                 self.persist_record(&record)?;
             }
             let has_images = !result.images.is_empty();
-            let item = self.conversation.push_tool_output(
+            let (item, entry) = self.conversation.push_tool_output(
+                &tool_name,
                 result.call_id,
                 result.output,
                 result.images,
@@ -1010,6 +1018,9 @@ impl Agent {
                     has_images,
                 ),
             );
+            if let Some(entry) = entry {
+                self.tool_outputs.insert(entry);
+            }
             self.stream_item_with_replay(&item, replay)?;
         }
         Ok(())
@@ -1188,7 +1199,6 @@ impl Agent {
     /// a resumed session carries the same explanation the model saw.
     fn recover_from_image_rejection(&mut self, error: &anyhow::Error) -> anyhow::Result<()> {
         let dropped = self.conversation.drop_images();
-        self.sync_tool_output_store();
         let detail = image_rejection_detail(error);
         tracing::warn!(
             target: "cake",
@@ -1255,7 +1265,9 @@ impl Agent {
         let config = &self.config;
         let session_id = self.session_id;
         let task_id = self.task_id;
-        let history = self.conversation.request_context();
+        let history = self
+            .conversation
+            .request_context(self.tool_projection_available(turn_mode));
         let mut consumed_sources = Vec::new();
         let history = if self.config.model_config.supports_images {
             let request = prune_request_with_plan(history, &self.image_policy)?;
@@ -1524,7 +1536,7 @@ fn append_hook_context(mut output: String, contexts: &[String]) -> String {
         return output;
     }
 
-    output.push_str("\n\nAdditional hook context:\n");
+    output.push_str(HOOK_CONTEXT_MARKER);
     output.push_str(&contexts.join("\n\n"));
     output
 }

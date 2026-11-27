@@ -15,7 +15,7 @@ use crate::clients::agent_state::{ConversationState, SourceRef, accumulate_usage
 use crate::clients::backend::{Backend, ToolChoice};
 use crate::clients::compaction::MeasuredInput;
 use crate::clients::mcp::{LazyMcpRuntime, McpClient, McpServer, McpTool};
-use crate::clients::tool_output::ToolOutputStore;
+use crate::clients::tool_output::{READ_TOOL_OUTPUT_NAME, ToolOutputStore};
 use crate::clients::tools::{
     SKILL_SEARCH_NAME, SandboxPolicy, SkillSearchEntry, TOOL_SEARCH_NAME, ToolContext,
     ToolRegistry, ToolSearchCatalog, ToolSearchEntry, default_tool_registry, mcp_tool_entry,
@@ -1277,6 +1277,16 @@ impl Agent {
             .replace(self.conversation.tool_output_entries());
     }
 
+    /// Whether this turn's request may replace an oversized result with its
+    /// cached summary.
+    ///
+    /// A summary tells the model to call `ReadToolOutput`, so projection is
+    /// unavailable whenever that tool is not in the request: `--no-tools`, an
+    /// exact selection without a phase-one tool, or a tools-disabled turn.
+    fn tool_projection_available(&self, turn_mode: agent_loop::TurnMode) -> bool {
+        !turn_mode.tools_disabled() && self.tools.has(READ_TOOL_OUTPUT_NAME)
+    }
+
     /// Replace retired history with a validated checkpoint and invalidate the
     /// measurement that described the pre-checkpoint request.
     ///
@@ -1299,7 +1309,7 @@ impl Agent {
     /// stored session.
     pub(crate) fn history_image_count(&self) -> usize {
         self.conversation
-            .request_context()
+            .request_context(false)
             .iter()
             .map(ConversationItem::image_count)
             .sum()

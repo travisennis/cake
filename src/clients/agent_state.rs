@@ -1,7 +1,9 @@
 use std::borrow::Cow;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::clients::compaction::{ImageConsumption, InvocationPin, InvocationPinKind};
-use crate::clients::tool_output::{self, ToolOutputEntry};
+use crate::clients::tool_output::{self, ToolOutputEntry, ToolOutputProjection};
 use crate::types::compaction::prompt_context_prefix_len;
 use crate::types::compaction::{
     MessageOrigin, PinReason, RetainedConversationRecord, RetainedRecord, SkillRead,
@@ -118,6 +120,8 @@ pub(super) enum SourceRef {
 #[derive(Debug)]
 pub(super) struct PreparationSource {
     pub(super) records: Vec<RetainedRecord>,
+    /// Cached request summaries aligned one-to-one with `records`.
+    pub(super) projections: Vec<Option<Arc<str>>>,
     pub(super) prompt_prefix_len: usize,
     pub(super) current_user_input: Option<usize>,
     pub(super) invocation_pins: Vec<InvocationPin>,
@@ -142,6 +146,14 @@ pub(super) struct ConversationState {
     /// Raw-history index of the active checkpoint's positional boundary:
     /// `history[..checkpoint_boundary]` is represented by `checkpoint`.
     checkpoint_boundary: usize,
+    /// Cached request summaries aligned one-to-one with `history`.
+    ///
+    /// An entry exists only for a phase-one output that was text-only when the
+    /// record was created. Later image recovery cannot make a result projected
+    /// that resume would leave inline.
+    projections: Vec<Option<ToolOutputProjection>>,
+    /// Cached request summaries aligned with `checkpoint.retained`.
+    retained_projections: Vec<Option<ToolOutputProjection>>,
 }
 
 impl ConversationState {
@@ -167,6 +179,8 @@ impl ConversationState {
             checkpoint: None,
             retained_image_consumption: Vec::new(),
             checkpoint_boundary: 0,
+            projections: vec![None; initial_messages.len()],
+            retained_projections: Vec::new(),
         }
     }
 
@@ -266,10 +280,40 @@ impl ConversationState {
     /// Raw history and its offsets stay untouched: invocation and provider-turn
     /// attribution keep indexing the raw vector, never the projection. A run
     /// without a checkpoint borrows the raw vector, so today's requests cost no
-    /// copy. Oversized phase-one tool results become bounded summaries here;
-    /// the canonical item and every persistence surface keep the full text.
-    pub(super) fn request_context(&self) -> Cow<'_, [ConversationItem]> {
-        let base = self.checkpoint.as_ref().map_or_else(
+    /// copy. When `project_tool_outputs` is true, eligible phase-one results use
+    /// the summary cached at append or restore; the canonical item and every
+    /// persistence surface keep the full text.
+    pub(super) fn request_context(
+        &self,
+        project_tool_outputs: bool,
+    ) -> Cow<'_, [ConversationItem]> {
+        if !project_tool_outputs {
+            return self.base_request_context();
+        }
+        let source_refs = self.project_source_refs();
+        if !source_refs
+            .iter()
+            .any(|source_ref| self.projection_for(*source_ref).is_some())
+        {
+            return self.base_request_context();
+        }
+        let base = self.base_request_context();
+        let mut projected = base.into_owned();
+        for (index, source_ref) in source_refs.iter().enumerate() {
+            let Some(projection) = self.projection_for(*source_ref) else {
+                continue;
+            };
+            if let Some(ConversationItem::FunctionCallOutput { output, .. }) =
+                projected.get_mut(index)
+            {
+                *output = projection.summary.to_string();
+            }
+        }
+        Cow::Owned(projected)
+    }
+
+    fn base_request_context(&self) -> Cow<'_, [ConversationItem]> {
+        self.checkpoint.as_ref().map_or_else(
             || Cow::Borrowed(self.history.as_slice()),
             |checkpoint| {
                 Cow::Owned(project_context(
@@ -278,18 +322,23 @@ impl ConversationState {
                     self.checkpoint_boundary,
                 ))
             },
-        );
-        if !tool_output::has_candidate_output(base.as_ref()) {
-            return base;
+        )
+    }
+
+    fn projection_for(&self, source_ref: SourceRef) -> Option<&ToolOutputProjection> {
+        match source_ref {
+            SourceRef::Prompt | SourceRef::Summary => None,
+            SourceRef::Retained(index) => self
+                .retained_projections
+                .get(index)
+                .and_then(Option::as_ref),
+            SourceRef::Raw(index) => self.projections.get(index).and_then(Option::as_ref),
         }
-        let mut projected = base.into_owned();
-        _ = tool_output::project_request(&self.history, &mut projected);
-        Cow::Owned(projected)
     }
 
     /// The canonical oversized tool outputs in this session's retrieval index.
     pub(super) fn tool_output_entries(&self) -> Vec<ToolOutputEntry> {
-        tool_output::collect_entries(&self.history)
+        tool_output::entries_for(&self.history, &self.projections)
     }
 
     /// Source refs aligned with [`Self::request_context`].
@@ -317,9 +366,11 @@ impl ConversationState {
         current_user_raw: usize,
         invocation_start: usize,
         current_task_id: &str,
+        project_tool_outputs: bool,
     ) -> anyhow::Result<PreparationSource> {
         self.ensure_current_user(current_user_raw, invocation_start)?;
-        let (records, source_refs, image_consumption) = self.project_preparation_records()?;
+        let (records, projections, source_refs, image_consumption) =
+            self.project_preparation_records(project_tool_outputs)?;
         let current_user_input = self.source_index_for_user(current_user_raw, &source_refs)?;
         let invocation_pins = self.invocation_pins(
             current_user_input,
@@ -330,6 +381,7 @@ impl ConversationState {
         );
         Ok(PreparationSource {
             records,
+            projections,
             prompt_prefix_len: prompt_context_prefix_len(&self.history),
             current_user_input: Some(current_user_input),
             invocation_pins,
@@ -345,11 +397,67 @@ impl ConversationState {
     /// ceiling belongs to the externalized write, not this hydrated copy.
     pub(super) fn activate_checkpoint(&mut self, checkpoint: CompactionData) -> anyhow::Result<()> {
         checkpoint.validate_structure()?;
+        let retained_projections = self.retained_projections_for(&checkpoint);
         self.retained_image_consumption = checkpoint_image_consumption(&checkpoint);
         self.checkpoint_boundary = self.history.len();
         self.checkpoint = Some(checkpoint);
+        self.retained_projections = retained_projections;
         self.assert_provenance_aligned();
         Ok(())
+    }
+
+    /// Carry one raw projection into every retained copy of the same output.
+    ///
+    /// A checkpoint retains canonical records, which may still carry images
+    /// that an in-memory image recovery dropped. Reusing the cached raw
+    /// projection keeps eligibility and preview bytes identical across the
+    /// activation, a later resume, and a fork.
+    fn retained_projections_for(
+        &self,
+        checkpoint: &CompactionData,
+    ) -> Vec<Option<ToolOutputProjection>> {
+        let mut raw: HashMap<(&str, Option<i64>, [u8; 32]), &ToolOutputProjection> = HashMap::new();
+        for (item, projection) in self.history.iter().zip(&self.projections) {
+            let ConversationItem::FunctionCallOutput {
+                call_id, timestamp, ..
+            } = item
+            else {
+                continue;
+            };
+            let Some(projection) = projection else {
+                continue;
+            };
+            raw.insert(
+                (
+                    call_id.as_str(),
+                    timestamp.as_ref().map(chrono::DateTime::timestamp_millis),
+                    projection.output_digest,
+                ),
+                projection,
+            );
+        }
+        checkpoint
+            .retained
+            .iter()
+            .map(|record| {
+                let RetainedConversationRecord::FunctionCallOutput(data) = &record.record else {
+                    return None;
+                };
+                let digest = tool_output::output_digest(
+                    &data.call_id,
+                    data.timestamp.as_ref(),
+                    &data.output,
+                );
+                raw.get(&(
+                    data.call_id.as_str(),
+                    data.timestamp
+                        .as_ref()
+                        .map(chrono::DateTime::timestamp_millis),
+                    digest,
+                ))
+                .map(|projection| (*projection).clone())
+            })
+            .collect()
     }
 
     /// Mark every source record whose images reached an accepted main request.
@@ -407,11 +515,22 @@ impl ConversationState {
         Ok(())
     }
 
+    #[expect(
+        clippy::type_complexity,
+        reason = "the four aligned vectors are consumed together by one caller"
+    )]
     fn project_preparation_records(
         &self,
-    ) -> anyhow::Result<(Vec<RetainedRecord>, Vec<SourceRef>, Vec<ImageConsumption>)> {
+        project_tool_outputs: bool,
+    ) -> anyhow::Result<(
+        Vec<RetainedRecord>,
+        Vec<Option<Arc<str>>>,
+        Vec<SourceRef>,
+        Vec<ImageConsumption>,
+    )> {
         let source_refs = self.project_source_refs();
         let mut records = Vec::with_capacity(source_refs.len());
+        let mut projections = Vec::with_capacity(source_refs.len());
         let mut image_consumption = Vec::with_capacity(source_refs.len());
         for (source_index, source_ref) in source_refs.iter().enumerate() {
             let (record, consumption) = match *source_ref {
@@ -456,10 +575,15 @@ impl ConversationState {
                     self.provenance[raw_index].image_consumption,
                 ),
             };
+            let projection = project_tool_outputs
+                .then(|| self.projection_for(*source_ref))
+                .flatten()
+                .map(|projection| Arc::clone(&projection.summary));
             records.push(record);
+            projections.push(projection);
             image_consumption.push(consumption);
         }
-        Ok((records, source_refs, image_consumption))
+        Ok((records, projections, source_refs, image_consumption))
     }
 
     /// Projection-order source refs shared by preparation and requests.
@@ -619,6 +743,7 @@ impl ConversationState {
                 images: Vec::new(),
             };
             self.history.push(item.clone());
+            self.projections.push(None);
             self.provenance
                 .push(RecordProvenance::consumed(source_task.map(str::to_owned)));
             items.push(item);
@@ -712,6 +837,13 @@ impl ConversationState {
             self.checkpoint_boundary = prompt_len + boundary.saturating_sub(first_non_prompt);
             self.checkpoint = Some(checkpoint);
         }
+        self.projections = tool_output::project_history(&self.history);
+        self.retained_projections = self
+            .checkpoint
+            .as_ref()
+            .map_or_else(Vec::new, |checkpoint| {
+                self.retained_projections_for(checkpoint)
+            });
         self.assert_provenance_aligned();
         Ok(())
     }
@@ -754,6 +886,7 @@ impl ConversationState {
             images: Vec::new(),
         };
         self.history.push(item.clone());
+        self.projections.push(None);
         self.provenance
             .push(RecordProvenance::consumed(source_task.map(str::to_owned)).with_origin(origin));
         self.assert_provenance_aligned();
@@ -843,21 +976,31 @@ impl ConversationState {
 
     pub(super) fn push_tool_output(
         &mut self,
+        tool_name: &str,
         call_id: String,
         output: String,
         images: Vec<ImagePart>,
         provenance: RecordProvenance,
-    ) -> ConversationItem {
+    ) -> (ConversationItem, Option<ToolOutputEntry>) {
+        let timestamp = chrono::Utc::now();
+        let projection = images
+            .is_empty()
+            .then(|| tool_output::project_output(tool_name, &call_id, Some(&timestamp), &output))
+            .flatten();
         let item = ConversationItem::FunctionCallOutput {
             call_id,
             output,
-            timestamp: Some(chrono::Utc::now()),
+            timestamp: Some(timestamp),
             images,
         };
+        let entry = projection
+            .as_ref()
+            .and_then(|projection| tool_output::entry_for(&item, projection));
         self.history.push(item.clone());
+        self.projections.push(projection);
         self.provenance.push(provenance);
         self.assert_provenance_aligned();
-        item
+        (item, entry)
     }
 
     /// Resolve the final assistant message among items at or after `start`.
@@ -873,6 +1016,11 @@ impl ConversationState {
             self.provenance.len(),
             self.history.len(),
             "provenance must stay aligned with raw history"
+        );
+        debug_assert_eq!(
+            self.projections.len(),
+            self.history.len(),
+            "projections must stay aligned with raw history"
         );
     }
 }

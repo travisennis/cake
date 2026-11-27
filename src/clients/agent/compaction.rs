@@ -218,12 +218,14 @@ impl Agent {
     /// Build the exact preparation source for the coming request.
     fn preparation_source(
         &self,
+        turn_mode: TurnMode,
         invocation: &InvocationCompactionState,
     ) -> anyhow::Result<PreparationSource> {
         self.conversation.preparation_source(
             invocation.current_user_raw,
             invocation.invocation_start,
             &invocation.task_id,
+            self.tool_projection_available(turn_mode),
         )
     }
 
@@ -234,7 +236,7 @@ impl Agent {
         checkpoint_id: String,
         trigger: CompactionTrigger,
     ) -> anyhow::Result<Preparation> {
-        let source = self.preparation_source(invocation)?;
+        let source = self.preparation_source(turn_mode, invocation)?;
         let input =
             self.preparation_input(&source, turn_mode, invocation, checkpoint_id, trigger)?;
         compaction::prepare(input)
@@ -245,7 +247,7 @@ impl Agent {
         turn_mode: TurnMode,
         invocation: &InvocationCompactionState,
     ) -> anyhow::Result<PreparationMeasure> {
-        let source = self.preparation_source(invocation)?;
+        let source = self.preparation_source(turn_mode, invocation)?;
         let input = self.preparation_input(
             &source,
             turn_mode,
@@ -279,6 +281,7 @@ impl Agent {
             measured: self.last_measurement().cloned(),
             supports_images: self.config.model_config.supports_images,
             image_policy: &self.image_policy,
+            projections: &source.projections,
             checkpoint_id,
             session_id: self.session_id,
             task_id: self.task_id,

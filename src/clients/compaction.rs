@@ -17,6 +17,7 @@
 //! decision, selection, and explicit manual call cannot drift.
 
 use std::ops::Range;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::bail;
@@ -157,6 +158,8 @@ pub struct PreparationInput<'a> {
     pub supports_images: bool,
     /// The request image policy used to estimate the projected request.
     pub image_policy: &'a ResolvedImagePolicy,
+    /// Cached tool-output summaries aligned one-to-one with `source`.
+    pub projections: &'a [Option<Arc<str>>],
     /// The caller-assigned checkpoint identity. Preparation never generates
     /// one, so a retry presents the same identity.
     pub checkpoint_id: String,
@@ -294,10 +297,25 @@ pub(super) fn fixed_request_tokens(fixed: &FixedRequest<'_>) -> u64 {
 }
 
 /// Build the provider-neutral view of the source for estimation.
-fn source_items(source: &[RetainedRecord]) -> Vec<ConversationItem> {
+///
+/// The view uses the same cached summaries the main request would send, so a
+/// projected result is never estimated at its canonical size.
+fn source_items(
+    source: &[RetainedRecord],
+    projections: &[Option<Arc<str>>],
+) -> Vec<ConversationItem> {
     source
         .iter()
-        .map(RetainedRecord::to_conversation_item)
+        .enumerate()
+        .map(|(index, record)| {
+            let mut item = record.to_conversation_item();
+            if let Some(summary) = projections.get(index).and_then(Option::as_ref)
+                && let ConversationItem::FunctionCallOutput { output, .. } = &mut item
+            {
+                *output = summary.to_string();
+            }
+            item
+        })
         .collect()
 }
 
@@ -944,7 +962,7 @@ fn measure_with_policy(
         input.prompt_prefix_len,
         input.source.len()
     );
-    let items = source_items(input.source);
+    let items = source_items(input.source, input.projections);
     let planned = plan_request_projection(
         &items,
         &vec![false; items.len()],
@@ -1045,7 +1063,7 @@ pub fn prepare(input: PreparationInput<'_>) -> anyhow::Result<Preparation> {
     let source = apply_pins(&input)?;
     let exchanges = segment_exchanges(&source, input.prompt_prefix_len)?;
     validate_exchanges(&source, &exchanges)?;
-    let items = source_items(&source);
+    let items = source_items(&source, input.projections);
     let prefix: Vec<ConversationItem> = items[..input.prompt_prefix_len].to_vec();
     let body_exchanges: Vec<Exchange> = exchanges
         .iter()
@@ -1256,7 +1274,17 @@ fn plan_post_checkpoint(
     let mut projection = prefix.to_vec();
     projection.push(summary_placeholder());
     let retained_offset = projection.len();
-    projection.extend(source_items(retained));
+    let retained_projections: Vec<Option<Arc<str>>> = source_indices
+        .iter()
+        .map(|index| {
+            input
+                .projections
+                .get(*index)
+                .and_then(Option::as_ref)
+                .map(Arc::clone)
+        })
+        .collect();
+    projection.extend(source_items(retained, &retained_projections));
     let mut pinned_items = vec![false; retained_offset];
     pinned_items.extend(
         source_indices
@@ -1401,11 +1429,9 @@ struct SourceTokenCosts {
 }
 
 impl SourceTokenCosts {
-    fn new(source: &[RetainedRecord], prefix_len: usize) -> Self {
-        let item_tokens: Vec<u64> = source
-            .iter()
-            .map(|record| estimate_item_tokens(&record.to_conversation_item()))
-            .collect();
+    fn new(source: &[RetainedRecord], prefix_len: usize, projections: &[Option<Arc<str>>]) -> Self {
+        let items = source_items(source, projections);
+        let item_tokens: Vec<u64> = items.iter().map(estimate_item_tokens).collect();
         let image_counts: Vec<usize> = source.iter().map(record_image_count).collect();
         let prefix_tokens = item_tokens
             .iter()
@@ -1501,7 +1527,8 @@ fn select_exchanges(
         .count();
     let mut eligible_seen = 0;
     let mut retired_ranges: Vec<Range<usize>> = Vec::new();
-    let mut source_costs = SourceTokenCosts::new(source, input.prompt_prefix_len);
+    let mut source_costs =
+        SourceTokenCosts::new(source, input.prompt_prefix_len, input.projections);
     let mut pinned_failure = None;
     for exchange in body_exchanges
         .iter()
