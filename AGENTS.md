@@ -112,6 +112,7 @@ Complexity targets, the cyclomatic-complexity ratchet, the module-size report, a
 - Preserve unrelated user changes; never clean or revert them.
 - Use Conventional Commits, scoped only from the `cog.toml` allowlist; verified by the commit-msg hook. See [CONTRIBUTING.md](CONTRIBUTING.md) for scope selection.
 - Do not add ordinary comments to Rust production sources; put the rationale in the commit message. `just lint-comments` enforces the ban. Doc comments and `// SAFETY:` blocks are exempt.
+- Keep parallel state vectors aligned. When one struct owns several same-index vectors or side tables (history, provenance, projections, checkpoints), every append path must extend all of them by the same count. A release build does not run `debug_assert!`, so inspect every append path or exercise the debug binary; `just check` cannot catch a missing append.
 - Do not create ADRs or other new durable decision records, even when a task asks for one. Put decisions in the commit message, pull request body, or issue tracker, and update an existing authority document when a contract changes. Future work and unresolved questions belong in the response or the issue tracker.
 
 ## Integration and pull requests
