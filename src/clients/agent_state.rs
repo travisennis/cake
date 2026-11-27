@@ -900,6 +900,9 @@ impl ConversationState {
     }
 
     /// Append assistant-turn items with the exact provenance captured for each.
+    ///
+    /// Provider-authored items carry no cached tool-output projection; tool
+    /// outputs enter through [`Self::push_tool_output`].
     pub(super) fn extend_turn_items_with_provenance(
         &mut self,
         items: Vec<ConversationItem>,
@@ -910,6 +913,8 @@ impl ConversationState {
             provenance.len(),
             "every appended turn item needs one provenance entry"
         );
+        self.projections
+            .extend(std::iter::repeat_n(None, items.len()));
         self.history.extend(items);
         self.provenance.extend(provenance);
         self.assert_provenance_aligned();
