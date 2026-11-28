@@ -230,6 +230,21 @@ impl Default for TypeSafeSettings {
     }
 }
 
+impl TypeSafeSettingsOverlay {
+    /// Apply every present overlay field to the resolved settings.
+    fn apply_to(self, settings: &mut TypeSafeSettings) {
+        if let Some(mode) = self.mode {
+            settings.mode = mode;
+        }
+        if let Some(model) = self.model {
+            settings.model = model;
+        }
+        if let Some(timeout_ms) = self.timeout_ms {
+            settings.timeout_ms = timeout_ms.max(1);
+        }
+    }
+}
+
 /// Resolved LLM judge settings for Bash command safety.
 ///
 /// Produced by [`SettingsLoader`] after merging global, project, and profile
@@ -775,6 +790,16 @@ pub struct ImagesSettingsOverlay {
 }
 
 impl ImagesSettingsOverlay {
+    /// Merge present keys from a higher-precedence overlay.
+    fn merge(&mut self, incoming: Option<Self>) {
+        let Some(incoming) = incoming else {
+            return;
+        };
+        merge_present(&mut self.max_images, incoming.max_images);
+        merge_present(&mut self.max_bytes, incoming.max_bytes);
+        merge_present(&mut self.max_pixels, incoming.max_pixels);
+    }
+
     /// Apply the compiled defaults and convert every configured value into
     /// the concrete representation used by the request planner.
     #[must_use]
@@ -882,6 +907,25 @@ pub struct CompactionSettingsOverlay {
 }
 
 impl CompactionSettingsOverlay {
+    /// Merge present keys from a higher-precedence overlay.
+    fn merge(&mut self, incoming: Option<Self>) {
+        let Some(incoming) = incoming else {
+            return;
+        };
+        merge_present(&mut self.enabled, incoming.enabled);
+        merge_present(&mut self.threshold_percent, incoming.threshold_percent);
+        merge_present(&mut self.trigger_tokens, incoming.trigger_tokens);
+        merge_present(&mut self.keep_recent_tokens, incoming.keep_recent_tokens);
+        merge_present(&mut self.summary_tokens, incoming.summary_tokens);
+        merge_present(
+            &mut self.summary_timeout_secs,
+            incoming.summary_timeout_secs,
+        );
+        merge_present(&mut self.model, incoming.model);
+        merge_present(&mut self.profile, incoming.profile);
+        merge_present(&mut self.reasoning_effort, incoming.reasoning_effort);
+    }
+
     /// Apply the compiled defaults to every absent key.
     ///
     /// Each budget setting has exactly one consumer in the resolved policy:
@@ -1239,6 +1283,48 @@ impl Default for ToolLimits {
 
 /// Resolve the merged `[limits]` overlay into runtime values.
 impl LimitsSettingsOverlay {
+    /// Merge present keys from a higher-precedence overlay.
+    fn merge(&mut self, incoming: Option<Self>) {
+        let Some(incoming) = incoming else {
+            return;
+        };
+        merge_present(&mut self.max_turns, incoming.max_turns);
+        merge_present(&mut self.max_tool_calls, incoming.max_tool_calls);
+        merge_present(
+            &mut self.bash_output_max_bytes,
+            incoming.bash_output_max_bytes,
+        );
+        merge_present(&mut self.bash_read_cap, incoming.bash_read_cap);
+        merge_present(
+            &mut self.bash_session_output_max_bytes,
+            incoming.bash_session_output_max_bytes,
+        );
+        merge_present(&mut self.bash_session_max, incoming.bash_session_max);
+        merge_present(
+            &mut self.bash_session_max_seconds,
+            incoming.bash_session_max_seconds,
+        );
+        merge_present(
+            &mut self.bash_session_exited_ttl_seconds,
+            incoming.bash_session_exited_ttl_seconds,
+        );
+        merge_present(
+            &mut self.read_default_end_line,
+            incoming.read_default_end_line,
+        );
+        merge_present(
+            &mut self.read_max_output_bytes,
+            incoming.read_max_output_bytes,
+        );
+        merge_present(&mut self.edit_max_file_bytes, incoming.edit_max_file_bytes);
+        merge_present(&mut self.read_max_line_bytes, incoming.read_max_line_bytes);
+        merge_present(
+            &mut self.read_image_max_bytes,
+            incoming.read_image_max_bytes,
+        );
+        merge_present(&mut self.hook_output_limit, incoming.hook_output_limit);
+    }
+
     /// Apply the compiled defaults and convert all configured sentinel values
     /// into the concrete representation used by the runtime.
     pub fn resolve(&self) -> ResolvedLimits {
@@ -2023,7 +2109,7 @@ impl SettingsLoader {
         if acc.gates.selection.is_none()
             && !no_gate
             && !Self::judge_is_bypassed(acc)
-            && let Some(ref name) = acc.judge_model
+            && let Some(ref name) = acc.judge.model
             && !acc.models.contains_key(name.as_str())
         {
             return Err(SettingsError::JudgeModelNotFound { name: name.clone() });
@@ -2051,7 +2137,7 @@ impl SettingsLoader {
     /// Whether the judge is bypassed at settings load: `enabled = false` or
     /// the `CAKE_JUDGE=off` environment variable.
     fn judge_is_bypassed(acc: &SettingsAccumulator) -> bool {
-        acc.judge_enabled == Some(false) || crate::config::gates::environment_bypass()
+        acc.judge.enabled == Some(false) || crate::config::gates::environment_bypass()
     }
 
     fn merge_settings(
@@ -2080,9 +2166,9 @@ impl SettingsLoader {
             acc.system_prompt.clone_from(&settings.system_prompt);
         }
         Self::merge_tools_settings(settings.tools.clone(), origin, source_path, acc)?;
-        Self::merge_limits(settings.limits.clone(), acc);
-        Self::merge_images(settings.images.clone(), acc);
-        Self::merge_compaction(settings.compaction.clone(), acc);
+        acc.limits.merge(settings.limits.clone());
+        acc.images.merge(settings.images.clone());
+        acc.compaction.merge(settings.compaction.clone());
         for (name, profile) in &settings.profiles {
             acc.profiles
                 .entry(name.clone())
@@ -2094,128 +2180,6 @@ impl SettingsLoader {
                 });
         }
         Ok(())
-    }
-
-    /// Merge `[limits]` fields into the accumulator.
-    ///
-    /// Absent keys keep lower-precedence values, so a project or profile
-    /// `[limits]` section overrides only the keys it sets. An explicit
-    /// `"unlimited"` (a present [`Limit`] with no cap) overrides a
-    /// lower-precedence cap back to uncapped.
-    const fn merge_limits(limits: Option<LimitsSettingsOverlay>, acc: &mut SettingsAccumulator) {
-        let Some(limits) = limits else {
-            return;
-        };
-        if limits.max_turns.is_some() {
-            acc.max_turns = limits.max_turns;
-        }
-        if limits.max_tool_calls.is_some() {
-            acc.max_tool_calls = limits.max_tool_calls;
-        }
-        Self::merge_output_budgets(&limits, acc);
-        Self::merge_session_limits(&limits, acc);
-    }
-
-    /// Overlay a present limit onto the accumulator.
-    ///
-    /// An absent overlay value leaves the lower-precedence accumulator value
-    /// untouched, so precedence is preserved without a branch per field.
-    const fn merge_limit(acc: &mut Option<Limit>, incoming: Option<Limit>) {
-        if incoming.is_some() {
-            *acc = incoming;
-        }
-    }
-
-    /// Merge the tool-limit `[limits]` fields into the accumulator, keeping
-    /// [`Self::merge_limits`] at baseline complexity. Absent keys keep
-    /// lower-precedence values; an explicit `"unlimited"` overrides back to
-    /// no cap.
-    const fn merge_output_budgets(limits: &LimitsSettingsOverlay, acc: &mut SettingsAccumulator) {
-        Self::merge_limit(&mut acc.bash_output_max_bytes, limits.bash_output_max_bytes);
-        Self::merge_limit(&mut acc.bash_read_cap, limits.bash_read_cap);
-        Self::merge_limit(&mut acc.read_default_end_line, limits.read_default_end_line);
-        Self::merge_limit(&mut acc.read_max_output_bytes, limits.read_max_output_bytes);
-        Self::merge_limit(&mut acc.edit_max_file_bytes, limits.edit_max_file_bytes);
-        Self::merge_limit(&mut acc.read_max_line_bytes, limits.read_max_line_bytes);
-        Self::merge_limit(&mut acc.read_image_max_bytes, limits.read_image_max_bytes);
-        Self::merge_limit(&mut acc.hook_output_limit, limits.hook_output_limit);
-    }
-
-    const fn merge_session_limits(limits: &LimitsSettingsOverlay, acc: &mut SettingsAccumulator) {
-        if limits.bash_session_output_max_bytes.is_some() {
-            acc.bash_session_output_max_bytes = limits.bash_session_output_max_bytes;
-        }
-        if limits.bash_session_max.is_some() {
-            acc.bash_session_max = limits.bash_session_max;
-        }
-        if limits.bash_session_max_seconds.is_some() {
-            acc.bash_session_max_seconds = limits.bash_session_max_seconds;
-        }
-        if limits.bash_session_exited_ttl_seconds.is_some() {
-            acc.bash_session_exited_ttl_seconds = limits.bash_session_exited_ttl_seconds;
-        }
-    }
-
-    /// Merge `[images]` fields into the accumulator.
-    ///
-    /// Absent keys keep lower-precedence values, so a project or profile
-    /// `[images]` section overrides only the keys it sets. Every key is a
-    /// positive integer; there is no `"unlimited"` sentinel.
-    const fn merge_images(images: Option<ImagesSettingsOverlay>, acc: &mut SettingsAccumulator) {
-        let Some(images) = images else {
-            return;
-        };
-        if images.max_images.is_some() {
-            acc.image_max_images = images.max_images;
-        }
-        if images.max_bytes.is_some() {
-            acc.image_max_bytes = images.max_bytes;
-        }
-        if images.max_pixels.is_some() {
-            acc.image_max_pixels = images.max_pixels;
-        }
-    }
-
-    /// Merge `[compaction]` fields into the accumulator.
-    ///
-    /// Absent keys keep lower-precedence values, so a project or profile
-    /// `[compaction]` section overrides only the keys it sets. Every budget
-    /// is a positive integer; there is no `"unlimited"` sentinel. The
-    /// summarizer keys follow the same per-key precedence.
-    fn merge_compaction(
-        compaction: Option<CompactionSettingsOverlay>,
-        acc: &mut SettingsAccumulator,
-    ) {
-        let Some(compaction) = compaction else {
-            return;
-        };
-        if compaction.enabled.is_some() {
-            acc.compaction.enabled = compaction.enabled;
-        }
-        if compaction.threshold_percent.is_some() {
-            acc.compaction.threshold_percent = compaction.threshold_percent;
-        }
-        if compaction.trigger_tokens.is_some() {
-            acc.compaction.trigger_tokens = compaction.trigger_tokens;
-        }
-        if compaction.keep_recent_tokens.is_some() {
-            acc.compaction.keep_recent_tokens = compaction.keep_recent_tokens;
-        }
-        if compaction.summary_tokens.is_some() {
-            acc.compaction.summary_tokens = compaction.summary_tokens;
-        }
-        if compaction.summary_timeout_secs.is_some() {
-            acc.compaction.summary_timeout_secs = compaction.summary_timeout_secs;
-        }
-        if compaction.model.is_some() {
-            acc.compaction.model = compaction.model;
-        }
-        if compaction.profile.is_some() {
-            acc.compaction.profile = compaction.profile;
-        }
-        if compaction.reasoning_effort.is_some() {
-            acc.compaction.reasoning_effort = compaction.reasoning_effort;
-        }
     }
 
     /// Merge the `[tools]` fields into the accumulator.
@@ -2248,7 +2212,9 @@ impl SettingsLoader {
             }
             acc.gates.legacy_present |= bash.judge.is_some();
         }
-        Self::merge_judge_settings(bash, acc);
+        if let Some(judge) = bash.and_then(|b| b.judge) {
+            acc.judge.merge(judge);
+        }
         Ok(())
     }
 
@@ -2275,80 +2241,6 @@ impl SettingsLoader {
             path: source_path.to_path_buf(),
             added,
         })
-    }
-
-    /// Merge `[tools.bash.judge]` fields into the accumulator.
-    ///
-    /// Extracted so [`Self::merge_settings`] stays at baseline complexity.
-    /// Absent fields keep lower-precedence values; defaults are applied later
-    /// in [`SettingsAccumulator::into_loaded`].
-    fn merge_judge_settings(bash: Option<BashToolSettings>, acc: &mut SettingsAccumulator) {
-        let Some(judge) = bash.and_then(|b| b.judge) else {
-            return;
-        };
-        let BashJudgeSettings {
-            model,
-            timeout_secs,
-            retry_budget_secs,
-            rubric_file,
-            enabled,
-            allowlist,
-            typesafe,
-        } = judge;
-        Self::merge_judge_scalars(
-            model,
-            timeout_secs,
-            retry_budget_secs,
-            rubric_file,
-            enabled,
-            acc,
-        );
-        acc.judge_allowlist.extend(allowlist.unwrap_or_default());
-        Self::merge_typesafe_settings(typesafe, acc);
-    }
-
-    fn merge_typesafe_settings(
-        settings: Option<TypeSafeSettingsOverlay>,
-        acc: &mut SettingsAccumulator,
-    ) {
-        let Some(settings) = settings else { return };
-        if let Some(mode) = settings.mode {
-            acc.typesafe.mode = mode;
-        }
-        if let Some(model) = settings.model {
-            acc.typesafe.model = model;
-        }
-        if let Some(timeout_ms) = settings.timeout_ms {
-            acc.typesafe.timeout_ms = timeout_ms.max(1);
-        }
-    }
-
-    /// Copy the absent-key-preserving scalar judge fields into the
-    /// accumulator, so [`Self::merge_judge_settings`] stays at baseline
-    /// complexity.
-    fn merge_judge_scalars(
-        model: Option<String>,
-        timeout_secs: Option<u64>,
-        retry_budget_secs: Option<u64>,
-        rubric_file: Option<PathBuf>,
-        enabled: Option<bool>,
-        acc: &mut SettingsAccumulator,
-    ) {
-        if let Some(model) = model {
-            acc.judge_model = Some(model);
-        }
-        if let Some(timeout_secs) = timeout_secs {
-            acc.judge_timeout_secs = Some(timeout_secs);
-        }
-        if let Some(retry_budget_secs) = retry_budget_secs {
-            acc.judge_retry_budget_secs = Some(retry_budget_secs);
-        }
-        if let Some(rubric_file) = rubric_file {
-            acc.judge_rubric_file = Some(rubric_file);
-        }
-        if let Some(enabled) = enabled {
-            acc.judge_enabled = Some(enabled);
-        }
     }
 
     fn validate_profiles(profiles: &HashMap<String, ProfileSettings>) -> Result<(), SettingsError> {
@@ -2488,6 +2380,68 @@ struct ProfileOverlay {
     path: PathBuf,
 }
 
+/// Judge overlay accumulated across global, project, and profile settings.
+#[derive(Default)]
+struct JudgeAccumulator {
+    model: Option<String>,
+    timeout_secs: Option<u64>,
+    retry_budget_secs: Option<u64>,
+    rubric_file: Option<PathBuf>,
+    enabled: Option<bool>,
+    allowlist: Vec<String>,
+    typesafe: TypeSafeSettings,
+}
+
+impl JudgeAccumulator {
+    /// Merge a present judge overlay, preserving absent fields and unioning
+    /// the allowlist.
+    fn merge(&mut self, judge: BashJudgeSettings) {
+        let BashJudgeSettings {
+            model,
+            timeout_secs,
+            retry_budget_secs,
+            rubric_file,
+            enabled,
+            allowlist,
+            typesafe,
+        } = judge;
+        merge_present(&mut self.model, model);
+        merge_present(&mut self.timeout_secs, timeout_secs);
+        merge_present(&mut self.retry_budget_secs, retry_budget_secs);
+        merge_present(&mut self.rubric_file, rubric_file);
+        merge_present(&mut self.enabled, enabled);
+        self.allowlist.extend(allowlist.unwrap_or_default());
+        if let Some(typesafe) = typesafe {
+            typesafe.apply_to(&mut self.typesafe);
+        }
+    }
+
+    /// Apply defaults to the accumulated judge settings.
+    fn resolve(self) -> JudgeSettings {
+        JudgeSettings {
+            model: self.model,
+            timeout_secs: self
+                .timeout_secs
+                .unwrap_or(DEFAULT_JUDGE_TIMEOUT_SECS)
+                .max(JUDGE_TIMEOUT_MIN_SECS),
+            retry_budget_secs: self
+                .retry_budget_secs
+                .unwrap_or(DEFAULT_JUDGE_RETRY_BUDGET_SECS),
+            rubric_file: self.rubric_file,
+            enabled: self.enabled.unwrap_or(true),
+            allowlist: self.allowlist,
+            typesafe: self.typesafe,
+        }
+    }
+}
+
+/// Apply a present overlay value, preserving the target when the key is absent.
+fn merge_present<T>(target: &mut Option<T>, incoming: Option<T>) {
+    if incoming.is_some() {
+        *target = incoming;
+    }
+}
+
 /// Mutable merge state shared by [`SettingsLoader`] while combining global,
 /// project, and profile settings.
 #[derive(Default)]
@@ -2502,30 +2456,9 @@ struct SettingsAccumulator {
     tools_enabled: Option<Vec<String>>,
     profiles: HashMap<String, Vec<ProfileOverlay>>,
     system_prompt: Option<String>,
-    judge_model: Option<String>,
-    judge_timeout_secs: Option<u64>,
-    judge_retry_budget_secs: Option<u64>,
-    judge_rubric_file: Option<PathBuf>,
-    judge_enabled: Option<bool>,
-    judge_allowlist: Vec<String>,
-    typesafe: TypeSafeSettings,
-    max_turns: Option<Limit>,
-    max_tool_calls: Option<Limit>,
-    bash_output_max_bytes: Option<Limit>,
-    bash_read_cap: Option<Limit>,
-    bash_session_output_max_bytes: Option<PositiveLimit>,
-    bash_session_max: Option<PositiveLimit>,
-    bash_session_max_seconds: Option<PositiveLimit>,
-    bash_session_exited_ttl_seconds: Option<PositiveLimit>,
-    read_default_end_line: Option<Limit>,
-    read_max_output_bytes: Option<Limit>,
-    edit_max_file_bytes: Option<Limit>,
-    read_max_line_bytes: Option<Limit>,
-    read_image_max_bytes: Option<Limit>,
-    hook_output_limit: Option<Limit>,
-    image_max_images: Option<PositiveLimit>,
-    image_max_bytes: Option<PositiveLimit>,
-    image_max_pixels: Option<PositiveLimit>,
+    judge: JudgeAccumulator,
+    limits: LimitsSettingsOverlay,
+    images: ImagesSettingsOverlay,
     compaction: CompactionSettingsOverlay,
     warnings: Vec<String>,
 }
@@ -2565,9 +2498,9 @@ impl SettingsAccumulator {
         }
         self.skills.apply_overlay(settings.skills.clone());
         self.apply_tools_overlay(&settings.tools, overlay)?;
-        SettingsLoader::merge_limits(settings.limits.clone(), self);
-        SettingsLoader::merge_images(settings.images.clone(), self);
-        SettingsLoader::merge_compaction(settings.compaction.clone(), self);
+        self.limits.merge(settings.limits.clone());
+        self.images.merge(settings.images.clone());
+        self.compaction.merge(settings.compaction.clone());
         Ok(())
     }
 
@@ -2591,7 +2524,9 @@ impl SettingsAccumulator {
             .as_ref()
             .and_then(|bash| bash.judge.as_ref())
             .and_then(|judge| judge.typesafe.clone());
-        SettingsLoader::merge_typesafe_settings(profile_typesafe, self);
+        if let Some(typesafe) = profile_typesafe {
+            typesafe.apply_to(&mut self.judge.typesafe);
+        }
         Ok(())
     }
 
@@ -2611,22 +2546,6 @@ impl SettingsAccumulator {
             })
             .collect();
         let compaction_summarizer = self.compaction.resolve_summarizer();
-        let limits = LimitsSettingsOverlay {
-            max_turns: self.max_turns,
-            max_tool_calls: self.max_tool_calls,
-            bash_output_max_bytes: self.bash_output_max_bytes,
-            bash_read_cap: self.bash_read_cap,
-            bash_session_output_max_bytes: self.bash_session_output_max_bytes,
-            bash_session_max: self.bash_session_max,
-            bash_session_max_seconds: self.bash_session_max_seconds,
-            bash_session_exited_ttl_seconds: self.bash_session_exited_ttl_seconds,
-            read_default_end_line: self.read_default_end_line,
-            read_max_output_bytes: self.read_max_output_bytes,
-            edit_max_file_bytes: self.edit_max_file_bytes,
-            read_max_line_bytes: self.read_max_line_bytes,
-            read_image_max_bytes: self.read_image_max_bytes,
-            hook_output_limit: self.hook_output_limit,
-        };
         LoadedSettings {
             gates: self.gates,
             models: self.models,
@@ -2639,27 +2558,9 @@ impl SettingsAccumulator {
             skills: self.skills,
             tools_enabled: self.tools_enabled,
             system_prompt: self.system_prompt,
-            judge: JudgeSettings {
-                model: self.judge_model,
-                timeout_secs: self
-                    .judge_timeout_secs
-                    .unwrap_or(DEFAULT_JUDGE_TIMEOUT_SECS)
-                    .max(JUDGE_TIMEOUT_MIN_SECS),
-                retry_budget_secs: self
-                    .judge_retry_budget_secs
-                    .unwrap_or(DEFAULT_JUDGE_RETRY_BUDGET_SECS),
-                rubric_file: self.judge_rubric_file,
-                enabled: self.judge_enabled.unwrap_or(true),
-                allowlist: self.judge_allowlist,
-                typesafe: self.typesafe,
-            },
-            limits: limits.resolve(),
-            images: ImagesSettingsOverlay {
-                max_images: self.image_max_images,
-                max_bytes: self.image_max_bytes,
-                max_pixels: self.image_max_pixels,
-            }
-            .resolve(),
+            judge: self.judge.resolve(),
+            limits: self.limits.resolve(),
+            images: self.images.resolve(),
             compaction: self.compaction.resolve(),
             compaction_summarizer,
             profile_default_models,
