@@ -10,7 +10,7 @@ use base64::Engine as _;
 use serde_json::Value;
 
 use crate::clients::mcp::{McpClient, McpTool};
-use crate::clients::tool_output::not_retained_preview;
+use crate::clients::tool_output::producer_preview;
 use crate::clients::tools::{
     Tool, ToolContext, ToolEntry, ToolError, ToolResult, push_output_truncation_event_if,
     repair_json_args,
@@ -193,7 +193,9 @@ fn render_content(
     } else {
         parts.join("\n")
     };
-    let (output, truncated) = truncate(output, tool_name);
+    let (output, truncated) = producer_preview(output, MAX_OUTPUT_BYTES, tool_name, || {
+        format!("mcp result exceeds the {MAX_OUTPUT_BYTES} byte shared producer cap")
+    });
     RenderedContent {
         output,
         images,
@@ -334,13 +336,4 @@ fn compact_json(value: &Value) -> String {
 
 fn pretty_json(value: &Value) -> String {
     serde_json::to_string_pretty(value).unwrap_or_else(|_| compact_json(value))
-}
-
-/// Replace oversized text with a shared not-retained preview.
-fn truncate(output: String, tool_name: &str) -> (String, bool) {
-    if output.len() <= MAX_OUTPUT_BYTES {
-        return (output, false);
-    }
-    let reason = format!("mcp result exceeds the {MAX_OUTPUT_BYTES} byte shared producer cap");
-    (not_retained_preview(tool_name, &output, &reason), true)
 }

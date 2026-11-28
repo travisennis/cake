@@ -42,11 +42,13 @@ use crate::config::mcp::McpExposure;
 use crate::config::settings::ToolLimits;
 use crate::gates::composer::GatePipeline;
 use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
+use crate::text::bounded_description;
 use crate::types::{ImagePart, ReplaySafety};
 
 mod bash_session;
 mod bash_session_core;
 mod sandbox;
+mod search_rank;
 
 pub use sandbox::{GrantReport, GrantReportInputs, resolve_sandbox_policy_with_source};
 pub use sandbox::{SandboxPolicy, resolve_linked_worktree_dirs, resolve_sandbox_policy};
@@ -1605,7 +1607,8 @@ fn append_mcp_server_summary(s: &mut String, servers: &[&ExternalServerInfo]) {
             server.exposure.as_str()
         );
         if let Some(description) = server.description.as_deref()
-            && let Some(description) = concise_description(description)
+            && let Some(description) =
+                bounded_description(description, MAX_SERVER_DESCRIPTION_CHARS, true)
         {
             line.push_str(": ");
             line.push_str(&description);
@@ -1614,23 +1617,6 @@ fn append_mcp_server_summary(s: &mut String, servers: &[&ExternalServerInfo]) {
         line.push('\n');
         s.push_str(&line);
     }
-}
-
-/// Collapse a description to one bounded sentence for the server summary.
-fn concise_description(description: &str) -> Option<String> {
-    let one_line = description.split_whitespace().collect::<Vec<_>>().join(" ");
-    let first_sentence = one_line.split('.').next().unwrap_or(&one_line).trim();
-    if first_sentence.is_empty() {
-        return None;
-    }
-    let mut bounded: String = first_sentence
-        .chars()
-        .take(MAX_SERVER_DESCRIPTION_CHARS)
-        .collect();
-    if first_sentence.chars().count() > MAX_SERVER_DESCRIPTION_CHARS {
-        bounded.push_str("...");
-    }
-    Some(bounded)
 }
 
 fn has_any_enabled_tools(

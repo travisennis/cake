@@ -6,6 +6,7 @@ use serde::Deserialize;
 use crate::clients::tool_output::{READ_TOOL_OUTPUT_NAME, ToolOutputEntry};
 use crate::clients::tools::{Tool, ToolContext, ToolError, ToolResult, repair_json_args};
 use crate::config::blob_store::TOOL_OUTPUT_EXTERNALIZATION_THRESHOLD_BYTES;
+use crate::text::{utf8_head, utf8_index_ceil, utf8_index_floor};
 
 /// Maximum retrieval body bytes returned to the model.
 const MAX_RETRIEVAL_BYTES: usize = TOOL_OUTPUT_EXTERNALIZATION_THRESHOLD_BYTES;
@@ -585,28 +586,4 @@ fn finish(mut output: String) -> String {
         output.truncate(keep);
     }
     output
-}
-
-fn utf8_head(text: &str, max_bytes: usize) -> &str {
-    let mut end = max_bytes.min(text.len());
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    text.get(..end).unwrap_or_default()
-}
-
-fn utf8_index_ceil(text: &str, index: usize) -> usize {
-    let mut index = index.min(text.len());
-    while index < text.len() && !text.is_char_boundary(index) {
-        index += 1;
-    }
-    index
-}
-
-fn utf8_index_floor(text: &str, start: usize, index: usize) -> usize {
-    let mut index = index.min(text.len());
-    while index > start && !text.is_char_boundary(index) {
-        index -= 1;
-    }
-    index
 }

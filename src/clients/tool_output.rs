@@ -18,6 +18,7 @@ use crate::config::blob_store::{
     TOOL_OUTPUT_EXTERNALIZATION_THRESHOLD_BYTES, TOOL_OUTPUT_RETENTION_CEILING_BYTES,
     TOOL_OUTPUT_SESSION_BUDGET_BYTES,
 };
+use crate::text::{utf8_head, utf8_tail};
 use crate::types::ConversationItem;
 
 /// Registered name of the tool that retrieves a projected output.
@@ -247,6 +248,20 @@ pub fn not_retained_preview(tool_name: &str, output: &str, reason: &str) -> Stri
     )
 }
 
+/// Bound one producer result, replacing an oversized output with a preview.
+pub fn producer_preview(
+    output: String,
+    max_bytes: usize,
+    tool_name: &str,
+    reason: impl FnOnce() -> String,
+) -> (String, bool) {
+    if output.len() <= max_bytes {
+        return (output, false);
+    }
+    let reason = reason();
+    (not_retained_preview(tool_name, &output, &reason), true)
+}
+
 /// Compute the cached projection for every eligible raw-history output.
 pub fn project_history(items: &[ConversationItem]) -> Vec<Option<ToolOutputProjection>> {
     let names = output_names(items);
@@ -421,20 +436,4 @@ fn summarize(tool_name: &str, call_id: &str, handle: &str, output: &str) -> Stri
     }
     summary.push_str("\n[end externalized tool result]");
     summary
-}
-
-fn utf8_head(text: &str, max_bytes: usize) -> &str {
-    let mut end = max_bytes.min(text.len());
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    text.get(..end).unwrap_or_default()
-}
-
-fn utf8_tail(text: &str, max_bytes: usize) -> &str {
-    let mut start = text.len().saturating_sub(max_bytes);
-    while start < text.len() && !text.is_char_boundary(start) {
-        start += 1;
-    }
-    text.get(start..).unwrap_or_default()
 }

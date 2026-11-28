@@ -17,7 +17,7 @@ use tokio::process::Command;
 use tokio::time::{Duration, timeout};
 use tracing::warn;
 
-use crate::clients::tool_output::not_retained_preview;
+use crate::clients::tool_output::producer_preview;
 use crate::clients::tools::{Tool, ToolEntry, ToolError, ToolResult, repair_json_args};
 use crate::config::blob_store::TOOL_OUTPUT_PRODUCER_LIMIT_BYTES;
 use crate::config::toolbox::{
@@ -192,10 +192,17 @@ fn finish_toolbox_result(
     );
 
     Ok(ToolResult {
-        output: truncate_output(
+        output: producer_preview(
             String::from_utf8_lossy(&streams.stdout).into_owned(),
+            MAX_OUTPUT_BYTES,
             tool_name,
-        ),
+            || {
+                format!(
+                    "toolbox output exceeded the {MAX_OUTPUT_BYTES} byte shared producer cap; later bytes were not captured"
+                )
+            },
+        )
+        .0,
         images: Vec::new(),
         compensation_events,
         permission_denials: Vec::new(),
@@ -264,15 +271,4 @@ fn render_text_argument(key: &str, value: &serde_json::Value) -> Result<String, 
         serde_json::Value::String(s) => Ok(s.clone()),
         other => Ok(other.to_string()),
     }
-}
-
-/// Replace oversized output with a shared not-retained preview.
-fn truncate_output(output: String, tool_name: &str) -> String {
-    if output.len() <= MAX_OUTPUT_BYTES {
-        return output;
-    }
-    let reason = format!(
-        "toolbox output exceeded the {MAX_OUTPUT_BYTES} byte shared producer cap; later bytes were not captured"
-    );
-    not_retained_preview(tool_name, &output, &reason)
 }

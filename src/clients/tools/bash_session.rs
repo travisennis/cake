@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use crate::clients::tool_output::TOOL_OUTPUT_PREVIEW_BYTES;
 use crate::clients::tools::bash_session_core::{SessionRead, SessionRegistry};
 use crate::session_telemetry::{CompensationEventTelemetry, CompensationKind};
+use crate::text::{utf8_head, utf8_tail};
 use crate::time_format::format_seconds_tenths;
 
 const READ_WAIT_DEFAULT: u64 = 10;
@@ -151,22 +152,6 @@ pub(super) fn cap_output(output: &str, max_bytes: usize, force: bool) -> (String
         ),
         true,
     )
-}
-
-fn utf8_head(text: &str, max_bytes: usize) -> &str {
-    let mut end = max_bytes.min(text.len());
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    text.get(..end).unwrap_or_default()
-}
-
-fn utf8_tail(text: &str, max_bytes: usize) -> &str {
-    let mut start = text.len().saturating_sub(max_bytes);
-    while start < text.len() && !text.is_char_boundary(start) {
-        start += 1;
-    }
-    text.get(start..).unwrap_or_default()
 }
 
 fn format_list(registry: &SessionRegistry) -> String {

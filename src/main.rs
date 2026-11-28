@@ -12,6 +12,7 @@ mod logger;
 mod program_status;
 mod prompts;
 mod session_telemetry;
+mod text;
 mod time_format;
 mod types;
 

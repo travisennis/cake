@@ -39,6 +39,7 @@ use crate::config::model::ResolvedModelConfig;
 use crate::config::settings::ResolvedImagePolicy;
 pub use crate::config::settings::{CompactionPolicy, ResolvedCompactionPolicy};
 use crate::session_telemetry::{AgentRunnerTelemetryEvent, ProviderTermination};
+use crate::text::{utf8_index_ceil, utf8_index_floor};
 use crate::types::compaction::{
     CompactionData, CompactionTrigger, EstimateBasis, EstimatedInput, HISTORICAL_SUMMARY_MARKER,
     MAX_CHECKPOINT_RECORD_BYTES, MessageOrigin, ModelIdentity, PinReason,
@@ -1740,8 +1741,8 @@ fn excerpt_text(text: &str, limit: usize) -> String {
     }
     let head_len = limit.saturating_mul(3) / 4;
     let tail_len = limit.saturating_sub(head_len);
-    let head_end = floor_char_boundary(text, head_len);
-    let tail_start = ceil_char_boundary(text, text.len().saturating_sub(tail_len));
+    let head_end = utf8_index_floor(text, 0, head_len);
+    let tail_start = utf8_index_ceil(text, text.len().saturating_sub(tail_len));
     let head = text.get(..head_end).unwrap_or_default();
     let tail = text.get(tail_start..).unwrap_or_default();
     format!(
@@ -1749,22 +1750,6 @@ fn excerpt_text(text: &str, limit: usize) -> String {
         text.len()
             .saturating_sub(head_end + (text.len() - tail_start)),
     )
-}
-
-fn floor_char_boundary(text: &str, mut index: usize) -> usize {
-    index = index.min(text.len());
-    while index > 0 && !text.is_char_boundary(index) {
-        index -= 1;
-    }
-    index
-}
-
-fn ceil_char_boundary(text: &str, mut index: usize) -> usize {
-    index = index.min(text.len());
-    while index < text.len() && !text.is_char_boundary(index) {
-        index += 1;
-    }
-    index
 }
 
 /// Format one retired exchange within a byte budget.
@@ -1780,7 +1765,7 @@ fn format_exchange(exchange: &[RetainedRecord], max_bytes: usize) -> String {
         }
         formatted.push_str(&format_summary_record(record, per_record));
         if formatted.len() > max_bytes {
-            formatted.truncate(floor_char_boundary(&formatted, max_bytes));
+            formatted.truncate(utf8_index_floor(&formatted, 0, max_bytes));
             formatted.push_str("\n[exchange excerpted to fit the summary prompt]");
             break;
         }

@@ -12,7 +12,9 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::clients::mcp::LazyMcpRuntime;
+use crate::clients::tools::search_rank::{CaseFold, rank, tokens_of};
 use crate::clients::tools::{Tool, ToolEntry, ToolError, ToolResult, repair_json_args};
+use crate::text::bounded_description;
 
 /// Registered name of the search tool.
 pub const TOOL_SEARCH_NAME: &str = "ToolSearch";
@@ -25,12 +27,6 @@ const MAX_LIMIT: usize = 20;
 
 /// Bound on one result description.
 const MAX_RESULT_DESCRIPTION_CHARS: usize = 160;
-
-/// BM25 term-frequency saturation.
-const BM25_K1: f64 = 1.2;
-
-/// BM25 length-normalization factor.
-const BM25_B: f64 = 0.75;
 
 /// One deferred tool visible to search.
 #[derive(Clone, Debug)]
@@ -257,7 +253,8 @@ fn render_matches(
                 "- {} ({}): {}",
                 entry.registered_name,
                 entry.server,
-                concise_description(&entry.description)
+                bounded_description(&entry.description, MAX_RESULT_DESCRIPTION_CHARS, true,)
+                    .unwrap_or_default()
             );
         }
     }
@@ -318,76 +315,27 @@ fn append_failures(output: &mut String, failed: &[String]) {
     );
 }
 
-fn concise_description(description: &str) -> String {
-    let one_line = description.split_whitespace().collect::<Vec<_>>().join(" ");
-    let first_sentence = one_line.split('.').next().unwrap_or(&one_line).trim();
-    let mut bounded: String = first_sentence
-        .chars()
-        .take(MAX_RESULT_DESCRIPTION_CHARS)
-        .collect();
-    if first_sentence.chars().count() > MAX_RESULT_DESCRIPTION_CHARS {
-        bounded.push_str("...");
-    }
-    bounded
-}
-
-/// Rank entries for a query, optionally restricted to one server.
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "the deferred MCP catalog is small enough that f64 represents its sizes exactly"
-)]
 fn search<'a>(
     entries: &'a [ToolSearchEntry],
     query: &str,
     server: Option<&str>,
     limit: usize,
 ) -> Vec<&'a ToolSearchEntry> {
-    let query_terms = tokens(query);
-    if query_terms.is_empty() {
-        return Vec::new();
-    }
-    let candidates: Vec<(&ToolSearchEntry, Vec<String>)> = entries
+    let candidates = entries
         .iter()
         .filter(|entry| {
             server.is_none_or(|server| entry.server.eq_ignore_ascii_case(server.trim()))
         })
         .map(|entry| (entry, document_tokens(entry)))
         .collect();
-    if candidates.is_empty() {
-        return Vec::new();
-    }
-    let average_length = candidates
-        .iter()
-        .map(|(_, tokens)| tokens.len())
-        .sum::<usize>() as f64
-        / candidates.len() as f64;
-    let document_count = candidates.len() as f64;
-    let document_frequency = term_document_frequency(&candidates);
-    let mut scored: Vec<(f64, &ToolSearchEntry)> = candidates
-        .into_iter()
-        .filter_map(|(entry, document)| {
-            let score = bm25_score(
-                &query_terms,
-                &document,
-                &document_frequency,
-                average_length,
-                document_count,
-            ) + exact_name_bonus(entry, query);
-            (score > 0.0).then_some((score, entry))
-        })
-        .collect();
-    scored.sort_by(|left, right| {
-        right
-            .0
-            .partial_cmp(&left.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| left.1.registered_name.cmp(&right.1.registered_name))
-    });
-    scored
-        .into_iter()
-        .take(limit)
-        .map(|(_, entry)| entry)
-        .collect()
+    rank(
+        candidates,
+        query,
+        CaseFold::Ascii,
+        limit,
+        |entry| exact_name_bonus(entry, query),
+        |left, right| left.registered_name.cmp(&right.registered_name),
+    )
 }
 
 fn exact_name_bonus(entry: &ToolSearchEntry, query: &str) -> f64 {
@@ -406,77 +354,13 @@ fn exact_name_bonus(entry: &ToolSearchEntry, query: &str) -> f64 {
     }
 }
 
-fn term_document_frequency(
-    documents: &[(&ToolSearchEntry, Vec<String>)],
-) -> std::collections::HashMap<String, usize> {
-    let mut frequencies = std::collections::HashMap::new();
-    for (_, document) in documents {
-        let unique: HashSet<&String> = document.iter().collect();
-        for term in unique {
-            *frequencies.entry(term.clone()).or_insert(0) += 1;
-        }
-    }
-    frequencies
-}
-
-#[expect(
-    clippy::cast_precision_loss,
-    clippy::suboptimal_flops,
-    reason = "BM25 is a ranking heuristic over a small catalog; clarity wins over fused operations"
-)]
-fn bm25_score(
-    query_terms: &[String],
-    document: &[String],
-    document_frequency: &std::collections::HashMap<String, usize>,
-    average_length: f64,
-    document_count: f64,
-) -> f64 {
-    if document.is_empty() || average_length <= 0.0 {
-        return 0.0;
-    }
-    let mut score = 0.0;
-    for term in query_terms {
-        let frequency = document.iter().filter(|token| *token == term).count() as f64;
-        if frequency == 0.0 {
-            continue;
-        }
-        let frequency_in_documents = document_frequency.get(term).copied().unwrap_or(0) as f64;
-        if frequency_in_documents == 0.0 {
-            continue;
-        }
-        let idf = ((document_count - frequency_in_documents + 0.5)
-            / (frequency_in_documents + 0.5))
-            .ln_1p();
-        let length_ratio = document.len() as f64 / average_length;
-        let denominator = frequency + BM25_K1 * (1.0 - BM25_B + BM25_B * length_ratio);
-        score += idf * (frequency * (BM25_K1 + 1.0)) / denominator;
-    }
-    score
-}
-
 fn document_tokens(entry: &ToolSearchEntry) -> Vec<String> {
     let mut tokens = Vec::new();
     for _ in 0..2 {
-        tokens.extend(tokens_of(&entry.registered_name));
+        tokens.extend(tokens_of(&entry.registered_name, CaseFold::Ascii));
     }
-    tokens.extend(tokens_of(&entry.server));
-    tokens.extend(tokens_of(&entry.description));
-    tokens.extend(tokens_of(&entry.input_schema.to_string()));
+    tokens.extend(tokens_of(&entry.server, CaseFold::Ascii));
+    tokens.extend(tokens_of(&entry.description, CaseFold::Ascii));
+    tokens.extend(tokens_of(&entry.input_schema.to_string(), CaseFold::Ascii));
     tokens
-}
-
-fn tokens(value: &str) -> Vec<String> {
-    tokens_of(value)
-        .into_iter()
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect()
-}
-
-fn tokens_of(value: &str) -> Vec<String> {
-    value
-        .split(|character: char| !character.is_alphanumeric())
-        .filter(|token| !token.is_empty())
-        .map(str::to_ascii_lowercase)
-        .collect()
 }
