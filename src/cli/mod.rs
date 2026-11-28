@@ -19,6 +19,7 @@ mod mcp;
 mod output;
 mod persistence;
 mod replay;
+pub mod report;
 pub mod request_reuse;
 mod run_mode;
 mod sandbox_grants;

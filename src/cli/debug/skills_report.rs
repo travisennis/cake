@@ -1,5 +1,6 @@
 //! Human-readable and diagnostic JSON reports for `cake debug skills`.
 
+use crate::cli::report::{Table, project_trust_payload};
 use crate::cli::{
     CHECK_SKILLS_DISCOVERY, CHECK_SKILLS_PROJECT_TRUST, DiagnosticCheck, DiagnosticDocument,
     settings_warnings,
@@ -167,19 +168,14 @@ pub(super) fn format_text(catalog: &SkillCatalog, budget: SkillCatalogBudget) ->
 
 /// Append the fixed-width skill inventory table.
 fn append_skill_table(output: &mut String, rows: &[SkillReportRow]) {
-    let headers = [
+    let mut table = Table::new(&[
         "Name",
         "Scope",
         "Desc chars",
         "Budget",
         "Prompt",
         "Location",
-    ];
-    let widths = skill_column_widths(&headers, rows);
-    output.push_str(format_skill_row(&headers, &widths).trim_end());
-    output.push('\n');
-    output.push_str(&separator(&widths));
-    output.push('\n');
+    ]);
     for row in rows {
         let characters = row.description_characters.to_string();
         let budget = if row.description_over_budget {
@@ -188,63 +184,16 @@ fn append_skill_table(output: &mut String, rows: &[SkillReportRow]) {
             "ok"
         };
         let prompt = if row.in_prompt { "yes" } else { "omitted" };
-        let line = format_skill_row(
-            &[
-                row.name.as_str(),
-                row.scope,
-                characters.as_str(),
-                budget,
-                prompt,
-                row.location.as_str(),
-            ],
-            &widths,
-        );
-        output.push_str(line.trim_end());
-        output.push('\n');
+        table.push(&[
+            row.name.as_str(),
+            row.scope,
+            characters.as_str(),
+            budget,
+            prompt,
+            row.location.as_str(),
+        ]);
     }
-}
-
-fn skill_column_widths(headers: &[&str; 6], rows: &[SkillReportRow]) -> [usize; 6] {
-    let mut widths = headers.map(str::len);
-    for row in rows {
-        widths[0] = widths[0].max(row.name.len());
-        widths[1] = widths[1].max(row.scope.len());
-        widths[2] = widths[2].max(row.description_characters.to_string().len());
-        widths[3] = widths[3].max(if row.description_over_budget { 4 } else { 2 });
-        widths[4] = widths[4].max(if row.in_prompt { 3 } else { 7 });
-        widths[5] = widths[5].max(row.location.len());
-    }
-    widths
-}
-
-fn format_skill_row(values: &[&str; 6], widths: &[usize; 6]) -> String {
-    format!(
-        "{:<name_width$}  {:<scope_width$}  {:<characters_width$}  {:<budget_width$}  {:<prompt_width$}  {:<location_width$}",
-        values[0],
-        values[1],
-        values[2],
-        values[3],
-        values[4],
-        values[5],
-        name_width = widths[0],
-        scope_width = widths[1],
-        characters_width = widths[2],
-        budget_width = widths[3],
-        prompt_width = widths[4],
-        location_width = widths[5],
-    )
-}
-
-fn separator(widths: &[usize; 6]) -> String {
-    format!(
-        "{}  {}  {}  {}  {}  {}",
-        "-".repeat(widths[0]),
-        "-".repeat(widths[1]),
-        "-".repeat(widths[2]),
-        "-".repeat(widths[3]),
-        "-".repeat(widths[4]),
-        "-".repeat(widths[5]),
-    )
+    output.push_str(&table.render(true));
 }
 
 /// Append discovery and selection diagnostics to the text report.
@@ -305,11 +254,7 @@ pub(super) fn render_json(
         checks,
         json!({
             "skills": rows,
-            "project_trust": {
-                "state": trust.state.label(),
-                "authority": trust.authority,
-                "changes": trust.changes,
-            },
+            "project_trust": project_trust_payload(trust),
         }),
     )
     .render()

@@ -18,15 +18,16 @@
 //! values for this project, not the complete OS-level sandbox policy.
 
 use crate::cli::debug::grants;
+use crate::cli::report::{SelectedModel, project_trust_payload};
 use crate::cli::{CmdRunner, CommandRunOptions};
 use crate::clients::GrantReport;
 use crate::config::DataDir;
 use crate::config::SettingsLoader;
 use crate::config::settings::{LoadedSettings, ModelDefinition, SettingsLoad, SettingsOrigin};
-use crate::config::trust::{ProjectConfigMode, ProjectTrustReport};
+use crate::config::trust::ProjectConfigMode;
 use clap::Parser;
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::json;
 use std::path::Path;
 
 mod checks;
@@ -109,18 +110,11 @@ struct ModelFact {
 impl ModelFact {
     /// Select `--model` first, then `default_model`, and inspect presence.
     fn build(loaded: &LoadedSettings, selected: Option<&str>) -> Self {
-        let (name, source) = selected.map_or_else(
-            || {
-                loaded
-                    .default_model
-                    .as_deref()
-                    .map_or((None, None), |default| {
-                        (Some(default.to_string()), Some("default_model"))
-                    })
-            },
-            |model| (Some(model.to_string()), Some("--model")),
-        );
-        let definition = name.as_deref().and_then(|name| loaded.models.get(name));
+        let SelectedModel {
+            name,
+            source,
+            definition,
+        } = SelectedModel::resolve(loaded, selected);
         let credential = definition.map(credential_fact);
         Self {
             name,
@@ -231,7 +225,7 @@ fn run_success(
         "profile": options.profile,
         "model": facts.model.name.as_deref(),
         "grants": configured,
-        "project_trust": trust_payload(&load.trust),
+        "project_trust": project_trust_payload(&load.trust),
         "default_model": load.settings.default_model.as_deref(),
         "model_source": facts.model.source,
         "model_configured": facts.model.configured,
@@ -365,12 +359,4 @@ fn failure_message(
     }
     let paths: Vec<&str> = sources.iter().map(|source| source.path.as_str()).collect();
     format!("{error} (settings sources: {})", paths.join(", "))
-}
-
-fn trust_payload(trust: &ProjectTrustReport) -> Value {
-    json!({
-        "state": trust.state.label(),
-        "authority": trust.authority,
-        "changes": trust.changes,
-    })
 }

@@ -4,6 +4,7 @@
 //! configured writable directory or the user skill root. Missing paths are
 //! data, not grants.
 
+use crate::cli::report::{Table, project_trust_payload};
 use crate::cli::settings::load_settings;
 use crate::cli::{
     CHECK_GRANTS_PATH, CommandRunOptions, DiagnosticCheck, DiagnosticDocument, settings_warnings,
@@ -269,14 +270,7 @@ pub(super) fn flat_payload(report: &GrantReport) -> Value {
 fn data_with_trust(report: &GrantReport, trust: &ProjectTrustReport) -> Value {
     let mut data = data(report);
     if let Some(object) = data.as_object_mut() {
-        object.insert(
-            "project_trust".to_string(),
-            json!({
-                "state": trust.state.label(),
-                "authority": trust.authority,
-                "changes": trust.changes,
-            }),
-        );
+        object.insert("project_trust".to_string(), project_trust_payload(trust));
     }
     data
 }
@@ -296,92 +290,30 @@ fn path_strings(paths: &[std::path::PathBuf]) -> Vec<String> {
         .collect()
 }
 
-struct SourceRow {
-    source: String,
-    access: String,
-    path: String,
-    status: String,
-}
-
 fn append_source_table(output: &mut String, report: &GrantReport) {
-    let mut rows = Vec::new();
+    let mut table = Table::new(&["Source", "Access", "Path", "Status"]);
     for source in &report.sources {
         if source.entries.is_empty() {
-            rows.push(SourceRow {
-                source: source.label.to_string(),
-                access: source.access.label().to_string(),
-                path: "(none)".to_string(),
-                status: "-".to_string(),
-            });
+            table.push(&[source.label, source.access.label(), "(none)", "-"]);
             continue;
         }
         for (index, entry) in source.entries.iter().enumerate() {
-            rows.push(SourceRow {
-                source: if index == 0 {
-                    source.label.to_string()
+            let path = entry.path.display().to_string();
+            table.push(&[
+                if index == 0 { source.label } else { "" },
+                if index == 0 {
+                    source.access.label()
                 } else {
-                    String::new()
+                    ""
                 },
-                access: if index == 0 {
-                    source.access.label().to_string()
-                } else {
-                    String::new()
-                },
-                path: entry.path.display().to_string(),
-                status: entry.status.label().to_string(),
-            });
+                path.as_str(),
+                entry.status.label(),
+            ]);
         }
     }
 
-    let headers = ["Source", "Access", "Path", "Status"];
-    let widths = source_column_widths(&headers, &rows);
     output.push_str("Sources\n");
-    output.push_str(format_source_row(&headers, &widths).trim_end());
-    output.push('\n');
-    output.push_str(&source_separator(&widths));
-    output.push('\n');
-    for row in rows {
-        output.push_str(
-            format_source_row(&[&row.source, &row.access, &row.path, &row.status], &widths)
-                .trim_end(),
-        );
-        output.push('\n');
-    }
-}
-
-fn source_column_widths(headers: &[&str; 4], rows: &[SourceRow]) -> [usize; 4] {
-    let mut widths = headers.map(str::len);
-    for row in rows {
-        widths[0] = widths[0].max(row.source.len());
-        widths[1] = widths[1].max(row.access.len());
-        widths[2] = widths[2].max(row.path.len());
-        widths[3] = widths[3].max(row.status.len());
-    }
-    widths
-}
-
-fn format_source_row(values: &[&str; 4], widths: &[usize; 4]) -> String {
-    format!(
-        "{:<source_width$}  {:<access_width$}  {:<path_width$}  {:<status_width$}",
-        values[0],
-        values[1],
-        values[2],
-        values[3],
-        source_width = widths[0],
-        access_width = widths[1],
-        path_width = widths[2],
-        status_width = widths[3],
-    )
-}
-
-fn source_separator(widths: &[usize; 4]) -> String {
-    format!(
-        "{}  {}  {}  {}",
-        "-".repeat(widths[0]),
-        "-".repeat(widths[1]),
-        "-".repeat(widths[2]),
-        "-".repeat(widths[3]),
-    )
+    output.push_str(&table.render(true));
 }
 
 fn append_effective_sets(output: &mut String, report: &GrantReport) {

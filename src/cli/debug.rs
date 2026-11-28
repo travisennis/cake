@@ -1,3 +1,4 @@
+use crate::cli::report::{McpDefinition, Table, project_trust_payload};
 use crate::cli::settings::load_settings;
 use crate::cli::{
     CHECK_BLOBS_DIRECTORY, CHECK_BLOBS_ORPHANED_STORE, CHECK_BLOBS_REFERENCE_CORRUPT,
@@ -652,15 +653,12 @@ fn run_skills(
 /// One resolved server row in the `debug mcp` report.
 #[derive(Debug, Serialize)]
 struct McpServerReport {
-    name: String,
-    command: String,
-    args: Vec<String>,
+    #[serde(flatten)]
+    definition: McpDefinition,
     env: Vec<String>,
-    source: String,
     timeout_secs: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
-    exposure: crate::config::mcp::McpExposure,
     status: &'static str,
     protocol_version: Option<String>,
     server_info: Option<String>,
@@ -756,7 +754,7 @@ fn mcp_checks(warnings: &[String], reports: &[McpServerReport]) -> Vec<Diagnosti
         report.error.as_ref().map(|error| {
             DiagnosticCheck::warning(
                 CHECK_MCP_SERVER,
-                format!("MCP server '{}' failed: {error}", report.name),
+                format!("MCP server '{}' failed: {error}", report.definition.name),
             )
         })
     }));
@@ -798,14 +796,10 @@ async fn report_server(
     current_dir: &Path,
 ) -> McpServerReport {
     let mut report = McpServerReport {
-        name: config.name.clone(),
-        command: config.command.clone(),
-        args: config.args.clone(),
+        definition: McpDefinition::from(config),
         env: config.env.keys().cloned().collect(),
-        source: config.source.display().to_string(),
         timeout_secs: config.timeout_secs,
         description: config.description.clone(),
-        exposure: config.exposure,
         status: "failed",
         protocol_version: None,
         server_info: None,
@@ -813,7 +807,7 @@ async fn report_server(
         error: None,
         tools: Vec::new(),
     };
-    if config.exposure == crate::config::mcp::McpExposure::Hidden {
+    if report.definition.exposure == crate::config::mcp::McpExposure::Hidden {
         report.status = "hidden";
         return report;
     }
@@ -855,15 +849,19 @@ fn format_mcp_report(reports: &[McpServerReport]) -> String {
 /// Append one server row to the `debug mcp` text report.
 fn format_mcp_server(report: &McpServerReport, output: &mut String) {
     output.push('\n');
-    _ = writeln!(output, "{} ({})", report.name, report.status);
-    _ = writeln!(output, "  source: {}", report.source);
-    let command = std::iter::once(report.command.as_str())
-        .chain(report.args.iter().map(String::as_str))
+    _ = writeln!(output, "{} ({})", report.definition.name, report.status);
+    _ = writeln!(output, "  source: {}", report.definition.source);
+    let command = std::iter::once(report.definition.command.as_str())
+        .chain(report.definition.args.iter().map(String::as_str))
         .collect::<Vec<_>>()
         .join(" ");
     _ = writeln!(output, "  command: {command}");
     _ = writeln!(output, "  timeout: {}s", report.timeout_secs);
-    _ = writeln!(output, "  exposure: {}", report.exposure.as_str());
+    _ = writeln!(
+        output,
+        "  exposure: {}",
+        report.definition.exposure.as_str()
+    );
     if let Some(tool_updates) = &report.tool_updates {
         _ = writeln!(output, "  tool updates: {tool_updates}");
     }
@@ -897,34 +895,31 @@ fn format_models(models: &std::collections::HashMap<String, ModelDefinition>) ->
 
     let mut rows: Vec<ModelRow<'_>> = models.values().map(ModelRow::from).collect();
     rows.sort_by(|left, right| left.name.cmp(right.name));
+    let row_count = rows.len();
 
-    let headers = ["Name", "Model", "API Type", "Base URL", "API Key Env"];
-    let widths = column_widths(&headers, &rows);
-
-    let mut output = String::new();
-    output.push_str("Configured Models\n");
-    output.push_str(&separator(&widths));
-    output.push('\n');
-    output.push_str(&format_row(&headers, &widths));
-    output.push('\n');
-    output.push_str(&separator(&widths));
-    output.push('\n');
-
-    for row in rows {
-        output.push_str(&format_row(
-            &[
-                row.name,
-                row.model,
-                row.api_type,
-                row.base_url,
-                row.api_key_env,
-            ],
-            &widths,
-        ));
-        output.push('\n');
+    let mut table = Table::new(&["Name", "Model", "API Type", "Base URL", "API Key Env"]);
+    for row in &rows {
+        table.push(&[
+            row.name,
+            row.model,
+            row.api_type,
+            row.base_url,
+            row.api_key_env,
+        ]);
     }
 
-    output.push_str(&separator(&widths));
+    let mut output = String::from("Configured Models\n");
+    output.push_str(&table.separator());
+    output.push('\n');
+    output.push_str(&table.header(false));
+    output.push('\n');
+    output.push_str(&table.separator());
+    output.push('\n');
+    for index in 0..row_count {
+        output.push_str(&table.row(index, false));
+        output.push('\n');
+    }
+    output.push_str(&table.separator());
     output.push('\n');
     output
 }
@@ -956,39 +951,6 @@ const fn api_type_label(api_type: ApiType) -> &'static str {
     }
 }
 
-fn column_widths(headers: &[&str; 5], rows: &[ModelRow<'_>]) -> [usize; 5] {
-    let mut widths = headers.map(str::len);
-    for row in rows {
-        let values = [
-            row.name,
-            row.model,
-            row.api_type,
-            row.base_url,
-            row.api_key_env,
-        ];
-        for (index, value) in values.iter().enumerate() {
-            widths[index] = widths[index].max(value.len());
-        }
-    }
-    widths
-}
-
-fn format_row(values: &[&str; 5], widths: &[usize; 5]) -> String {
-    format!(
-        "{:<name_width$}  {:<model_width$}  {:<api_width$}  {:<url_width$}  {:<key_width$}",
-        values[0],
-        values[1],
-        values[2],
-        values[3],
-        values[4],
-        name_width = widths[0],
-        model_width = widths[1],
-        api_width = widths[2],
-        url_width = widths[3],
-        key_width = widths[4],
-    )
-}
-
 /// Render the configured models and settings findings as one diagnostic
 /// document.
 fn render_models_json(
@@ -1003,11 +965,7 @@ fn render_models_json(
         serde_json::json!({
             "default_model": loaded.default_model,
             "models": models,
-            "project_trust": {
-                "state": trust.state.label(),
-                "authority": trust.authority,
-                "changes": trust.changes,
-            },
+            "project_trust": project_trust_payload(trust),
         }),
     )
     .render()
@@ -1020,15 +978,4 @@ fn sorted_models(
     let mut defs: Vec<&ModelDefinition> = models.values().collect();
     defs.sort_by(|left, right| left.name.cmp(&right.name));
     defs
-}
-
-fn separator(widths: &[usize; 5]) -> String {
-    format!(
-        "{}  {}  {}  {}  {}",
-        "-".repeat(widths[0]),
-        "-".repeat(widths[1]),
-        "-".repeat(widths[2]),
-        "-".repeat(widths[3]),
-        "-".repeat(widths[4]),
-    )
 }

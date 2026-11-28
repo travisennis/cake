@@ -8,6 +8,7 @@
 //! tool names and availability are only knowable by executing external code.
 
 use crate::cli::debug::{print_project_trust_warning, project_trust_warning_message};
+use crate::cli::report::{McpDefinition, SelectedModel, toolbox_directory_facts};
 use crate::cli::settings::load_settings;
 use crate::cli::{
     CHECK_CONFIG_PROJECT_TRUST, CHECK_MCP_CONFIG, CHECK_TOOLS_SELECTION, CommandRunOptions,
@@ -19,10 +20,7 @@ use crate::clients::{
 };
 use crate::config::mcp::{MCP_TOOL_PREFIX, McpExposure, discover_mcp_servers};
 use crate::config::settings::LoadedSettings;
-use crate::config::toolbox::{
-    TOOLBOX_ENV_VAR, TOOLBOX_PREFIX, discover_toolbox_entries, filter_project_toolbox_dirs,
-    toolbox_directories,
-};
+use crate::config::toolbox::TOOLBOX_PREFIX;
 use crate::config::trust::ProjectTrustReport;
 use crate::config::{SettingsLoader, config_dir};
 use serde::Serialize;
@@ -84,18 +82,11 @@ struct ModelReport {
 
 impl ModelReport {
     fn resolve(loaded: &LoadedSettings, options: &CommandRunOptions<'_>) -> Self {
-        let (name, source) = options.model.map_or_else(
-            || {
-                loaded
-                    .default_model
-                    .as_deref()
-                    .map_or((None, None), |default| {
-                        (Some(default.to_string()), Some("default_model"))
-                    })
-            },
-            |model| (Some(model.to_string()), Some("--model")),
-        );
-        let definition = name.as_deref().and_then(|name| loaded.models.get(name));
+        let SelectedModel {
+            name,
+            source,
+            definition,
+        } = SelectedModel::resolve(loaded, options.model);
         Self {
             name,
             source,
@@ -188,10 +179,9 @@ impl KnownSources<'_> {
         self.builtins.iter().any(|entry| entry.name == name)
             || name == TOOL_SEARCH_NAME
             || (self.has_toolbox_candidates && name.starts_with(TOOLBOX_PREFIX))
-            || self
-                .mcp_servers
-                .iter()
-                .any(|server| name.starts_with(&format!("{MCP_TOOL_PREFIX}{}__", server.name)))
+            || self.mcp_servers.iter().any(|server| {
+                name.starts_with(&format!("{MCP_TOOL_PREFIX}{}__", server.definition.name))
+            })
     }
 }
 
@@ -217,7 +207,7 @@ impl ToolSearchReport {
     ) -> Self {
         let deferred_server_count = mcp_servers
             .iter()
-            .filter(|server| server.exposure == McpExposure::Deferred)
+            .filter(|server| server.definition.exposure == McpExposure::Deferred)
             .count();
         let allowed = tool_search_enabled(selected);
 
@@ -301,11 +291,8 @@ struct ToolboxReport {
 /// One configured MCP server, without connecting or reading environment values.
 #[derive(Debug, Serialize)]
 struct McpSourceReport {
-    name: String,
-    source: String,
-    command: String,
-    args: Vec<String>,
-    exposure: McpExposure,
+    #[serde(flatten)]
+    definition: McpDefinition,
     status: &'static str,
     available: bool,
     reason: Option<&'static str>,
@@ -374,7 +361,7 @@ impl ToolInventoryReport {
             .mcp
             .servers
             .iter()
-            .filter(|server| server.exposure == McpExposure::Deferred)
+            .filter(|server| server.definition.exposure == McpExposure::Deferred)
             .count();
         json!({
             "model": self.model.name,
@@ -458,50 +445,37 @@ impl ToolboxReport {
         policy: SandboxPolicy,
     ) -> Self {
         let default_dir = config_dir().join("cake").join("tools");
-        let mut dirs = toolbox_directories(
-            std::env::var(TOOLBOX_ENV_VAR).ok().as_deref(),
+        let directories = toolbox_directory_facts(
             &[],
             &default_dir,
             working_dir,
-            working_dir,
-        );
-        if !options.project_config_mode.loads_project_config() {
-            dirs = filter_project_toolbox_dirs(dirs, &[working_dir]);
-        }
-
-        let project_cake_root = trust.project_root.join(".cake");
-        let directories = dirs
-            .into_iter()
-            .map(|dir| {
-                let project_local = dir.starts_with(&project_cake_root);
-                let trusted = !project_local || trust.allows_authority();
-                let status = if !trusted {
-                    "untrusted"
-                } else if policy == SandboxPolicy::ReadOnly {
-                    "read-only"
-                } else {
-                    "loadable"
-                };
-                let candidates = discover_toolbox_entries(std::slice::from_ref(&dir))
+            trust,
+            options.project_config_mode,
+            policy,
+        )
+        .into_iter()
+        .map(|facts| {
+            let available = facts.status == "loadable";
+            ToolboxDirectoryReport {
+                path: facts.path.display().to_string(),
+                source: toolbox_source(&facts.path, working_dir, &default_dir),
+                project_local: facts.project_local,
+                trusted: facts.trusted,
+                status: facts.status,
+                exists: facts.exists,
+                candidates: facts
+                    .candidates
                     .into_iter()
-                    .map(|entry| ToolboxCandidateReport {
-                        filename: entry.filename,
-                        path: entry.path.display().to_string(),
+                    .map(|candidate| ToolboxCandidateReport {
+                        filename: candidate.filename,
+                        path: candidate.path,
                         status: "unprobed",
-                        available: status == "loadable",
+                        available,
                     })
-                    .collect();
-                ToolboxDirectoryReport {
-                    path: dir.display().to_string(),
-                    source: toolbox_source(&dir, working_dir, &default_dir),
-                    project_local,
-                    trusted,
-                    status,
-                    exists: dir.is_dir(),
-                    candidates,
-                }
-            })
-            .collect();
+                    .collect(),
+            }
+        })
+        .collect();
         Self {
             describe_probed: false,
             directories,
@@ -561,11 +535,7 @@ fn mcp_source_report(
         McpExposure::Direct | McpExposure::Deferred => (true, None),
     };
     McpSourceReport {
-        name: config.name.clone(),
-        source: config.source.display().to_string(),
-        command: config.command.clone(),
-        args: config.args.clone(),
-        exposure: config.exposure,
+        definition: McpDefinition::from(config),
         status: "unprobed",
         available,
         reason,
@@ -702,13 +672,13 @@ fn append_mcp(output: &mut String, report: &ToolInventoryReport) {
         _ = writeln!(
             output,
             "  {} ({}, {}, {})",
-            server.name,
-            server.source,
-            server.exposure.as_str(),
+            server.definition.name,
+            server.definition.source,
+            server.definition.exposure.as_str(),
             server.status
         );
-        let command = std::iter::once(server.command.as_str())
-            .chain(server.args.iter().map(String::as_str))
+        let command = std::iter::once(server.definition.command.as_str())
+            .chain(server.definition.args.iter().map(String::as_str))
             .collect::<Vec<_>>()
             .join(" ");
         _ = writeln!(output, "    command: {command}");

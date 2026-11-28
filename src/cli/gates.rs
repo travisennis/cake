@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 use serde::Serialize;
 use serde_json::json;
 
+use crate::cli::report::project_trust_payload;
 use crate::cli::{
     CHECK_SETTINGS_LOAD_FAILED, CmdRunner, CommandRunOptions, DiagnosticDocument, report_failure,
     settings_warnings,
@@ -148,11 +149,7 @@ fn render_list_json(
         json!({
             "bypassed": bypassed,
             "gates": gates,
-            "project_trust": {
-                "state": trust.state.label(),
-                "authority": trust.authority,
-                "changes": trust.changes,
-            },
+            "project_trust": project_trust_payload(trust),
         }),
     )
     .render()

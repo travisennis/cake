@@ -14,6 +14,7 @@ use crate::cli::debug::grants;
 use crate::cli::debug::print_project_trust_warning;
 use crate::cli::debug::project_trust_warning_message;
 use crate::cli::debug::skills_report;
+use crate::cli::report::{SelectedModel, project_trust_payload_with_mode, toolbox_directory_facts};
 use crate::cli::settings::load_settings;
 use crate::cli::{
     CHECK_CONFIG_HOOKS, CHECK_CONFIG_MODEL, CHECK_CONFIG_PROJECT_TRUST, CHECK_GRANTS_PATH,
@@ -26,9 +27,6 @@ use crate::config::settings::MAX_IMAGE_EDGE;
 use crate::config::settings::{JudgeSettings, LoadedSettings, ResolvedImagePolicy, ResolvedLimits};
 use crate::config::skills::{
     SkillCatalog, SkillConfig, SkillDiagnostic, discover_skills_with_paths, parse_skill_path_list,
-};
-use crate::config::toolbox::{
-    TOOLBOX_ENV_VAR, discover_toolbox_entries, filter_project_toolbox_dirs, toolbox_directories,
 };
 use crate::config::trust::{HookFileSource, ProjectConfigMode, ProjectTrustReport};
 use crate::config::{ModelDefinition, SettingsLoader};
@@ -108,18 +106,11 @@ struct CredentialReport {
 
 impl ModelReport {
     fn build(loaded: &LoadedSettings, options: &CommandRunOptions<'_>) -> Self {
-        let (name, source) = options.model.map_or_else(
-            || {
-                loaded
-                    .default_model
-                    .as_deref()
-                    .map_or((None, None), |default| {
-                        (Some(default.to_string()), Some("default_model"))
-                    })
-            },
-            |model| (Some(model.to_string()), Some("--model")),
-        );
-        let definition = name.as_deref().and_then(|name| loaded.models.get(name));
+        let SelectedModel {
+            name,
+            source,
+            definition,
+        } = SelectedModel::resolve(loaded, options.model);
         let credential = definition.map(credential_report);
         Self {
             name,
@@ -719,47 +710,31 @@ impl ToolboxReport {
         policy: SandboxPolicy,
         working_dir: &Path,
     ) -> Self {
-        let mut dirs = toolbox_directories(
-            std::env::var(TOOLBOX_ENV_VAR).ok().as_deref(),
+        let directories = toolbox_directory_facts(
             extra_dirs,
             &config_dir.join("tools"),
             working_dir,
-            working_dir,
-        );
-        if !mode.loads_project_config() {
-            dirs = filter_project_toolbox_dirs(dirs, &[working_dir]);
-        }
-
-        let project_cake_root = trust.project_root.join(".cake");
-        let directories = dirs
-            .into_iter()
-            .map(|dir| {
-                let project_local = dir.starts_with(&project_cake_root);
-                let trusted = !project_local || trust.allows_authority();
-                let status = if !trusted {
-                    "untrusted"
-                } else if policy == SandboxPolicy::ReadOnly {
-                    "read-only"
-                } else {
-                    "loadable"
-                };
-                let candidates = discover_toolbox_entries(std::slice::from_ref(&dir))
-                    .into_iter()
-                    .map(|entry| ToolboxCandidateReport {
-                        filename: entry.filename,
-                        path: entry.path.display().to_string(),
-                    })
-                    .collect();
-                ToolboxDirectoryReport {
-                    path: dir.display().to_string(),
-                    project_local,
-                    trusted,
-                    status,
-                    exists: dir.is_dir(),
-                    candidates,
-                }
-            })
-            .collect();
+            trust,
+            mode,
+            policy,
+        )
+        .into_iter()
+        .map(|facts| ToolboxDirectoryReport {
+            path: facts.path.display().to_string(),
+            project_local: facts.project_local,
+            trusted: facts.trusted,
+            status: facts.status,
+            exists: facts.exists,
+            candidates: facts
+                .candidates
+                .into_iter()
+                .map(|candidate| ToolboxCandidateReport {
+                    filename: candidate.filename,
+                    path: candidate.path,
+                })
+                .collect(),
+        })
+        .collect();
         Self {
             describe_probed: false,
             directories,
@@ -1001,13 +976,7 @@ impl ConfigReport {
                 "settings_sources": self.settings_sources,
                 "settings": self.settings,
                 "system_prompt": self.prompt,
-                "project_trust": {
-                    "state": self.trust.state.label(),
-                    "mode": self.trust.mode.label(),
-                    "one_run": self.trust.mode.one_run(),
-                    "authority": self.trust.authority,
-                    "changes": self.trust.changes,
-                },
+                "project_trust": project_trust_payload_with_mode(&self.trust),
                 "grants": grants::flat_payload(&self.grants),
                 "tools": self.tools,
                 "skills": self.skills,

@@ -12,6 +12,7 @@ use clap::{ArgGroup, Parser, Subcommand};
 use serde::Serialize;
 use serde_json::json;
 
+use crate::cli::report::McpDefinition;
 use crate::cli::settings::load_settings;
 use crate::cli::{
     CHECK_MCP_CONFIG, CHECK_MCP_NOT_FOUND, CmdRunner, CommandRunOptions, DiagnosticCheck,
@@ -320,38 +321,31 @@ fn print_warnings(warnings: &[String]) {
 /// One resolved server in list and get output.
 #[derive(Debug, Serialize)]
 struct McpEntry {
-    name: String,
-    command: String,
-    args: Vec<String>,
+    #[serde(flatten)]
+    definition: McpDefinition,
     env: Vec<String>,
     timeout_secs: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
-    exposure: McpExposure,
-    source: String,
 }
 
 impl From<&McpServerConfig> for McpEntry {
     fn from(config: &McpServerConfig) -> Self {
         Self {
-            name: config.name.clone(),
-            command: config.command.clone(),
-            args: config.args.clone(),
+            definition: McpDefinition::from(config),
             env: config.env.keys().cloned().collect(),
             timeout_secs: config.timeout_secs,
             description: config.description.clone(),
-            exposure: config.exposure,
-            source: config.source.display().to_string(),
         }
     }
 }
 
 /// Render one server block. Environment values are never shown.
 fn format_entry(entry: &McpEntry, output: &mut String) {
-    _ = writeln!(output, "{}", entry.name);
-    _ = writeln!(output, "  source: {}", entry.source);
-    let command = std::iter::once(entry.command.as_str())
-        .chain(entry.args.iter().map(String::as_str))
+    _ = writeln!(output, "{}", entry.definition.name);
+    _ = writeln!(output, "  source: {}", entry.definition.source);
+    let command = std::iter::once(entry.definition.command.as_str())
+        .chain(entry.definition.args.iter().map(String::as_str))
         .collect::<Vec<_>>()
         .join(" ");
     _ = writeln!(output, "  command: {command}");
@@ -361,6 +355,6 @@ fn format_entry(entry: &McpEntry, output: &mut String) {
     if let Some(description) = &entry.description {
         _ = writeln!(output, "  description: {description}");
     }
-    _ = writeln!(output, "  exposure: {}", entry.exposure.as_str());
+    _ = writeln!(output, "  exposure: {}", entry.definition.exposure.as_str());
     _ = writeln!(output, "  timeout: {}s", entry.timeout_secs);
 }
