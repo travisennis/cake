@@ -24,7 +24,7 @@ use anyhow::bail;
 use chrono::Utc;
 use uuid::Uuid;
 
-use crate::clients::agent::{AttemptPurpose, TurnUsageSettlement};
+use crate::clients::agent::{AttemptIdentity, AttemptPurpose, TurnUsageSettlement};
 use crate::clients::agent_observer::HealthCallback;
 use crate::clients::agent_runner::AgentRunner;
 use crate::clients::backend::Backend;
@@ -32,6 +32,7 @@ use crate::clients::image_budget::{
     ImageBudgetError, ImageBudgetPlan, ImageOwner, ImagePlanEntry, ImageSlot,
     apply_plan_to_history, plan_admitted_images,
 };
+use crate::clients::provider_edge::TurnRequest;
 use crate::clients::termination::{self, IntendedLimits, TurnEvidence};
 use crate::clients::tools::Tool;
 use crate::config::blob_store::TOOL_OUTPUT_EXTERNALIZATION_THRESHOLD_BYTES;
@@ -2454,7 +2455,6 @@ impl SummaryCaller for AgentSummaryCaller<'_> {
         let config = summary_config(&self.config, request.max_output_tokens);
         let runner = AgentRunner::new(Backend::from_api_type(config.model_config.api_type));
         let purpose = AttemptPurpose::compaction(request.checkpoint_id, request.step);
-        let mut next_attempt = 1;
         let mut attempts = Vec::new();
         let Self {
             session_id,
@@ -2464,19 +2464,12 @@ impl SummaryCaller for AgentSummaryCaller<'_> {
             settle,
             ..
         } = self;
+        let mut identity = AttemptIdentity::new(*session_id, *task_id, request.step, Some(purpose));
         let turn = runner
             .complete_turn(
-                &config,
-                *session_id,
-                *task_id,
-                request.step,
-                request.history,
-                &[],
-                None,
-                None,
-                Some(purpose),
+                TurnRequest::new(&config, request.history, &[], None, None),
+                &mut identity,
                 health.as_ref(),
-                &mut next_attempt,
                 telemetry,
                 |settlement| {
                     attempts.push(settlement.usage);

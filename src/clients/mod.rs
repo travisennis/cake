@@ -19,6 +19,7 @@ mod chat_types;
 pub mod compaction;
 pub mod image_budget;
 pub mod mcp;
+mod provider_edge;
 mod provider_strategy;
 pub mod response_stall;
 mod responses;

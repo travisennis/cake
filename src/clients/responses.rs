@@ -1,12 +1,9 @@
-use tracing::{debug, trace, warn};
-
-use crate::config::model::ResolvedModelConfig;
+use tracing::{trace, warn};
 
 use crate::clients::agent::TurnResult;
-use crate::clients::backend::{
-    FinalOutputConstraint, ResponseDecodeError, ResponseParseError, ToolChoice,
-};
+use crate::clients::backend::{ResponseDecodeError, ResponseParseError};
 use crate::clients::image_budget::verify_request_images;
+use crate::clients::provider_edge::{TurnRequest, map_usage, reported_usage};
 use crate::clients::provider_strategy::ProviderStrategy;
 use crate::clients::response_stall::{BodyReadOutcome, read_body};
 use crate::clients::responses_types::{
@@ -14,38 +11,13 @@ use crate::clients::responses_types::{
     Request, ResponsesApiInputItem, ResponsesFunctionCallOutput, ResponsesMessageContent,
     ResponsesReasoningSummary, ResponsesTool, TextConfig, TextFormat,
 };
-use crate::clients::retry::RequestOverrides;
 use crate::clients::tools::Tool;
 use crate::session_telemetry::{
     ProviderTermination, ResponsesFailedMetadata, TerminationClassification,
 };
 use crate::types::{
-    ConversationItem, ImagePart, InputTokensDetails, OutputTokensDetails, ReasoningContentKind,
-    ReasoningSummary, ReportedUsage, Role, Usage, UsagePresence,
+    ConversationItem, ImagePart, ReasoningContentKind, ReasoningSummary, ReportedUsage, Role,
 };
-
-/// Send a request to the Responses API, returning the raw HTTP response.
-///
-/// # Errors
-///
-/// Returns an error if the HTTP request fails.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "a provider request threads identity, history, tools, choice, overrides, and constraint"
-)]
-pub(super) async fn send_request<'a>(
-    client: &reqwest::Client,
-    config: &ResolvedModelConfig,
-    session_id: uuid::Uuid,
-    history: &'a [ConversationItem],
-    tools: &'a [Tool],
-    tool_choice: Option<ToolChoice>,
-    overrides: &RequestOverrides,
-    constraint: Option<FinalOutputConstraint<'a>>,
-) -> anyhow::Result<reqwest::Response> {
-    let request = build_request_json(config, history, tools, tool_choice, overrides, constraint)?;
-    send_request_json(client, config, session_id, request).await
-}
 
 /// Build the exact provider-transformed JSON body sent to the Responses API.
 ///
@@ -57,24 +29,21 @@ pub(super) async fn send_request<'a>(
 /// `serde_json::Value` would promote each `f32` to an `f64` (for example
 /// turning `0.9` into `0.8999999761581421`) on the wire. Diagnostics parse
 /// these bytes rather than re-serializing a promoted value.
-pub(super) fn build_request_json<'a>(
-    config: &ResolvedModelConfig,
-    history: &'a [ConversationItem],
-    tools: &'a [Tool],
-    tool_choice: Option<ToolChoice>,
-    overrides: &RequestOverrides,
-    constraint: Option<FinalOutputConstraint<'a>>,
-) -> anyhow::Result<Vec<u8>> {
+pub(super) fn build_request_json(request: &TurnRequest<'_>) -> anyhow::Result<Vec<u8>> {
+    let config = request.config;
+    let tools = request.tools;
     if config.model_config.supports_images {
-        verify_request_images(history)?;
+        verify_request_images(request.history)?;
     }
     let strategy = ProviderStrategy::from_config(config);
     let provider_config = strategy.responses_provider_config();
 
-    let max_output_tokens = overrides
+    let max_output_tokens = request
+        .overrides
         .max_output_tokens
         .or(config.model_config.max_output_tokens);
-    let reasoning_max_tokens = overrides
+    let reasoning_max_tokens = request
+        .overrides
         .reasoning_max_tokens
         .or(config.model_config.reasoning_max_tokens);
 
@@ -89,7 +58,7 @@ pub(super) fn build_request_json<'a>(
         max_tokens: reasoning_max_tokens,
     });
 
-    let (instructions, non_system_history) = extract_instructions(history)?;
+    let (instructions, non_system_history) = extract_instructions(request.history)?;
 
     let prompt = Request {
         model: &config.model_config.model,
@@ -105,11 +74,11 @@ pub(super) fn build_request_json<'a>(
         tool_choice: if tools.is_empty() {
             None
         } else {
-            Some(tool_choice.unwrap_or_default().as_str().to_string())
+            Some(request.tool_choice.unwrap_or_default().as_str().to_string())
         },
         provider: provider_config,
         reasoning,
-        text: constraint.map(|constraint| TextConfig {
+        text: request.constraint.map(|constraint| TextConfig {
             format: TextFormat {
                 format_type: "json_schema",
                 name: constraint.name,
@@ -134,66 +103,18 @@ fn convert_tools(tools: &[Tool], strict: Option<bool>) -> Option<Vec<ResponsesTo
     )
 }
 
-/// Send one already-built Responses API JSON request.
-///
-/// Takes ownership of the serialized body so the transport does not allocate a
-/// second copy that stays live across the HTTP send.
-pub(super) async fn send_request_json(
-    client: &reqwest::Client,
-    config: &ResolvedModelConfig,
-    session_id: uuid::Uuid,
-    request: Vec<u8>,
-) -> anyhow::Result<reqwest::Response> {
-    let request = build_response_request(client, config, session_id, request);
-    Ok(request.send().await?)
-}
-
-/// Builds the authenticated Responses API POST request for one serialized body.
-fn build_response_request(
-    client: &reqwest::Client,
-    config: &ResolvedModelConfig,
-    session_id: uuid::Uuid,
-    request: Vec<u8>,
-) -> reqwest::RequestBuilder {
-    let strategy = ProviderStrategy::from_config(config);
-
-    let url = format!(
-        "{}/responses",
-        config.model_config.base_url.trim_end_matches('/')
-    );
-    debug!(target: "cake", "{url}");
-    if tracing::enabled!(tracing::Level::TRACE) {
-        let prompt_json = String::from_utf8_lossy(&request);
-        trace!(target: "cake", "{prompt_json}");
-    }
-
-    strategy
-        .apply_headers(
-            client
-                .post(&url)
-                .header(reqwest::header::CONTENT_TYPE, "application/json")
-                .body(request),
-            session_id,
-        )
-        .bearer_auth(&config.api_key)
-}
-
 /// Decode the Responses API envelope, attaching a bounded preview of the raw
 /// body to the error when the 2xx body is not the expected JSON shape.
 fn parse_response_envelope(bytes: &[u8]) -> anyhow::Result<ApiResponseEnvelope> {
     serde_json::from_slice::<ApiResponseEnvelope>(bytes).map_err(|error| {
-        ResponseDecodeError::new("Responses API", bytes, reported_usage(bytes), error).into()
+        ResponseDecodeError::new(
+            "Responses API",
+            bytes,
+            reported_usage::<ApiUsage>(bytes),
+            error,
+        )
+        .into()
     })
-}
-
-pub(super) fn reported_usage(body: &[u8]) -> Option<ReportedUsage> {
-    let value = serde_json::from_slice::<serde_json::Value>(body).ok()?;
-    let response_id = value
-        .get("id")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("<missing id>");
-    let api_usage = serde_json::from_value::<ApiUsage>(value.get("usage")?.clone()).ok()?;
-    Some(map_usage(&api_usage, response_id))
 }
 
 /// Parse an HTTP response from the Responses API into a `TurnResult`.
@@ -852,70 +773,6 @@ fn response_contains_refusal(api_response: &ApiResponse) -> bool {
                 .as_ref()
                 .is_some_and(|content| content.iter().any(|item| item.content_type == "refusal"))
     })
-}
-
-/// Map API-level usage to the canonical `Usage` type and its presence marker.
-///
-/// A missing required counter is normalized to zero and marks the result
-/// [`UsagePresence::Partial`], so a consumer can tell the zero apart from a
-/// provider-reported zero. The optional detail objects never affect presence,
-/// because providers legitimately omit them.
-fn map_usage(api_usage: &ApiUsage, response_id: &str) -> ReportedUsage {
-    if api_usage.input_tokens.is_none() {
-        warn!(
-            target: "cake",
-            response_id = response_id,
-            field = "input_tokens",
-            "Responses API usage missing field, defaulting to 0"
-        );
-    }
-    if api_usage.output_tokens.is_none() {
-        warn!(
-            target: "cake",
-            response_id = response_id,
-            field = "output_tokens",
-            "Responses API usage missing field, defaulting to 0"
-        );
-    }
-    if api_usage.total_tokens.is_none() {
-        warn!(
-            target: "cake",
-            response_id = response_id,
-            field = "total_tokens",
-            "Responses API usage missing field, defaulting to 0"
-        );
-    }
-
-    let presence = UsagePresence::from_required_counters(
-        api_usage.input_tokens,
-        api_usage.output_tokens,
-        api_usage.total_tokens,
-    );
-
-    ReportedUsage::new(
-        Usage {
-            input_tokens: api_usage.input_tokens.unwrap_or(0),
-            output_tokens: api_usage.output_tokens.unwrap_or(0),
-            total_tokens: api_usage.total_tokens.unwrap_or(0),
-            input_tokens_details: InputTokensDetails {
-                cached_tokens: api_usage
-                    .input_tokens_details
-                    .as_ref()
-                    .map_or(0, |d| d.cached_tokens.unwrap_or(0)),
-                cache_write_tokens: api_usage
-                    .input_tokens_details
-                    .as_ref()
-                    .map_or(0, |d| d.cache_write_tokens.unwrap_or(0)),
-            },
-            output_tokens_details: OutputTokensDetails {
-                reasoning_tokens: api_usage
-                    .output_tokens_details
-                    .as_ref()
-                    .map_or(0, |d| d.reasoning_tokens.unwrap_or(0)),
-            },
-        },
-        presence,
-    )
 }
 
 /// Extract the system prompt from the conversation history, returning it

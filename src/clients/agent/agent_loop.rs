@@ -5,12 +5,13 @@ use std::time::{Duration, Instant};
 use futures::StreamExt;
 
 use crate::clients::agent::{
-    Agent, FixedTokensCache, RequestCapture, TurnResult, record_turn_usage,
+    Agent, AttemptIdentity, FixedTokensCache, RequestCapture, TurnResult, record_turn_usage,
 };
 use crate::clients::agent_state::{RecordProvenance, accumulate_usage};
 use crate::clients::backend::FinalOutputConstraint;
 use crate::clients::compaction::{FixedRequest, MeasuredInput, fixed_request_tokens};
 use crate::clients::image_budget::prune_request_with_plan;
+use crate::clients::provider_edge::TurnRequest;
 use crate::clients::retry::{RequestOverrides, RetryReason, RetryStatus, context_failure_code};
 use crate::clients::termination::{
     self, ContextPressure, IntendedLimits, TerminationVerdict, TurnEvidence,
@@ -340,19 +341,8 @@ impl Agent {
             history
         };
         let tools = tool_definitions_for_turn(&self.tools, TurnMode::Normal);
-        let overrides = RequestOverrides {
-            max_output_tokens: self.config.model_config.max_output_tokens,
-            reasoning_max_tokens: self.config.model_config.reasoning_max_tokens,
-            context_overflow_retry_used: false,
-        };
-        match self.runner.backend().build_request_json(
-            &self.config,
-            &history,
-            tools,
-            self.tool_choice,
-            &overrides,
-            None,
-        ) {
+        let request = TurnRequest::new(&self.config, &history, tools, self.tool_choice, None);
+        match self.runner.backend().build_request_json(&request) {
             Ok(body) => {
                 self.request_capture = Some(RequestCapture {
                     body,
@@ -1068,13 +1058,15 @@ impl Agent {
         &mut self,
         turn_mode: TurnMode,
     ) -> anyhow::Result<TurnResult> {
-        let mut next_attempt = 1;
+        let mut identity = AttemptIdentity::new(
+            self.session_id,
+            self.task_id,
+            self.turn_count.saturating_add(1),
+            None,
+        );
         loop {
             let constraint_attached = self.native_constraint_attached(turn_mode);
-            match self
-                .complete_turn_in_mode(turn_mode, &mut next_attempt)
-                .await
-            {
+            match self.complete_turn_in_mode(turn_mode, &mut identity).await {
                 Ok(turn) => return Ok(turn),
                 Err(error) if constraint_attached && is_native_constraint_rejection(&error) => {
                     self.native_constraint_enabled = false;
@@ -1227,7 +1219,7 @@ impl Agent {
     async fn complete_turn_in_mode(
         &mut self,
         turn_mode: TurnMode,
-        next_attempt: &mut u32,
+        identity: &mut AttemptIdentity,
     ) -> anyhow::Result<TurnResult> {
         let tool_definitions = tool_definitions_for_turn(&self.tools, turn_mode);
         let native_constraint_attached = self.native_constraint_attached(turn_mode);
@@ -1263,8 +1255,6 @@ impl Agent {
             },
         };
         let config = &self.config;
-        let session_id = self.session_id;
-        let task_id = self.task_id;
         let history = self
             .conversation
             .request_context(self.tool_projection_available(turn_mode));
@@ -1281,7 +1271,6 @@ impl Agent {
         } else {
             history
         };
-        let turn_index = self.turn_count.saturating_add(1);
         self.last_measurement = None;
         let health = self.health_callback();
         let runner = &self.runner;
@@ -1289,19 +1278,18 @@ impl Agent {
         let observer = &mut self.observer;
         let total_usage = &mut self.total_usage;
         let last_usage = &mut self.last_usage;
+        let request = TurnRequest::new(
+            config,
+            &history,
+            tool_definitions,
+            self.tool_choice,
+            constraint,
+        );
         let mut turn = runner
             .complete_turn(
-                config,
-                session_id,
-                task_id,
-                turn_index,
-                &history,
-                tool_definitions,
-                self.tool_choice,
-                constraint,
-                None,
+                request,
+                identity,
                 health.as_ref(),
-                next_attempt,
                 |event| {
                     if let Some(sink) = &runner_telemetry {
                         sink.record(event);
@@ -1312,8 +1300,6 @@ impl Agent {
                         observer,
                         total_usage,
                         last_usage,
-                        session_id,
-                        task_id,
                         config.model_config.context_window,
                         settlement,
                     );

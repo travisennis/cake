@@ -78,6 +78,51 @@ pub(super) struct TurnResult {
     pub(super) consumed_sources: Vec<SourceRef>,
 }
 
+/// Identity shared by every record emitted for one provider attempt.
+///
+/// Holds the session and task, the turn and attempt numbers, and the optional
+/// compaction purpose so telemetry, retry policy, and usage settlement read the
+/// same values instead of re-threading six parameters.
+#[derive(Debug, Clone)]
+pub(super) struct AttemptIdentity {
+    pub(super) session_id: uuid::Uuid,
+    pub(super) task_id: String,
+    pub(super) turn_index: u32,
+    pub(super) attempt: u32,
+    pub(super) purpose: Option<AttemptPurpose>,
+}
+
+impl AttemptIdentity {
+    pub(super) fn new(
+        session_id: uuid::Uuid,
+        task_id: uuid::Uuid,
+        turn_index: u32,
+        purpose: Option<AttemptPurpose>,
+    ) -> Self {
+        Self {
+            session_id,
+            task_id: task_id.to_string(),
+            turn_index,
+            attempt: 1,
+            purpose,
+        }
+    }
+
+    pub(super) const fn advance(&mut self) {
+        self.attempt = self.attempt.saturating_add(1);
+    }
+
+    pub(super) fn purpose_fields(&self) -> (Option<TurnUsagePurpose>, Option<String>, Option<u32>) {
+        self.purpose.as_ref().map_or((None, None, None), |purpose| {
+            (
+                purpose.purpose,
+                purpose.compaction_id.clone(),
+                purpose.summary_step,
+            )
+        })
+    }
+}
+
 /// One provider attempt whose reported usage must be settled into the
 /// session ledger before the runner classifies or retries the attempt.
 ///
@@ -87,16 +132,12 @@ pub(super) struct TurnResult {
 /// response that produced it.
 #[derive(Debug, Clone)]
 pub(super) struct TurnUsageSettlement {
-    pub(super) turn_index: u32,
-    pub(super) attempt: u32,
+    pub(super) identity: AttemptIdentity,
     pub(super) terminal_class: ApiAttemptTerminalClass,
     pub(super) usage: ReportedUsage,
     pub(super) model: String,
     pub(super) provider_request_id: Option<String>,
     pub(super) response_model: Option<String>,
-    pub(super) purpose: Option<TurnUsagePurpose>,
-    pub(super) compaction_id: Option<String>,
-    pub(super) summary_step: Option<u32>,
 }
 
 /// Purpose metadata attached to every attempt of one compaction summary
@@ -122,23 +163,25 @@ pub(super) fn record_turn_usage(
     observer: &mut AgentObserver,
     total_usage: &mut Usage,
     last_usage: &mut Option<Usage>,
-    session_id: uuid::Uuid,
-    task_id: uuid::Uuid,
     context_window: Option<u32>,
     settlement: TurnUsageSettlement,
 ) {
     let TurnUsageSettlement {
-        turn_index,
-        attempt,
+        identity,
         terminal_class,
         usage,
         model,
         provider_request_id,
         response_model,
-        purpose,
-        compaction_id,
-        summary_step,
     } = settlement;
+    let (purpose, compaction_id, summary_step) = identity.purpose_fields();
+    let AttemptIdentity {
+        session_id,
+        task_id,
+        turn_index,
+        attempt,
+        ..
+    } = identity;
     accumulate_usage(total_usage, Some(&usage.usage));
     let is_compaction = matches!(purpose, Some(TurnUsagePurpose::Compaction));
     if !is_compaction {
@@ -157,7 +200,7 @@ pub(super) fn record_turn_usage(
         !is_compaction && attempt == 1 && terminal_class == ApiAttemptTerminalClass::Completed;
     let data = TurnUsageData {
         session_id: session_id.to_string(),
-        task_id: task_id.to_string(),
+        task_id,
         turn: turn_index,
         usage: usage.usage,
         timestamp: chrono::Utc::now(),

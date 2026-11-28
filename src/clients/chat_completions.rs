@@ -1,50 +1,20 @@
 use anyhow::{bail, ensure};
 use std::borrow::Cow;
-use tracing::{debug, trace, warn};
-
-use crate::config::model::ResolvedModelConfig;
+use tracing::{trace, warn};
 
 use crate::clients::agent::TurnResult;
-use crate::clients::backend::{
-    FinalOutputConstraint, ResponseDecodeError, ResponseParseError, ToolChoice,
-};
+use crate::clients::backend::{ResponseDecodeError, ResponseParseError};
 use crate::clients::chat_types::{
     ChatContent, ChatFunction, ChatFunctionCallRef, ChatMessage, ChatRequest, ChatResponse,
     ChatTool, ChatToolCallRef, ChatUsage, ResponseFormat, ResponseFormatJsonSchema,
 };
 use crate::clients::image_budget::verify_request_images;
+use crate::clients::provider_edge::{TurnRequest, map_usage, reported_usage};
 use crate::clients::provider_strategy::ProviderStrategy;
 use crate::clients::response_stall::{BodyReadOutcome, read_body};
-use crate::clients::retry::RequestOverrides;
 use crate::clients::tools::Tool;
 use crate::session_telemetry::{ProviderTermination, TerminationClassification};
-use crate::types::{
-    ConversationItem, ImagePart, InputTokensDetails, OutputTokensDetails, ReasoningContentKind,
-    ReportedUsage, Role, Usage, UsagePresence,
-};
-
-/// Send a request to the Chat Completions API, returning the raw HTTP response.
-///
-/// # Errors
-///
-/// Returns an error if the HTTP request fails.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "a provider request threads identity, history, tools, choice, overrides, and constraint"
-)]
-pub(super) async fn send_request<'a>(
-    client: &reqwest::Client,
-    config: &ResolvedModelConfig,
-    session_id: uuid::Uuid,
-    history: &'a [ConversationItem],
-    tools: &'a [Tool],
-    tool_choice: Option<ToolChoice>,
-    overrides: &RequestOverrides,
-    constraint: Option<FinalOutputConstraint<'a>>,
-) -> anyhow::Result<reqwest::Response> {
-    let request = build_request_json(config, history, tools, tool_choice, overrides, constraint)?;
-    send_request_json(client, config, session_id, request).await
-}
+use crate::types::{ConversationItem, ImagePart, ReasoningContentKind, Role};
 
 /// Build the exact provider-transformed JSON body sent to Chat Completions.
 ///
@@ -56,18 +26,13 @@ pub(super) async fn send_request<'a>(
 /// `serde_json::Value` would promote each `f32` to an `f64` (for example
 /// turning `0.9` into `0.8999999761581421`) on the wire. Diagnostics parse
 /// these bytes rather than re-serializing a promoted value.
-pub(super) fn build_request_json<'a>(
-    config: &ResolvedModelConfig,
-    history: &'a [ConversationItem],
-    tools: &'a [Tool],
-    tool_choice: Option<ToolChoice>,
-    overrides: &RequestOverrides,
-    constraint: Option<FinalOutputConstraint<'a>>,
-) -> anyhow::Result<Vec<u8>> {
+pub(super) fn build_request_json(request: &TurnRequest<'_>) -> anyhow::Result<Vec<u8>> {
+    let config = request.config;
+    let tools = request.tools;
     if config.model_config.supports_images {
-        verify_request_images(history)?;
+        verify_request_images(request.history)?;
     }
-    let mut messages = build_messages(history, config.model_config.supports_images);
+    let mut messages = build_messages(request.history, config.model_config.supports_images);
     ProviderStrategy::transform_chat_messages(&mut messages);
     let chat_tools = convert_tools(tools);
 
@@ -77,7 +42,8 @@ pub(super) fn build_request_json<'a>(
         temperature: config.model_config.temperature,
         top_p: config.model_config.top_p,
         top_k: config.model_config.top_k,
-        max_completion_tokens: overrides
+        max_completion_tokens: request
+            .overrides
             .max_output_tokens
             .or(config.model_config.max_output_tokens),
         tools: if chat_tools.is_empty() {
@@ -88,10 +54,10 @@ pub(super) fn build_request_json<'a>(
         tool_choice: if tools.is_empty() {
             None
         } else {
-            Some(tool_choice.unwrap_or_default().as_str().to_string())
+            Some(request.tool_choice.unwrap_or_default().as_str().to_string())
         },
         reasoning_effort: config.model_config.reasoning_effort,
-        response_format: constraint.map(|constraint| ResponseFormat {
+        response_format: request.constraint.map(|constraint| ResponseFormat {
             format_type: "json_schema",
             json_schema: ResponseFormatJsonSchema {
                 name: constraint.name,
@@ -102,50 +68,6 @@ pub(super) fn build_request_json<'a>(
     };
 
     serde_json::to_vec(&request).map_err(Into::into)
-}
-
-/// Send one already-built Chat Completions JSON request.
-///
-/// Takes ownership of the serialized body so the transport does not allocate a
-/// second copy that stays live across the HTTP send.
-pub(super) async fn send_request_json(
-    client: &reqwest::Client,
-    config: &ResolvedModelConfig,
-    session_id: uuid::Uuid,
-    request: Vec<u8>,
-) -> anyhow::Result<reqwest::Response> {
-    let request = build_chat_request(client, config, session_id, request);
-    Ok(request.send().await?)
-}
-
-/// Builds the authenticated Chat Completions POST request for one serialized body.
-fn build_chat_request(
-    client: &reqwest::Client,
-    config: &ResolvedModelConfig,
-    session_id: uuid::Uuid,
-    request: Vec<u8>,
-) -> reqwest::RequestBuilder {
-    let strategy = ProviderStrategy::from_config(config);
-
-    let url = format!(
-        "{}/chat/completions",
-        config.model_config.base_url.trim_end_matches('/')
-    );
-    debug!(target: "cake", "{url}");
-    if tracing::enabled!(tracing::Level::TRACE) {
-        let request_json = String::from_utf8_lossy(&request);
-        trace!(target: "cake", "{request_json}");
-    }
-
-    strategy
-        .apply_headers(
-            client
-                .post(&url)
-                .header(reqwest::header::CONTENT_TYPE, "application/json")
-                .body(request),
-            session_id,
-        )
-        .bearer_auth(&config.api_key)
 }
 
 /// Read the response body and decode the Chat Completions response, attaching
@@ -169,18 +91,14 @@ async fn read_chat_response(
         BodyReadOutcome::Failed(failed) => return Err(failed.error),
     };
     serde_json::from_slice::<ChatResponse>(&bytes).map_err(|error| {
-        ResponseDecodeError::new("Chat Completions", &bytes, reported_usage(&bytes), error).into()
+        ResponseDecodeError::new(
+            "Chat Completions",
+            &bytes,
+            reported_usage::<ChatUsage>(&bytes),
+            error,
+        )
+        .into()
     })
-}
-
-pub(super) fn reported_usage(body: &[u8]) -> Option<ReportedUsage> {
-    let value = serde_json::from_slice::<serde_json::Value>(body).ok()?;
-    let response_id = value
-        .get("id")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("<missing id>");
-    let api_usage = serde_json::from_value::<ChatUsage>(value.get("usage")?.clone()).ok()?;
-    Some(map_usage(&api_usage, response_id))
 }
 
 /// Parse an HTTP response from the Chat Completions API into a `TurnResult`.
@@ -229,72 +147,6 @@ pub(super) async fn parse_response(
         response_model: chat_response.model,
         consumed_sources: Vec::new(),
     })
-}
-
-/// Map API-level usage to the canonical `Usage` type and its presence marker.
-///
-/// A missing required counter is normalized to zero and marks the result
-/// [`UsagePresence::Partial`], so a consumer can tell the zero apart from a
-/// provider-reported zero. The optional detail objects never affect presence,
-/// because providers legitimately omit them.
-fn map_usage(api_usage: &ChatUsage, response_id: &str) -> ReportedUsage {
-    if api_usage.prompt_tokens.is_none() {
-        warn!(
-            target: "cake",
-            response_id,
-            field = "prompt_tokens",
-            "Chat Completions usage missing field, defaulting to 0"
-        );
-    }
-    if api_usage.completion_tokens.is_none() {
-        warn!(
-            target: "cake",
-            response_id,
-            field = "completion_tokens",
-            "Chat Completions usage missing field, defaulting to 0"
-        );
-    }
-    if api_usage.total_tokens.is_none() {
-        warn!(
-            target: "cake",
-            response_id,
-            field = "total_tokens",
-            "Chat Completions usage missing field, defaulting to 0"
-        );
-    }
-    let presence = UsagePresence::from_required_counters(
-        api_usage.prompt_tokens,
-        api_usage.completion_tokens,
-        api_usage.total_tokens,
-    );
-
-    ReportedUsage::new(
-        Usage {
-            input_tokens: api_usage.prompt_tokens.unwrap_or(0),
-            output_tokens: api_usage.completion_tokens.unwrap_or(0),
-            total_tokens: api_usage.total_tokens.unwrap_or(0),
-            input_tokens_details: InputTokensDetails {
-                cached_tokens: api_usage
-                    .prompt_tokens_details
-                    .as_ref()
-                    .and_then(|d| d.cached_tokens)
-                    .unwrap_or(0),
-                cache_write_tokens: api_usage
-                    .prompt_tokens_details
-                    .as_ref()
-                    .and_then(|d| d.cache_write_tokens)
-                    .unwrap_or(0),
-            },
-            output_tokens_details: OutputTokensDetails {
-                reasoning_tokens: api_usage
-                    .completion_tokens_details
-                    .as_ref()
-                    .and_then(|d| d.reasoning_tokens)
-                    .unwrap_or(0),
-            },
-        },
-        presence,
-    )
 }
 
 fn chat_choice_termination(

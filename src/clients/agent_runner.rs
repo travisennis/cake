@@ -4,28 +4,23 @@ use chrono::{DateTime, Utc};
 use tokio::time::sleep;
 use tracing::debug;
 
-use crate::clients::agent::{AttemptPurpose, TurnResult, TurnUsageSettlement};
+use crate::clients::agent::{AttemptIdentity, TurnResult, TurnUsageSettlement};
 use crate::clients::agent_observer::HealthCallback;
-use crate::clients::backend::{
-    Backend, FinalOutputConstraint, ResponseDecodeError, ResponseParseError, ToolChoice,
-};
+use crate::clients::backend::Backend;
+use crate::clients::provider_edge::{ProviderAttemptError, TurnRequest, error_is_timeout};
 use crate::clients::response_stall::{
     BodyReadFailure, BodyReadOutcome, FailedBody, ResponseStall, STALL_WINDOW, StallPhase,
     StalledBody, read_body,
 };
-use crate::clients::responses::ResponsesStreamFailed;
 use crate::clients::retry::{self, HttpFailure, RequestOverrides, RetryPolicy, RetryStatus};
 use crate::clients::termination::{self, IntendedLimits, TerminationOutcome, TurnEvidence};
-use crate::clients::tools::Tool;
 use crate::config::model::ResolvedModelConfig;
 use crate::session_telemetry::{
     AgentRunnerTelemetryEvent, ApiAttemptInFlightTelemetry, ApiAttemptPhase, ApiAttemptTelemetry,
     CompensationEventTelemetry, CompensationKind, RequestOverridesSnapshot,
     RetryScheduledTelemetry, RetryWaitTelemetry,
 };
-use crate::types::{
-    ApiAttemptTerminalClass, ConversationItem, ReportedUsage, TurnUsagePurpose, UsagePresence,
-};
+use crate::types::{ApiAttemptTerminalClass, ReportedUsage, UsagePresence};
 
 pub(super) fn build_http_client(disable_connection_reuse: bool) -> reqwest::Client {
     let mut builder = reqwest::Client::builder().connect_timeout(Duration::from_secs(10));
@@ -66,9 +61,7 @@ struct FailureBody {
 /// the provider operation finishes or is cancelled.
 struct InFlightAttempt<'a, F: FnMut(AgentRunnerTelemetryEvent)> {
     reporter: &'a mut F,
-    task_id: String,
-    turn_index: u32,
-    attempt: u32,
+    identity: AttemptIdentity,
     provider: Option<crate::config::model::ModelProvider>,
     model: String,
     started_at: DateTime<Utc>,
@@ -80,33 +73,23 @@ struct InFlightAttempt<'a, F: FnMut(AgentRunnerTelemetryEvent)> {
     status_code: Option<u16>,
     history_items: usize,
     request_overrides: RequestOverridesSnapshot,
-    attempt_purpose: Option<AttemptPurpose>,
     closed: bool,
 }
 
 impl<'a, F: FnMut(AgentRunnerTelemetryEvent)> InFlightAttempt<'a, F> {
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the attempt identity threads provider, timing, and purpose"
-    )]
     fn new(
         reporter: &'a mut F,
-        task_id: uuid::Uuid,
         config: &ResolvedModelConfig,
-        turn_index: u32,
-        attempt: u32,
+        identity: &AttemptIdentity,
         history_items: usize,
         request_overrides: &RequestOverrides,
-        attempt_purpose: Option<AttemptPurpose>,
     ) -> Self {
         let started_at = Utc::now();
         let total_start = Instant::now();
         let request_start = Instant::now();
         let mut attempt = Self {
             reporter,
-            task_id: task_id.to_string(),
-            turn_index,
-            attempt,
+            identity: identity.clone(),
             provider: crate::clients::provider_strategy::ProviderStrategy::from_config(config)
                 .provider(),
             model: config.model_config.model.clone(),
@@ -119,7 +102,6 @@ impl<'a, F: FnMut(AgentRunnerTelemetryEvent)> InFlightAttempt<'a, F> {
             status_code: None,
             history_items,
             request_overrides: RequestOverridesSnapshot::from(request_overrides),
-            attempt_purpose,
             closed: false,
         };
         attempt.report_in_flight();
@@ -132,9 +114,9 @@ impl<'a, F: FnMut(AgentRunnerTelemetryEvent)> InFlightAttempt<'a, F> {
     fn report_in_flight(&mut self) {
         (self.reporter)(AgentRunnerTelemetryEvent::ApiAttemptInFlight(
             ApiAttemptInFlightTelemetry {
-                task_id: self.task_id.clone(),
-                turn_index: self.turn_index,
-                attempt: self.attempt,
+                task_id: self.identity.task_id.clone(),
+                turn_index: self.identity.turn_index,
+                attempt: self.identity.attempt,
                 provider: self.provider,
                 model: self.model.clone(),
                 started_at: self.started_at,
@@ -178,16 +160,14 @@ impl<'a, F: FnMut(AgentRunnerTelemetryEvent)> InFlightAttempt<'a, F> {
         (self.reporter)(event);
     }
 
-    fn purpose_fields(&self) -> (Option<TurnUsagePurpose>, Option<String>, Option<u32>) {
-        self.attempt_purpose
-            .as_ref()
-            .map_or((None, None, None), |purpose| {
-                (
-                    purpose.purpose,
-                    purpose.compaction_id.clone(),
-                    purpose.summary_step,
-                )
-            })
+    fn purpose_fields(
+        &self,
+    ) -> (
+        Option<crate::types::TurnUsagePurpose>,
+        Option<String>,
+        Option<u32>,
+    ) {
+        self.identity.purpose_fields()
     }
 }
 
@@ -207,8 +187,8 @@ impl<F: FnMut(AgentRunnerTelemetryEvent)> Drop for InFlightAttempt<'_, F> {
         let (purpose, compaction_id, summary_step) = self.purpose_fields();
         self.closed = true;
         (self.reporter)(AgentRunnerTelemetryEvent::ApiAttempt(ApiAttemptTelemetry {
-            turn_index: self.turn_index,
-            attempt: self.attempt,
+            turn_index: self.identity.turn_index,
+            attempt: self.identity.attempt,
             request_ms,
             parse_ms,
             total_ms,
@@ -284,7 +264,8 @@ impl AgentRunner {
             return self
                 .backend
                 .parse_response(response, &config.model_config.model, self.stall_window)
-                .await;
+                .await
+                .map_err(ProviderAttemptError::into_error);
         }
         let headers = response.headers().clone();
         let FailureBody {
@@ -308,39 +289,21 @@ impl AgentRunner {
     ///
     /// The body reader applies the same deadline per chunk, so this covers the
     /// gap between the request and the first byte of the response.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a provider turn threads identity, history, tools, and overrides"
-    )]
-    async fn send_with_stall_deadline<'a>(
+    async fn send_with_stall_deadline(
         &self,
         client: &reqwest::Client,
-        config: &ResolvedModelConfig,
         session_id: uuid::Uuid,
-        history: &'a [ConversationItem],
-        tools: &'a [Tool],
-        tool_choice: Option<ToolChoice>,
-        overrides: &RequestOverrides,
-        constraint: Option<FinalOutputConstraint<'a>>,
+        request: &TurnRequest<'_>,
     ) -> anyhow::Result<reqwest::Response> {
         match tokio::time::timeout(
             self.stall_window,
-            self.backend.send_request(
-                client,
-                config,
-                session_id,
-                history,
-                tools,
-                tool_choice,
-                overrides,
-                constraint,
-            ),
+            self.backend.send_request(client, session_id, request),
         )
         .await
         {
             Ok(result) => result,
             Err(_elapsed) => Err(ResponseStall::new(
-                config.model_config.model.clone(),
+                request.config.model_config.model.clone(),
                 StallPhase::Connect,
                 self.stall_window,
                 0,
@@ -349,32 +312,14 @@ impl AgentRunner {
         }
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a provider turn naturally threads config, identity, history, purpose, and callbacks"
-    )]
-    pub(super) async fn complete_turn<'a>(
+    pub(super) async fn complete_turn(
         &self,
-        config: &ResolvedModelConfig,
-        session_id: uuid::Uuid,
-        task_id: uuid::Uuid,
-        turn_index: u32,
-        history: &'a [ConversationItem],
-        tools: &'a [Tool],
-        tool_choice: Option<ToolChoice>,
-        constraint: Option<FinalOutputConstraint<'a>>,
-        attempt_purpose: Option<AttemptPurpose>,
+        mut request: TurnRequest<'_>,
+        identity: &mut AttemptIdentity,
         before_attempt: Option<&HealthCallback>,
-        next_attempt: &mut u32,
         mut report_telemetry: impl FnMut(AgentRunnerTelemetryEvent),
         mut settle_usage: impl FnMut(TurnUsageSettlement),
     ) -> anyhow::Result<TurnResult> {
-        let mut attempt = *next_attempt;
-        let mut request_overrides = RequestOverrides {
-            max_output_tokens: config.model_config.max_output_tokens,
-            reasoning_max_tokens: config.model_config.reasoning_max_tokens,
-            context_overflow_retry_used: false,
-        };
         let mut disable_connection_reuse = false;
         let mut client = self.client.clone();
 
@@ -384,25 +329,13 @@ impl AgentRunner {
             }
             let mut in_flight = InFlightAttempt::new(
                 &mut report_telemetry,
-                task_id,
-                config,
-                turn_index,
-                attempt,
-                history.len(),
-                &request_overrides,
-                attempt_purpose.clone(),
+                request.config,
+                identity,
+                request.history.len(),
+                &request.overrides,
             );
             let request_result = self
-                .send_with_stall_deadline(
-                    &client,
-                    config,
-                    session_id,
-                    history,
-                    tools,
-                    tool_choice,
-                    &request_overrides,
-                    constraint,
-                )
+                .send_with_stall_deadline(&client, identity.session_id, &request)
                 .await;
             let request_ms = in_flight.request_ms();
 
@@ -413,24 +346,18 @@ impl AgentRunner {
                     if response.status().is_success() {
                         self.handle_success_response(
                             response,
-                            config,
-                            session_id,
-                            turn_index,
+                            &mut request,
                             &mut in_flight,
                             &mut client,
                             &mut disable_connection_reuse,
-                            &mut request_overrides,
                             &mut settle_usage,
                         )
                         .await
                     } else {
                         self.handle_http_failure(
                             response,
-                            config,
-                            session_id,
-                            turn_index,
+                            &mut request,
                             &mut in_flight,
-                            &mut request_overrides,
                             &mut settle_usage,
                         )
                         .await
@@ -439,12 +366,10 @@ impl AgentRunner {
                 Err(error) => {
                     self.handle_transport_error(
                         error,
-                        session_id,
-                        turn_index,
                         &mut in_flight,
                         &mut client,
                         &mut disable_connection_reuse,
-                        &mut request_overrides,
+                        &mut request.overrides,
                     )
                     .await
                 },
@@ -452,14 +377,12 @@ impl AgentRunner {
 
             match outcome {
                 AttemptResult::Completed(turn) => {
-                    *next_attempt = attempt.saturating_add(1);
+                    identity.advance();
                     return Ok(turn);
                 },
-                AttemptResult::RetryNeeded => {
-                    attempt = attempt.saturating_add(1);
-                },
+                AttemptResult::RetryNeeded => identity.advance(),
                 AttemptResult::Terminal(error) => {
-                    *next_attempt = attempt.saturating_add(1);
+                    identity.advance();
                     return Err(error);
                 },
             }
@@ -471,23 +394,16 @@ impl AgentRunner {
     /// transport failure or `response.failed`, or surface the terminal parse
     /// error.
     #[expect(
-        clippy::too_many_arguments,
-        reason = "the accepted-body phase threads identity, timing, attempt, and telemetry"
-    )]
-    #[expect(
         clippy::too_many_lines,
         reason = "accepted-body accounting and retry classification belong to one attempt"
     )]
     async fn handle_success_response<F>(
         &self,
         response: reqwest::Response,
-        config: &ResolvedModelConfig,
-        session_id: uuid::Uuid,
-        turn_index: u32,
+        request: &mut TurnRequest<'_>,
         in_flight: &mut InFlightAttempt<'_, F>,
         client: &mut reqwest::Client,
         disable_connection_reuse: &mut bool,
-        request_overrides: &mut RequestOverrides,
         settle_usage: &mut impl FnMut(TurnUsageSettlement),
     ) -> AttemptResult
     where
@@ -495,37 +411,48 @@ impl AgentRunner {
     {
         let parse_result = self
             .backend
-            .parse_response(response, &config.model_config.model, self.stall_window)
+            .parse_response(
+                response,
+                &request.config.model_config.model,
+                self.stall_window,
+            )
             .await;
         let parse_ms = in_flight.parse_ms();
         let total_ms = in_flight.total_ms();
 
-        let failed = parse_result
-            .as_ref()
-            .err()
-            .and_then(|error| error.downcast_ref::<ResponsesStreamFailed>());
-        let terminal_class = accepted_body_terminal_class(&parse_result);
+        let (
+            terminal_class,
+            usage,
+            provider_request_id,
+            responses_failed,
+            termination,
+            response_model,
+            error_detail,
+        ) = match &parse_result {
+            Ok(turn) => (
+                ApiAttemptTerminalClass::Completed,
+                turn.usage,
+                turn.provider_request_id.clone(),
+                None,
+                turn.termination.clone(),
+                turn.response_model.clone(),
+                None,
+            ),
+            Err(error) => (
+                error.terminal_class(),
+                error.usage(),
+                error.provider_request_id().map(str::to_owned),
+                error
+                    .responses_failed()
+                    .map(|failed| Box::new(failed.clone())),
+                None,
+                None,
+                Some(error.telemetry_detail().to_owned()),
+            ),
+        };
         let body_read_transport = terminal_class == ApiAttemptTerminalClass::Transport;
-        let provider_request_id = parse_result
-            .as_ref()
-            .ok()
-            .and_then(|turn| turn.provider_request_id.clone())
-            .or_else(|| failed.and_then(|failed| failed.metadata().provider_request_id.clone()));
-        let responses_failed = failed.map(|failed| Box::new(failed.metadata().clone()));
-        let usage = reported_usage_from_result(&parse_result);
-        let termination = parse_result
-            .as_ref()
-            .ok()
-            .and_then(|turn| turn.termination.clone());
-        let response_model = parse_result
-            .as_ref()
-            .ok()
-            .and_then(|turn| turn.response_model.clone());
-        let error = parse_result
-            .as_ref()
-            .err()
-            .map(parse_error_telemetry_detail);
-        let attempt = in_flight.attempt;
+        let turn_index = in_flight.identity.turn_index;
+        let attempt = in_flight.identity.attempt;
         let request_ms = in_flight.request_ms();
         let status_code = in_flight.status_code;
         let phase = Some(in_flight.phase);
@@ -537,13 +464,13 @@ impl AgentRunner {
 
         in_flight.finish(ApiAttemptTelemetry {
             turn_index,
-            attempt: in_flight.attempt,
+            attempt,
             request_ms,
             parse_ms,
             total_ms,
             history_items: in_flight.history_items,
             status_code,
-            error,
+            error: error_detail,
             usage: usage.map(|reported| reported.usage),
             usage_presence: usage_presence(usage),
             provider: in_flight.provider,
@@ -554,7 +481,7 @@ impl AgentRunner {
             provider_request_id,
             responses_failed,
             phase,
-            request_overrides: RequestOverridesSnapshot::from(&*request_overrides),
+            request_overrides: RequestOverridesSnapshot::from(&request.overrides),
             purpose,
             compaction_id: compaction_id.clone(),
             summary_step,
@@ -562,16 +489,12 @@ impl AgentRunner {
 
         if let Some(usage) = usage {
             settle_usage(TurnUsageSettlement {
-                turn_index,
-                attempt,
+                identity: in_flight.identity.clone(),
                 terminal_class,
                 usage,
                 model: settled_model,
                 provider_request_id: settled_provider_request_id,
                 response_model: settled_response_model,
-                purpose,
-                compaction_id,
-                summary_step,
             });
         }
 
@@ -579,28 +502,20 @@ impl AgentRunner {
             Ok(turn) => AttemptResult::Completed(turn),
             Err(parse_error) if body_read_transport => {
                 self.schedule_transport_retry(
-                    parse_error,
-                    session_id,
-                    turn_index,
+                    parse_error.into_error(),
                     in_flight,
                     client,
                     disable_connection_reuse,
-                    request_overrides,
+                    &mut request.overrides,
                 )
                 .await
             },
             Err(parse_error) => match self
-                .recover_response_failed(
-                    parse_error,
-                    session_id,
-                    turn_index,
-                    in_flight,
-                    request_overrides,
-                )
+                .recover_response_failed(parse_error, in_flight, &request.overrides)
                 .await
             {
                 Ok(()) => AttemptResult::RetryNeeded,
-                Err(parse_error) => AttemptResult::Terminal(parse_error),
+                Err(parse_error) => AttemptResult::Terminal(parse_error.into_error()),
             },
         }
     }
@@ -611,26 +526,26 @@ impl AgentRunner {
     /// invalid-request, quota, context, policy) or retries are exhausted.
     async fn recover_response_failed<F>(
         &self,
-        parse_error: anyhow::Error,
-        session_id: uuid::Uuid,
-        turn_index: u32,
+        parse_error: ProviderAttemptError,
         in_flight: &mut InFlightAttempt<'_, F>,
         request_overrides: &RequestOverrides,
-    ) -> Result<(), anyhow::Error>
+    ) -> Result<(), ProviderAttemptError>
     where
         F: FnMut(AgentRunnerTelemetryEvent),
     {
-        let Some(failed) = parse_error.downcast_ref::<ResponsesStreamFailed>() else {
+        let Some(failed) = parse_error.responses_failed() else {
             return Err(parse_error);
         };
-        match retry::classify_response_failed(
+        let decision = retry::classify_response_failed(
             &self.retry_policy,
-            failed.metadata().error_code.as_deref(),
-            failed.metadata().error_type.as_deref(),
-            in_flight.attempt,
-            session_id,
-        ) {
+            failed.error_code.as_deref(),
+            failed.error_type.as_deref(),
+            in_flight.identity.attempt,
+            in_flight.identity.session_id,
+        );
+        match decision {
             retry::RetryDecision::Retry { status } => {
+                let turn_index = in_flight.identity.turn_index;
                 in_flight.report(AgentRunnerTelemetryEvent::retry_scheduled(
                     RetryScheduledTelemetry::from_status(
                         &status,
@@ -677,18 +592,11 @@ impl AgentRunner {
     /// Handle a non-2xx HTTP response: record attempt telemetry, then classify
     /// the failure for retry (rate-limit, overload, context overflow) or return
     /// it as an `ApiError`.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the HTTP-failure phase threads identity, timing, attempt, and telemetry"
-    )]
     async fn handle_http_failure<F>(
         &self,
         response: reqwest::Response,
-        config: &ResolvedModelConfig,
-        session_id: uuid::Uuid,
-        turn_index: u32,
+        request: &mut TurnRequest<'_>,
         in_flight: &mut InFlightAttempt<'_, F>,
-        request_overrides: &mut RequestOverrides,
         settle_usage: &mut impl FnMut(TurnUsageSettlement),
     ) -> AttemptResult
     where
@@ -699,7 +607,7 @@ impl AgentRunner {
             body,
             failure: body_read_failure,
         } = self
-            .read_failure_body(response, &config.model_config.model)
+            .read_failure_body(response, &request.config.model_config.model)
             .await;
         let failure = HttpFailure {
             status: in_flight.status_code.unwrap_or_default(),
@@ -710,7 +618,8 @@ impl AgentRunner {
         let terminal_class = body_read_terminal_class(body_read_failure.as_ref());
         let error =
             http_failure_telemetry_text(failure.status, &failure.body, body_read_failure.as_ref());
-        let attempt = in_flight.attempt;
+        let turn_index = in_flight.identity.turn_index;
+        let attempt = in_flight.identity.attempt;
         let (purpose, compaction_id, summary_step) = in_flight.purpose_fields();
         in_flight.finish(ApiAttemptTelemetry {
             turn_index,
@@ -731,23 +640,19 @@ impl AgentRunner {
             provider_request_id: None,
             responses_failed: None,
             phase: Some(in_flight.phase),
-            request_overrides: RequestOverridesSnapshot::from(&*request_overrides),
+            request_overrides: RequestOverridesSnapshot::from(&request.overrides),
             purpose,
             compaction_id: compaction_id.clone(),
             summary_step,
         });
         if let Some(usage) = usage {
             settle_usage(TurnUsageSettlement {
-                turn_index,
-                attempt,
+                identity: in_flight.identity.clone(),
                 terminal_class,
                 usage,
                 model: in_flight.model.clone(),
                 provider_request_id: None,
                 response_model: None,
-                purpose,
-                compaction_id,
-                summary_step,
             });
         }
 
@@ -755,8 +660,8 @@ impl AgentRunner {
             &self.retry_policy,
             &failure,
             attempt,
-            session_id,
-            request_overrides,
+            in_flight.identity.session_id,
+            &request.overrides,
         ) {
             retry::RetryDecision::Retry { status } => {
                 in_flight.report(AgentRunnerTelemetryEvent::retry_scheduled(
@@ -764,7 +669,7 @@ impl AgentRunner {
                         &status,
                         turn_index,
                         false,
-                        &*request_overrides,
+                        &request.overrides,
                     ),
                 ));
                 in_flight.report(AgentRunnerTelemetryEvent::retry_wait(
@@ -779,7 +684,7 @@ impl AgentRunner {
                 in_flight.report(AgentRunnerTelemetryEvent::Compensation(
                     CompensationEventTelemetry::new(CompensationKind::ContextOverflowRetry, None),
                 ));
-                *request_overrides = overrides;
+                request.overrides = overrides;
                 in_flight.report(AgentRunnerTelemetryEvent::retry_wait(
                     wait_for_retry(&status, turn_index).await,
                 ));
@@ -788,7 +693,7 @@ impl AgentRunner {
             retry::RetryDecision::DoNotRetry => {
                 let failure = with_body_read_detail(failure, body_read_failure.as_ref());
                 AttemptResult::Terminal(
-                    api_error_from_failure(config, &failure, body_read_failure).into(),
+                    api_error_from_failure(request.config, &failure, body_read_failure).into(),
                 )
             },
         }
@@ -797,15 +702,9 @@ impl AgentRunner {
     /// Handle a request-phase transport error: record attempt telemetry, then
     /// classify a retryable transport failure (swapping in a no-reuse client)
     /// or return the error as terminal.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the transport-failure phase threads identity, timing, attempt, and telemetry"
-    )]
     async fn handle_transport_error<F>(
         &self,
         error: anyhow::Error,
-        session_id: uuid::Uuid,
-        turn_index: u32,
         in_flight: &mut InFlightAttempt<'_, F>,
         client: &mut reqwest::Client,
         disable_connection_reuse: &mut bool,
@@ -826,7 +725,8 @@ impl AgentRunner {
         } else {
             ApiAttemptTerminalClass::Transport
         };
-        let attempt = in_flight.attempt;
+        let turn_index = in_flight.identity.turn_index;
+        let attempt = in_flight.identity.attempt;
         let (purpose, compaction_id, summary_step) = in_flight.purpose_fields();
         in_flight.finish(ApiAttemptTelemetry {
             turn_index,
@@ -855,8 +755,6 @@ impl AgentRunner {
 
         self.schedule_transport_retry(
             error,
-            session_id,
-            turn_index,
             in_flight,
             client,
             disable_connection_reuse,
@@ -874,15 +772,9 @@ impl AgentRunner {
     /// fail for a given attempt, so a body-read failure cannot be retried
     /// twice, and no tool call has run when this is reached because the
     /// accepted body is fully buffered before the turn returns.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the transport-retry phase threads identity, timing, attempt, and telemetry"
-    )]
     async fn schedule_transport_retry<F>(
         &self,
         error: anyhow::Error,
-        session_id: uuid::Uuid,
-        turn_index: u32,
         in_flight: &mut InFlightAttempt<'_, F>,
         client: &mut reqwest::Client,
         disable_connection_reuse: &mut bool,
@@ -891,11 +783,12 @@ impl AgentRunner {
     where
         F: FnMut(AgentRunnerTelemetryEvent),
     {
+        let turn_index = in_flight.identity.turn_index;
         match retry::classify_transport_error(
             &self.retry_policy,
             &error,
-            in_flight.attempt,
-            session_id,
+            in_flight.identity.attempt,
+            in_flight.identity.session_id,
         ) {
             retry::RetryDecision::Retry { status } => {
                 if retry::should_disable_connection_reuse(&error) && !*disable_connection_reuse {
@@ -937,89 +830,6 @@ const fn usage_presence(usage: Option<ReportedUsage>) -> UsagePresence {
         Some(reported) => reported.presence,
         None => UsagePresence::Unreported,
     }
-}
-
-fn reported_usage_from_result(result: &Result<TurnResult, anyhow::Error>) -> Option<ReportedUsage> {
-    result
-        .as_ref()
-        .ok()
-        .and_then(|turn| turn.usage)
-        .or_else(|| {
-            let error = result.as_ref().err()?;
-            error
-                .downcast_ref::<ResponsesStreamFailed>()
-                .and_then(ResponsesStreamFailed::usage)
-                .or_else(|| {
-                    error
-                        .downcast_ref::<ResponseParseError>()
-                        .and_then(ResponseParseError::usage)
-                })
-                .or_else(|| {
-                    error
-                        .downcast_ref::<ResponseDecodeError>()
-                        .and_then(ResponseDecodeError::usage)
-                })
-        })
-}
-
-fn parse_error_telemetry_detail(error: &anyhow::Error) -> String {
-    crate::clients::telemetry_safe_provider_error_detail(error)
-        .unwrap_or_else(|| format!("{error:#}"))
-}
-
-/// Classify how an accepted 2xx provider attempt ended, for telemetry.
-///
-/// The failure classes are ordered so the most specific cause wins: the HTTP
-/// deadline (`timeout`), the provider's own terminal `response.failed` event,
-/// a transport failure raised while the accepted body was read, and finally a
-/// body-decode or semantic parse failure.
-fn accepted_body_terminal_class(
-    parse_result: &Result<TurnResult, anyhow::Error>,
-) -> ApiAttemptTerminalClass {
-    let Err(error) = parse_result else {
-        return ApiAttemptTerminalClass::Completed;
-    };
-
-    if error_is_timeout(error) {
-        ApiAttemptTerminalClass::Timeout
-    } else if error.downcast_ref::<ResponsesStreamFailed>().is_some() {
-        ApiAttemptTerminalClass::ResponseFailed
-    } else if is_body_read_transport_error(error) {
-        ApiAttemptTerminalClass::Transport
-    } else {
-        ApiAttemptTerminalClass::BodyParse
-    }
-}
-
-/// Whether a failure raised while the accepted 2xx body was read is a
-/// transport failure rather than a body decode or semantic parse failure.
-///
-/// A reset, broken pipe, or truncated body reaches the parse phase as a
-/// `reqwest::Error` in the cause chain, because the backend reads the accepted
-/// body with `text()`/`bytes()` and propagates that error unchanged. A typed
-/// [`ResponseDecodeError`] (the 2xx body arrived but is not the expected
-/// envelope), a semantic parse failure, and a provider `response.failed`
-/// event carry no reqwest cause and stay terminal. A stall or timeout is
-/// excluded: a stall after the accepted headers is reported, not retried, and
-/// whole-turn retry budgeting is tracked separately (issue #109).
-fn is_body_read_transport_error(error: &anyhow::Error) -> bool {
-    if error.downcast_ref::<ResponseDecodeError>().is_some() {
-        return false;
-    }
-
-    !error_is_timeout(error)
-        && error
-            .chain()
-            .any(|cause| cause.downcast_ref::<reqwest::Error>().is_some())
-}
-
-fn error_is_timeout(error: &anyhow::Error) -> bool {
-    error.downcast_ref::<ResponseStall>().is_some()
-        || error.chain().any(|cause| {
-            cause
-                .downcast_ref::<reqwest::Error>()
-                .is_some_and(reqwest::Error::is_timeout)
-        })
 }
 
 fn body_read_terminal_class(

@@ -517,8 +517,6 @@ impl Agent {
                 &mut self.observer,
                 &mut self.total_usage,
                 &mut self.last_usage,
-                session_id,
-                task_id,
                 context_window,
                 settlement,
             );
