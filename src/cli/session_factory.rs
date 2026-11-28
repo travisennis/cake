@@ -19,7 +19,7 @@ use crate::config::settings::{ResolvedImagePolicy, SkillSettings};
 use crate::config::skills::Skill;
 use crate::config::toolbox::ToolboxTool;
 use crate::config::{
-    AgentsFile, DataDir, ModelDefinition, ResolvedModelConfig, Session, SkillCatalog,
+    AgentsFile, DataDir, ModelConfig, ModelDefinition, ResolvedModelConfig, Session, SkillCatalog,
     SkillCatalogBudget,
 };
 use crate::prompts::build_initial_prompt_messages_with_mcp;
@@ -263,280 +263,23 @@ fn omitted_history_images_warning(
 }
 
 impl crate::CodingAssistant {
-    /// Convert a restored session into the agent/session pair used for a continued run.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "session construction naturally requires many parameters"
-    )]
-    pub(crate) fn restored_client_and_session(
-        restored: Session,
-        resolved: ResolvedModelConfig,
-        model_config_name: String,
-        effective_provider_identity: ProviderIdentity,
-        session_model_change_override: bool,
-        initial_messages: &[(Role, String)],
-        skill_locations: &HashMap<PathBuf, Skill>,
-        tool_context: Arc<ToolContext>,
-        toolbox_tools: Vec<ToolboxTool>,
-        mcp_servers: Vec<McpServer>,
-        mcp_runtime: Option<Arc<LazyMcpRuntime>>,
-        enabled_tools: Option<&[String]>,
-        include_runtime_context: bool,
-        task_id: uuid::Uuid,
-        persistence: Option<SessionPersistencePlan>,
-    ) -> anyhow::Result<RunSession> {
-        let stored_prompt_prefix = restored.stored_prompt_prefix();
-        let seed = restored.context_seed();
-        let activated_skills = restored.activated_skills();
-        let activated_mcp_tools = restored.activated_mcp_tools();
-
-        let mut agent = Agent::new(resolved.clone(), initial_messages)
-            .with_session_id(restored.id)
-            .with_task_id(task_id)
-            .with_model_config_name(model_config_name.clone())
-            .with_tool_context(tool_context)
-            .with_toolbox_tools(toolbox_tools)
-            .with_mcp_servers(mcp_servers)
-            .with_lazy_mcp_servers(mcp_runtime)
-            .with_enabled_tools(enabled_tools)
-            .with_active_mcp_tools(activated_mcp_tools)
-            .with_context_seed(seed)
-            .map_err(|error| anyhow::anyhow!("Cannot restore session {}: {error:#}", restored.id))?
-            .with_last_usage(restored.last_turn_usage())
-            .with_skill_locations(skill_locations.clone())
-            .with_activated_skills(activated_skills);
-        agent.set_prompt_prefix_runtime(include_runtime_context);
-        warn_omitted_history_images(&agent, &resolved, &model_config_name);
-        let mut session = Session::new(restored.id, restored.working_dir);
-        session.model = Some(resolved.model_config.model.clone());
-        session.model_config = Some(model_config_name);
-        session.provider_identity = restored.provider_identity;
-        session.context_identity = restored.context_identity;
-        session.system_prompt = initial_messages.first().map(|(_, content)| content.clone());
-        Ok(RunSession {
-            agent,
-            session,
-            persistence,
-            effective_provider_identity: Some(effective_provider_identity),
-            session_model_change_override,
-            stored_prompt_prefix,
-            include_runtime_context,
-            prompt_prefix_decision: PromptPrefixDecision::Rebuilt,
-            resolved: Box::new(resolved),
-        })
-    }
-
-    /// Build the agent/session pair for a new run using the agent-generated session id.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "session construction naturally requires many parameters"
-    )]
-    pub(crate) fn new_client_and_session(
-        resolved: ResolvedModelConfig,
-        model_config_name: String,
-        provider_identity: ProviderIdentity,
-        current_dir: PathBuf,
-        initial_messages: &[(Role, String)],
-        skill_locations: HashMap<PathBuf, Skill>,
-        tool_context: Arc<ToolContext>,
-        toolbox_tools: Vec<ToolboxTool>,
-        mcp_servers: Vec<McpServer>,
-        mcp_runtime: Option<Arc<LazyMcpRuntime>>,
-        enabled_tools: Option<&[String]>,
-        include_runtime_context: bool,
-        task_id: uuid::Uuid,
-        persistence: Option<SessionPersistencePlan>,
-    ) -> RunSession {
-        let mut agent = Agent::new(resolved.clone(), initial_messages)
-            .with_task_id(task_id)
-            .with_model_config_name(model_config_name.clone())
-            .with_tool_context(tool_context)
-            .with_toolbox_tools(toolbox_tools)
-            .with_mcp_servers(mcp_servers)
-            .with_lazy_mcp_servers(mcp_runtime)
-            .with_enabled_tools(enabled_tools)
-            .with_skill_locations(skill_locations);
-        agent.set_prompt_prefix_runtime(include_runtime_context);
-        let new_id = agent.session_id();
-        info!(target: "cake", "New session: {new_id}");
-        let mut session = Session::new(new_id, current_dir);
-        session.model = Some(resolved.model_config.model.clone());
-        session.model_config = Some(model_config_name);
-        session.provider_identity = Some(provider_identity.clone());
-        session.system_prompt = initial_messages.first().map(|(_, content)| content.clone());
-        RunSession {
-            agent,
-            session,
-            persistence,
-            effective_provider_identity: Some(provider_identity),
-            session_model_change_override: false,
-            stored_prompt_prefix: None,
-            include_runtime_context,
-            prompt_prefix_decision: PromptPrefixDecision::Initial,
-            resolved: Box::new(resolved),
-        }
-    }
-
-    /// Build the agent/session pair for a forked run using a fresh agent session id.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "session construction naturally requires many parameters"
-    )]
-    pub(crate) fn forked_client_and_session(
-        restored: &Session,
-        resolved: ResolvedModelConfig,
-        model_config_name: String,
-        effective_provider_identity: ProviderIdentity,
-        session_model_change_override: bool,
-        current_dir: PathBuf,
-        initial_messages: &[(Role, String)],
-        skill_locations: HashMap<PathBuf, Skill>,
-        tool_context: Arc<ToolContext>,
-        toolbox_tools: Vec<ToolboxTool>,
-        mcp_servers: Vec<McpServer>,
-        mcp_runtime: Option<Arc<LazyMcpRuntime>>,
-        enabled_tools: Option<&[String]>,
-        include_runtime_context: bool,
-        task_id: uuid::Uuid,
-    ) -> anyhow::Result<RunSession> {
-        let stored_prompt_prefix = restored.stored_prompt_prefix();
-        let activated_mcp_tools = restored.activated_mcp_tools();
-        let mut agent = Agent::new(resolved.clone(), initial_messages)
-            .with_task_id(task_id)
-            .with_model_config_name(model_config_name.clone())
-            .with_tool_context(tool_context)
-            .with_toolbox_tools(toolbox_tools)
-            .with_mcp_servers(mcp_servers)
-            .with_lazy_mcp_servers(mcp_runtime)
-            .with_enabled_tools(enabled_tools)
-            .with_active_mcp_tools(activated_mcp_tools);
-        agent.set_prompt_prefix_runtime(include_runtime_context);
-        let new_id = agent.session_id();
-        let agent = agent
-            .with_context_seed(restored.context_seed().for_session(new_id.to_string()))
-            .map_err(|error| anyhow::anyhow!("Cannot fork session {}: {error:#}", restored.id))?
-            .with_last_usage(restored.last_turn_usage())
-            .with_skill_locations(skill_locations)
-            .with_activated_skills(restored.activated_skills());
-        warn_omitted_history_images(&agent, &resolved, &model_config_name);
-        let latest_checkpoint = restored.latest_checkpoint_index();
-        let seed_records: Vec<_> = restored
-            .records
-            .iter()
-            .enumerate()
-            .filter_map(|(index, record)| match record {
-                record if record.to_conversation_item().is_some() => Some(record.clone()),
-                SessionRecord::SkillActivated {
-                    task_id,
-                    timestamp,
-                    name,
-                    path,
-                    ..
-                } => Some(SessionRecord::SkillActivated {
-                    session_id: new_id.to_string(),
-                    task_id: task_id.clone(),
-                    timestamp: *timestamp,
-                    name: name.clone(),
-                    path: path.clone(),
-                }),
-                SessionRecord::McpToolsActivated {
-                    task_id,
-                    timestamp,
-                    tools,
-                    ..
-                } => Some(SessionRecord::McpToolsActivated {
-                    session_id: new_id.to_string(),
-                    task_id: task_id.clone(),
-                    timestamp: *timestamp,
-                    tools: tools.clone(),
-                }),
-                SessionRecord::Compaction(checkpoint) if latest_checkpoint == Some(index) => Some(
-                    SessionRecord::Compaction(checkpoint.for_session(new_id.to_string())),
-                ),
-                _ => None,
-            })
-            .collect();
-        info!(target: "cake", "New forked session: {new_id}");
-        let mut session = Session::new(new_id, current_dir);
-        session.model = Some(resolved.model_config.model.clone());
-        session.model_config = Some(model_config_name);
-        session
-            .provider_identity
-            .clone_from(&restored.provider_identity);
-        session.system_prompt = initial_messages.first().map(|(_, content)| content.clone());
-        Ok(RunSession {
-            agent,
-            session,
-            persistence: Some(SessionPersistencePlan::Create {
-                seed_records,
-                blob_source: Some(restored.id),
-            }),
-            effective_provider_identity: Some(effective_provider_identity),
-            session_model_change_override,
-            stored_prompt_prefix,
-            include_runtime_context,
-            prompt_prefix_decision: PromptPrefixDecision::Rebuilt,
-            resolved: Box::new(resolved),
-        })
-    }
-
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "session construction naturally requires many parameters"
-    )]
+    /// Build the agent/session pair for the selected run mode.
     pub(crate) fn build_client_and_session(
         &self,
         run_mode: &RunMode,
         data_dir: &DataDir,
-        current_dir: PathBuf,
-        config_dir: &Path,
-        agents_files: &[AgentsFile],
-        models: &HashMap<String, ModelDefinition>,
-        images: &ResolvedImagePolicy,
-        default_model: Option<&str>,
-        skill_catalog: &SkillCatalog,
-        tool_context: &Arc<ToolContext>,
-        toolbox_tools: &[ToolboxTool],
-        mcp_servers: &[McpServer],
-        lazy_mcp: Option<&Arc<LazyMcpRuntime>>,
-        enabled_tools: Option<&[String]>,
-        task_id: uuid::Uuid,
-        cli_system_prompt: Option<&Path>,
-        loaded_system_prompt: Option<&str>,
-        skill_settings: &SkillSettings,
-        include_project_prompt: bool,
+        inputs: RunInputs<'_>,
     ) -> anyhow::Result<RunSession> {
-        let inputs = RunInputs {
-            current_dir,
-            config_dir,
-            cli_system_prompt,
-            settings_system_prompt: loaded_system_prompt.map(Path::new),
-            agents_files,
-            skill_catalog,
-            skill_locations: skill_locations(skill_catalog),
-            models,
-            images,
-            default_model,
-            skill_settings,
-            tool_context,
-            toolbox_tools,
-            mcp_servers,
-            lazy_mcp,
-            tools_enabled: enabled_tools,
-            include_runtime_context: !self.no_runtime_context,
-            include_project_prompt,
-            task_id,
-        };
         match run_mode {
             RunMode::Resume {
                 session_id,
                 read_only,
-            } => self.resume_run(*session_id, *read_only, data_dir, &inputs),
+            } => self.resume_run(*session_id, *read_only, data_dir, inputs),
             RunMode::ForkLatest | RunMode::Fork { .. } => {
-                self.forked_run(run_mode, data_dir, &inputs)
+                self.forked_run(run_mode, data_dir, inputs)
             },
             RunMode::NewSession | RunMode::Ephemeral => self.new_run(
-                &inputs,
+                inputs,
                 run_mode
                     .persists_session()
                     .then_some(SessionPersistencePlan::Create {
@@ -547,12 +290,37 @@ impl crate::CodingAssistant {
         }
     }
 
+    /// Apply model overrides and build the pre-prompt state shared by every
+    /// run mode.
+    fn prepare_assembly<'a>(
+        &self,
+        inputs: RunInputs<'a>,
+        config: ModelConfig,
+        model_config_name: String,
+        provider_identity: ProviderIdentity,
+        session_model_change_override: bool,
+    ) -> anyhow::Result<SessionAssembly<'a>> {
+        let resolved = ResolvedModelConfig::resolve(self.apply_cli_overrides_to_config(config))?;
+        let initial_messages = inputs.initial_messages(
+            resolved.model_config.supports_images,
+            resolved.model_config.context_window,
+        );
+        Ok(SessionAssembly {
+            inputs,
+            resolved,
+            model_config_name,
+            effective_provider_identity: provider_identity,
+            session_model_change_override,
+            initial_messages,
+        })
+    }
+
     /// Resolve a restored session's model, verify its pinned provider
     /// identity, and rebuild the pair.
     fn restored_run(
         &self,
         restored: Session,
-        inputs: &RunInputs<'_>,
+        inputs: RunInputs<'_>,
         persistence: Option<SessionPersistencePlan>,
     ) -> anyhow::Result<RunSession> {
         let (config, model_config_name) = self.resolve_model_selection(
@@ -568,31 +336,17 @@ impl crate::CodingAssistant {
             self.allow_session_model_change,
             restored.id,
         )?;
-        let resolved = ResolvedModelConfig::resolve(self.apply_cli_overrides_to_config(config))?;
-        let initial_messages = inputs.initial_messages(
-            resolved.model_config.supports_images,
-            resolved.model_config.context_window,
-        );
-        let tool_context = Arc::clone(inputs.tool_context);
-        let mut run = Self::restored_client_and_session(
-            restored,
-            resolved,
+        self.prepare_assembly(
+            inputs,
+            config,
             model_config_name,
             provider_identity,
             session_model_change_override,
-            &initial_messages,
-            &inputs.skill_locations,
-            tool_context,
-            inputs.toolbox_tools.to_vec(),
-            inputs.mcp_servers.to_vec(),
-            inputs.lazy_mcp.cloned(),
-            inputs.tools_enabled,
-            inputs.include_runtime_context,
-            inputs.task_id,
+        )?
+        .assemble(RunOrigin::Restored {
+            restored: Box::new(restored),
             persistence,
-        )?;
-        run.agent = run.agent.with_image_policy(inputs.images);
-        Ok(run)
+        })
     }
 
     /// `--resume <UUID>`: restore the named session.
@@ -601,7 +355,7 @@ impl crate::CodingAssistant {
         session_id: uuid::Uuid,
         read_only: bool,
         data_dir: &DataDir,
-        inputs: &RunInputs<'_>,
+        inputs: RunInputs<'_>,
     ) -> anyhow::Result<RunSession> {
         let restored = data_dir
             .load_session(session_id)?
@@ -616,7 +370,7 @@ impl crate::CodingAssistant {
         &self,
         run_mode: &RunMode,
         data_dir: &DataDir,
-        inputs: &RunInputs<'_>,
+        inputs: RunInputs<'_>,
     ) -> anyhow::Result<RunSession> {
         info!(target: "cake", "Forking session");
         let restored = fork_source(run_mode, data_dir, &inputs.current_dir)?;
@@ -634,65 +388,29 @@ impl crate::CodingAssistant {
             self.allow_session_model_change,
             restored.id,
         )?;
-        let resolved = ResolvedModelConfig::resolve(self.apply_cli_overrides_to_config(config))?;
-        let initial_messages = inputs.initial_messages(
-            resolved.model_config.supports_images,
-            resolved.model_config.context_window,
-        );
-        let tool_context = Arc::clone(inputs.tool_context);
-        let mut run = Self::forked_client_and_session(
-            &restored,
-            resolved,
+        self.prepare_assembly(
+            inputs,
+            config,
             model_config_name,
             provider_identity,
             session_model_change_override,
-            inputs.current_dir.clone(),
-            &initial_messages,
-            inputs.skill_locations.clone(),
-            tool_context,
-            inputs.toolbox_tools.to_vec(),
-            inputs.mcp_servers.to_vec(),
-            inputs.lazy_mcp.cloned(),
-            inputs.tools_enabled,
-            inputs.include_runtime_context,
-            inputs.task_id,
-        )?;
-        run.agent = run.agent.with_image_policy(inputs.images);
-        Ok(run)
+        )?
+        .assemble(RunOrigin::Forked {
+            restored: &restored,
+        })
     }
 
     /// New and ephemeral runs: start fresh from the CLI-selected model.
     fn new_run(
         &self,
-        inputs: &RunInputs<'_>,
+        inputs: RunInputs<'_>,
         persistence: Option<SessionPersistencePlan>,
     ) -> anyhow::Result<RunSession> {
         let (config, model_config_name) =
             self.resolve_configured_model(inputs.models, inputs.default_model)?;
         let provider_identity = provider_identity::build(&config, &model_config_name)?;
-        let resolved = ResolvedModelConfig::resolve(self.apply_cli_overrides_to_config(config))?;
-        let initial_messages = inputs.initial_messages(
-            resolved.model_config.supports_images,
-            resolved.model_config.context_window,
-        );
-        let mut run = Self::new_client_and_session(
-            resolved,
-            model_config_name,
-            provider_identity,
-            inputs.current_dir.clone(),
-            &initial_messages,
-            inputs.skill_locations.clone(),
-            Arc::clone(inputs.tool_context),
-            inputs.toolbox_tools.to_vec(),
-            inputs.mcp_servers.to_vec(),
-            inputs.lazy_mcp.cloned(),
-            inputs.tools_enabled,
-            inputs.include_runtime_context,
-            inputs.task_id,
-            persistence,
-        );
-        run.agent = run.agent.with_image_policy(inputs.images);
-        Ok(run)
+        self.prepare_assembly(inputs, config, model_config_name, provider_identity, false)?
+            .assemble(RunOrigin::New { persistence })
     }
 }
 
@@ -740,26 +458,25 @@ fn verify_session_provider_identity(
 }
 
 /// Construction inputs every run-mode step shares.
-struct RunInputs<'a> {
-    current_dir: PathBuf,
-    config_dir: &'a Path,
-    cli_system_prompt: Option<&'a Path>,
-    settings_system_prompt: Option<&'a Path>,
-    agents_files: &'a [AgentsFile],
-    skill_catalog: &'a SkillCatalog,
-    skill_locations: HashMap<PathBuf, Skill>,
-    models: &'a HashMap<String, ModelDefinition>,
-    images: &'a ResolvedImagePolicy,
-    default_model: Option<&'a str>,
-    skill_settings: &'a SkillSettings,
-    tool_context: &'a Arc<ToolContext>,
-    toolbox_tools: &'a [ToolboxTool],
-    mcp_servers: &'a [McpServer],
-    lazy_mcp: Option<&'a Arc<LazyMcpRuntime>>,
-    tools_enabled: Option<&'a [String]>,
-    include_runtime_context: bool,
-    include_project_prompt: bool,
-    task_id: uuid::Uuid,
+pub struct RunInputs<'a> {
+    pub current_dir: PathBuf,
+    pub config_dir: &'a Path,
+    pub cli_system_prompt: Option<&'a Path>,
+    pub settings_system_prompt: Option<&'a Path>,
+    pub agents_files: &'a [AgentsFile],
+    pub skill_catalog: &'a SkillCatalog,
+    pub models: &'a HashMap<String, ModelDefinition>,
+    pub images: &'a ResolvedImagePolicy,
+    pub default_model: Option<&'a str>,
+    pub skill_settings: &'a SkillSettings,
+    pub tool_context: &'a Arc<ToolContext>,
+    pub toolbox_tools: &'a [ToolboxTool],
+    pub mcp_servers: &'a [McpServer],
+    pub lazy_mcp: Option<&'a Arc<LazyMcpRuntime>>,
+    pub tools_enabled: Option<&'a [String]>,
+    pub include_runtime_context: bool,
+    pub include_project_prompt: bool,
+    pub task_id: uuid::Uuid,
 }
 
 impl RunInputs<'_> {
@@ -772,7 +489,7 @@ impl RunInputs<'_> {
         &self,
         supports_images: bool,
         context_window: Option<u32>,
-    ) -> Vec<(crate::types::Role, String)> {
+    ) -> Vec<(Role, String)> {
         let skill_budget = SkillCatalogBudget::resolve(
             context_window,
             self.skill_settings.catalog_budget(),
@@ -796,6 +513,192 @@ impl RunInputs<'_> {
             self.include_project_prompt,
         )
     }
+}
+
+/// The state that distinguishes a new, restored, or forked run.
+enum RunOrigin<'a> {
+    New {
+        persistence: Option<SessionPersistencePlan>,
+    },
+    Restored {
+        restored: Box<Session>,
+        persistence: Option<SessionPersistencePlan>,
+    },
+    Forked {
+        restored: &'a Session,
+    },
+}
+
+/// Session fields selected by the run origin before the shared assembly step.
+struct SessionSeed {
+    id: uuid::Uuid,
+    working_dir: PathBuf,
+    provider_identity: Option<ProviderIdentity>,
+    context_identity: Option<ContextIdentity>,
+    stored_prompt_prefix: Option<StoredPromptPrefix>,
+    prompt_prefix_decision: PromptPrefixDecision,
+    persistence: Option<SessionPersistencePlan>,
+    session_model_change_override: bool,
+}
+
+/// One owner for the shared Agent and Session builder chain.
+struct SessionAssembly<'a> {
+    inputs: RunInputs<'a>,
+    resolved: ResolvedModelConfig,
+    model_config_name: String,
+    effective_provider_identity: ProviderIdentity,
+    session_model_change_override: bool,
+    initial_messages: Vec<(Role, String)>,
+}
+
+impl SessionAssembly<'_> {
+    fn base_agent(&self) -> Agent {
+        Agent::new(self.resolved.clone(), &self.initial_messages)
+            .with_task_id(self.inputs.task_id)
+            .with_model_config_name(self.model_config_name.clone())
+            .with_tool_context(Arc::clone(self.inputs.tool_context))
+            .with_toolbox_tools(self.inputs.toolbox_tools.to_vec())
+            .with_mcp_servers(self.inputs.mcp_servers.to_vec())
+            .with_lazy_mcp_servers(self.inputs.lazy_mcp.cloned())
+            .with_enabled_tools(self.inputs.tools_enabled)
+            .with_skill_locations(skill_locations(self.inputs.skill_catalog))
+            .with_image_policy(self.inputs.images)
+    }
+
+    fn assemble(self, origin: RunOrigin<'_>) -> anyhow::Result<RunSession> {
+        let mut agent = self.base_agent();
+        let seed = match origin {
+            RunOrigin::New { persistence } => {
+                let id = agent.session_id();
+                info!(target: "cake", "New session: {id}");
+                SessionSeed {
+                    id,
+                    working_dir: self.inputs.current_dir.clone(),
+                    provider_identity: Some(self.effective_provider_identity.clone()),
+                    context_identity: None,
+                    stored_prompt_prefix: None,
+                    prompt_prefix_decision: PromptPrefixDecision::Initial,
+                    persistence,
+                    session_model_change_override: false,
+                }
+            },
+            RunOrigin::Restored {
+                restored,
+                persistence,
+            } => {
+                let restored = *restored;
+                let stored_prompt_prefix = restored.stored_prompt_prefix();
+                let id = restored.id;
+                agent = agent
+                    .with_session_id(id)
+                    .with_active_mcp_tools(restored.activated_mcp_tools())
+                    .with_context_seed(restored.context_seed())
+                    .map_err(|error| anyhow::anyhow!("Cannot restore session {id}: {error:#}"))?
+                    .with_last_usage(restored.last_turn_usage())
+                    .with_activated_skills(restored.activated_skills());
+                warn_omitted_history_images(&agent, &self.resolved, &self.model_config_name);
+                SessionSeed {
+                    id,
+                    working_dir: restored.working_dir,
+                    provider_identity: restored.provider_identity,
+                    context_identity: restored.context_identity,
+                    stored_prompt_prefix,
+                    prompt_prefix_decision: PromptPrefixDecision::Rebuilt,
+                    persistence,
+                    session_model_change_override: self.session_model_change_override,
+                }
+            },
+            RunOrigin::Forked { restored } => {
+                let stored_prompt_prefix = restored.stored_prompt_prefix();
+                let id = agent.session_id();
+                agent = agent
+                    .with_active_mcp_tools(restored.activated_mcp_tools())
+                    .with_context_seed(restored.context_seed().for_session(id.to_string()))
+                    .map_err(|error| {
+                        anyhow::anyhow!("Cannot fork session {}: {error:#}", restored.id)
+                    })?
+                    .with_last_usage(restored.last_turn_usage())
+                    .with_activated_skills(restored.activated_skills());
+                warn_omitted_history_images(&agent, &self.resolved, &self.model_config_name);
+                info!(target: "cake", "New forked session: {id}");
+                SessionSeed {
+                    id,
+                    working_dir: self.inputs.current_dir.clone(),
+                    provider_identity: restored.provider_identity.clone(),
+                    context_identity: None,
+                    stored_prompt_prefix,
+                    prompt_prefix_decision: PromptPrefixDecision::Rebuilt,
+                    persistence: Some(SessionPersistencePlan::Create {
+                        seed_records: fork_seed_records(restored, id),
+                        blob_source: Some(restored.id),
+                    }),
+                    session_model_change_override: self.session_model_change_override,
+                }
+            },
+        };
+        agent.set_prompt_prefix_runtime(self.inputs.include_runtime_context);
+        let mut session = Session::new(seed.id, seed.working_dir);
+        session.model = Some(self.resolved.model_config.model.clone());
+        session.model_config = Some(self.model_config_name);
+        session.provider_identity = seed.provider_identity;
+        session.context_identity = seed.context_identity;
+        session.system_prompt = self
+            .initial_messages
+            .first()
+            .map(|(_, content)| content.clone());
+        Ok(RunSession {
+            agent,
+            session,
+            persistence: seed.persistence,
+            effective_provider_identity: Some(self.effective_provider_identity),
+            session_model_change_override: seed.session_model_change_override,
+            stored_prompt_prefix: seed.stored_prompt_prefix,
+            include_runtime_context: self.inputs.include_runtime_context,
+            prompt_prefix_decision: seed.prompt_prefix_decision,
+            resolved: Box::new(self.resolved),
+        })
+    }
+}
+
+/// Copy the prior transcript records a fork seeds into its new session.
+fn fork_seed_records(restored: &Session, new_id: uuid::Uuid) -> Vec<SessionRecord> {
+    let latest_checkpoint = restored.latest_checkpoint_index();
+    restored
+        .records
+        .iter()
+        .enumerate()
+        .filter_map(|(index, record)| match record {
+            record if record.to_conversation_item().is_some() => Some(record.clone()),
+            SessionRecord::SkillActivated {
+                task_id,
+                timestamp,
+                name,
+                path,
+                ..
+            } => Some(SessionRecord::SkillActivated {
+                session_id: new_id.to_string(),
+                task_id: task_id.clone(),
+                timestamp: *timestamp,
+                name: name.clone(),
+                path: path.clone(),
+            }),
+            SessionRecord::McpToolsActivated {
+                task_id,
+                timestamp,
+                tools,
+                ..
+            } => Some(SessionRecord::McpToolsActivated {
+                session_id: new_id.to_string(),
+                task_id: task_id.clone(),
+                timestamp: *timestamp,
+                tools: tools.clone(),
+            }),
+            SessionRecord::Compaction(checkpoint) if latest_checkpoint == Some(index) => Some(
+                SessionRecord::Compaction(checkpoint.for_session(new_id.to_string())),
+            ),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Load the prior session a fork starts from.

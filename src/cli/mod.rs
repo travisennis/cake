@@ -4,7 +4,7 @@
 //! - The [`CmdRunner`] trait for CLI commands.
 //! - [`CliOutputSink`] for rendering responses.
 //! - [`RunMode`] / [`SessionPersistencePlan`] for session lifecycle.
-//! - [`session_factory::RunSession`] and [`session_factory::skill_locations`] for session construction.
+//! - [`session_factory::RunInputs`] and [`session_factory::RunSession`] for session construction.
 
 mod bash;
 mod checkpoint;
@@ -24,6 +24,7 @@ pub mod request_reuse;
 mod run_mode;
 mod sandbox_grants;
 mod session_factory;
+pub use session_factory::RunInputs;
 pub use session_factory::RunSession;
 mod sessions;
 mod settings;

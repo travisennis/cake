@@ -27,8 +27,8 @@ use crate::cli::context_identity::{
     self, ContextDrift, ContextIdentityCheck, ContextIdentityInputs, ContextPreflightInputs,
 };
 use crate::cli::{
-    CliOutputSink, CmdRunner, CommandRunOptions, Commands, RunMode, SessionPersistencePlan,
-    TurnResult, execute_persistence_plan, prepare_user_skills_dir,
+    CliOutputSink, CmdRunner, CommandRunOptions, Commands, RunInputs, RunMode,
+    SessionPersistencePlan, TurnResult, execute_persistence_plan, prepare_user_skills_dir,
 };
 use crate::clients::mcp::LazyMcpRuntime;
 use crate::clients::resolve_linked_worktree_dirs;
@@ -353,7 +353,7 @@ struct ReusePlan {
     output_schema: Option<Arc<crate::config::OutputSchema>>,
 }
 
-struct RunInputs {
+struct RunContent {
     content: String,
     output_schema: Option<Arc<crate::config::OutputSchema>>,
 }
@@ -864,7 +864,7 @@ impl CodingAssistant {
     ) -> anyhow::Result<PreparedRun> {
         let original_dir = std::env::current_dir()?;
         let additional_dirs = self.resolve_additional_dirs(&original_dir);
-        let inputs = self.validate_run_inputs(&original_dir)?;
+        let content = self.validate_run_content(&original_dir)?;
 
         self.check_resume_worktree_rebind(session_working_dir)?;
 
@@ -913,16 +913,16 @@ impl CodingAssistant {
             mcp_config_paths,
             force_eager_mcp_servers: HashSet::new(),
             _worktree: WorktreeGuard::new(worktree, original_dir),
-            content: inputs.content,
-            output_schema: inputs.output_schema,
+            content: content.content,
+            output_schema: content.output_schema,
         })
     }
 
-    fn validate_run_inputs(&self, original_dir: &Path) -> anyhow::Result<RunInputs> {
+    fn validate_run_content(&self, original_dir: &Path) -> anyhow::Result<RunContent> {
         let stdin_content = Self::read_stdin_content()?;
         let content = Self::build_content(self.prompt.as_deref(), stdin_content)?;
         let output_schema = self.load_output_schema(original_dir)?;
-        Ok(RunInputs {
+        Ok(RunContent {
             content,
             output_schema,
         })
@@ -2192,7 +2192,7 @@ impl CodingAssistant {
     ) -> anyhow::Result<ReusePlan> {
         self.validate_reuse_options()?;
         let session_id = Self::reuse_session_id(run_mode)?;
-        let inputs = self.validate_run_inputs(invocation_dir)?;
+        let content = self.validate_run_content(invocation_dir)?;
         let capture = crate::cli::request_reuse::load_capture(data_dir, session_id)?;
         let settings_dir = session_working_dir.unwrap_or(invocation_dir).to_path_buf();
         let load = self.load_settings(&settings_dir, options.project_config_mode)?;
@@ -2209,14 +2209,14 @@ impl CodingAssistant {
         )?;
         let resolved = ResolvedModelConfig::resolve(config)?;
         let request =
-            crate::cli::request_reuse::append_user_message(&capture, session_id, &inputs.content)?;
+            crate::cli::request_reuse::append_user_message(&capture, session_id, &content.content)?;
         Ok(ReusePlan {
             session_id,
             settings_dir,
             request,
             resolved,
             model_config_name,
-            output_schema: inputs.output_schema,
+            output_schema: content.output_schema,
         })
     }
 
@@ -2600,23 +2600,26 @@ impl CodingAssistant {
         let mut run_session = this.build_client_and_session(
             &context.run_mode,
             data_dir,
-            prepared.current_dir.clone(),
-            &config_dir,
-            &resources.agents_files,
-            &resources.loaded.models,
-            &resources.loaded.images,
-            resources.loaded.default_model.as_deref(),
-            &resources.skill_catalog,
-            &resources.tool_context,
-            &resources.toolbox_tools,
-            &resources.mcp_servers,
-            resources.mcp_runtime.as_ref(),
-            resources.tools_enabled.as_deref(),
-            task_id,
-            cli_system_prompt.as_deref(),
-            resources.loaded.system_prompt.as_deref(),
-            &resources.loaded.skills,
-            resources.project_config_mode.loads_project_config(),
+            RunInputs {
+                current_dir: prepared.current_dir.clone(),
+                config_dir: &config_dir,
+                cli_system_prompt: cli_system_prompt.as_deref(),
+                settings_system_prompt: resources.loaded.system_prompt.as_deref().map(Path::new),
+                agents_files: &resources.agents_files,
+                skill_catalog: &resources.skill_catalog,
+                models: &resources.loaded.models,
+                images: &resources.loaded.images,
+                default_model: resources.loaded.default_model.as_deref(),
+                skill_settings: &resources.loaded.skills,
+                tool_context: &resources.tool_context,
+                toolbox_tools: &resources.toolbox_tools,
+                mcp_servers: &resources.mcp_servers,
+                lazy_mcp: resources.mcp_runtime.as_ref(),
+                tools_enabled: resources.tools_enabled.as_deref(),
+                include_runtime_context: !this.no_runtime_context,
+                include_project_prompt: resources.project_config_mode.loads_project_config(),
+                task_id,
+            },
         )?;
         run_session.session.run_config =
             Some(this.session_run_config(&prepared, &resources, &context.invocation_dir));
