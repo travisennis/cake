@@ -14,14 +14,14 @@
 //! resolves a credential, or starts a process.
 
 use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write as _};
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::config::owner_only;
 use crate::config::settings::{
     ProjectAuthority, SettingsError, SettingsLoader, SettingsOrigin, SettingsSource,
 };
@@ -536,25 +536,10 @@ impl TrustRecord {
             path: path.to_path_buf(),
             reason: format!("failed to serialize the trust record: {error}"),
         })?;
-        let temp = parent.join(format!(
-            ".{}.{}.{}.tmp",
-            path.file_name()
-                .map_or("trust", |name| name.to_str().unwrap_or("trust")),
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_nanos()),
-        ));
-        let write_result = write_temp_file(&temp, &json).and_then(|()| {
-            fs::rename(&temp, path).map_err(|source| TrustError::Io {
-                path: path.to_path_buf(),
-                source,
-            })
-        });
-        if write_result.is_err() {
-            drop(fs::remove_file(&temp));
-        }
-        write_result
+        owner_only::write_atomic_owner_only(path, &json).map_err(|source| TrustError::Io {
+            path: path.to_path_buf(),
+            source,
+        })
     }
 }
 
@@ -1355,26 +1340,6 @@ fn ensure_owner_only_dir(path: &Path) -> Result<(), TrustError> {
         })?;
     }
     Ok(())
-}
-
-fn write_temp_file(path: &Path, bytes: &[u8]) -> Result<(), TrustError> {
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path).map_err(|source| TrustError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    file.write_all(bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|source| TrustError::Io {
-            path: path.to_path_buf(),
-            source,
-        })
 }
 
 fn format_authority(authority: &[AuthoritySource]) -> String {

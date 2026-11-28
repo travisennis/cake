@@ -7,11 +7,9 @@ use std::{
 use uuid::{Error as UuidError, Uuid};
 
 use anyhow::{Context, anyhow};
-use chrono::{DateTime, Utc};
-use serde::Deserialize;
 
 use crate::config::blob_store::{self as blob_store, BlobDiagnostics};
-use crate::config::session_jsonl::SessionFramer;
+use crate::config::session_jsonl::{HeaderError, SessionHeader};
 use crate::config::{BlobStore, Session, git, session::CURRENT_FORMAT_VERSION};
 use crate::types::{ContextIdentity, GitState, SessionRecord, SessionRunConfig};
 
@@ -505,68 +503,47 @@ pub struct SessionResumeConfig {
     pub context_identity: Option<ContextIdentity>,
 }
 
-/// Minimal header struct for quickly inspecting a session file without
-/// loading the entire conversation history.
-#[derive(Deserialize)]
-struct SessionFileHeader {
-    #[serde(rename = "type")]
-    record_type: String,
-    format_version: u32,
-    session_id: String,
-    working_directory: PathBuf,
-    /// Timestamp from the `session_meta` record, used instead of filesystem mtime.
-    timestamp: DateTime<Utc>,
-    #[serde(default)]
-    run_config: Option<SessionRunConfig>,
-    #[serde(default)]
-    context_identity: Option<ContextIdentity>,
-}
-
-/// Reads only the first record line of a session file to extract its header.
+/// Read only the first record of a session file and decode its header.
 ///
 /// Blank leading lines are skipped, so a header is found regardless of leading
 /// whitespace, matching full load, replay, and listing.
-fn read_session_header(path: &Path) -> Result<SessionFileHeader, SessionHeaderError> {
+fn read_session_header(path: &Path) -> Result<SessionHeader, SessionHeaderError> {
     let file = open_session_file(path)?;
-    let mut framer = SessionFramer::new(BufReader::new(file));
-    let Some(line) = framer
-        .next_record()
-        .map_err(|source| SessionHeaderError::Read {
+    let mut reader = BufReader::new(file);
+    SessionHeader::read(&mut reader).map_err(|error| header_error(error, path))
+}
+
+fn header_error(error: HeaderError, path: &Path) -> SessionHeaderError {
+    match error {
+        HeaderError::Empty => SessionHeaderError::Empty {
             path: path.to_path_buf(),
-            source,
-        })?
-    else {
-        return Err(SessionHeaderError::Empty {
-            path: path.to_path_buf(),
-        });
-    };
-    let Some(text) = line.text.as_deref() else {
-        return Err(SessionHeaderError::Read {
+        },
+        HeaderError::NotUtf8 => SessionHeaderError::Read {
             path: path.to_path_buf(),
             source: std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "session header is not valid UTF-8",
             ),
-        });
-    };
-    let header: SessionFileHeader =
-        serde_json::from_str(text).map_err(|source| SessionHeaderError::Parse {
+        },
+        HeaderError::Read(source) => SessionHeaderError::Read {
             path: path.to_path_buf(),
             source,
-        })?;
-    if header.record_type != "session_meta" {
-        return Err(SessionHeaderError::LegacyFormat {
+        },
+        HeaderError::NotSessionMeta => SessionHeaderError::LegacyFormat {
             path: path.to_path_buf(),
-        });
-    }
-    if header.format_version != CURRENT_FORMAT_VERSION {
-        return Err(SessionHeaderError::UnsupportedVersion {
-            version: header.format_version,
-            expected: CURRENT_FORMAT_VERSION,
+        },
+        HeaderError::UnsupportedVersion { found, expected } => {
+            SessionHeaderError::UnsupportedVersion {
+                version: found,
+                expected,
+                path: path.to_path_buf(),
+            }
+        },
+        HeaderError::Parse(source) => SessionHeaderError::Parse {
             path: path.to_path_buf(),
-        });
+            source,
+        },
     }
-    Ok(header)
 }
 
 /// Open a session file without following a final symlink, then confirm the

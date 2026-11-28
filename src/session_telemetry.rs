@@ -1,6 +1,6 @@
 use std::{
     fs::{self, File, OpenOptions},
-    io::{BufWriter, Read, Seek, SeekFrom, Write},
+    io::BufWriter,
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -926,9 +926,6 @@ pub struct SessionTelemetryWriter {
     writer: BufWriter<File>,
 }
 
-/// Bytes inspected per backward window when locating the final record boundary.
-const TAIL_SCAN_CHUNK_BYTES: usize = 8 * 1024;
-
 impl SessionTelemetryWriter {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
         if let Some(parent) = path.parent() {
@@ -946,10 +943,8 @@ impl SessionTelemetryWriter {
     }
 
     pub fn append(&mut self, record: &SessionTelemetryRecord) -> anyhow::Result<()> {
-        serde_json::to_writer(&mut self.writer, record)?;
-        self.writer.write_all(b"\n")?;
-        self.writer.flush()?;
-        Ok(())
+        crate::config::session_jsonl::append_json_record(&mut self.writer, record)
+            .map_err(anyhow::Error::new)
     }
 }
 
@@ -969,7 +964,8 @@ impl SessionTelemetryWriter {
 /// could discard a framed record.
 fn truncate_unterminated_tail(file: &File, path: &Path) -> anyhow::Result<()> {
     let len = file.metadata()?.len();
-    let tail_len = unterminated_tail_len(file, len)?;
+    let tail_len = crate::config::session_jsonl::read_unterminated_tail(file, len)?
+        .map_or(0, |tail| tail.len() as u64);
     if tail_len == 0 {
         return Ok(());
     }
@@ -981,27 +977,6 @@ fn truncate_unterminated_tail(file: &File, path: &Path) -> anyhow::Result<()> {
     );
     file.set_len(len - tail_len)?;
     Ok(())
-}
-
-/// Return the length of the bytes after the final newline, or the whole file
-/// when it has no newline. Reads backwards in windows so a large sidecar is not
-/// buffered whole.
-fn unterminated_tail_len(file: &File, len: u64) -> std::io::Result<u64> {
-    let chunk_bytes = u64::try_from(TAIL_SCAN_CHUNK_BYTES).unwrap_or(u64::MAX);
-    let mut end = len;
-    while end > 0 {
-        let start = end.saturating_sub(chunk_bytes);
-        let chunk_len = usize::try_from(end - start).unwrap_or(TAIL_SCAN_CHUNK_BYTES);
-        let mut chunk = vec![0; chunk_len];
-        let mut handle = file;
-        handle.seek(SeekFrom::Start(start))?;
-        handle.read_exact(&mut chunk)?;
-        if let Some(index) = chunk.iter().rposition(|byte| *byte == b'\n') {
-            return Ok(len - (start + index as u64 + 1));
-        }
-        end = start;
-    }
-    Ok(len)
 }
 
 /// Outcome of one shared-writer append.

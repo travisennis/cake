@@ -17,8 +17,8 @@ use uuid::Uuid;
 use crate::OutputFormat;
 use crate::cli::{CliOutputSink, CmdRunner, CommandRunOptions};
 use crate::config::DataDir;
-use crate::config::session::{CURRENT_FORMAT_VERSION, ensure_checkpoint_matches_session};
-use crate::config::session_jsonl::SessionFramer;
+use crate::config::session::ensure_checkpoint_matches_session;
+use crate::config::session_jsonl::{HeaderError, SessionFramer, SessionHeader};
 use crate::types::{ReplayErrorKind, SessionRecord, StreamRecord};
 
 /// Replay an existing session transcript as stream-json events.
@@ -176,6 +176,18 @@ fn load_records(path: &Path, session_id: Uuid) -> Result<Vec<SessionRecord>, Rep
     })?;
     let mut framer = SessionFramer::new(BufReader::new(file));
 
+    let header =
+        SessionHeader::read_framed(&mut framer).map_err(|error| header_error(error, session_id))?;
+    if header.session_id != session_id.to_string() {
+        return Err(ReplayError::Corrupt(
+            session_id.to_string(),
+            format!(
+                "session_meta session_id '{}' does not match requested session {session_id}",
+                header.session_id
+            ),
+        ));
+    }
+
     let mut next_record = || {
         framer.next_record().map_err(|error| {
             ReplayError::Corrupt(
@@ -185,22 +197,7 @@ fn load_records(path: &Path, session_id: Uuid) -> Result<Vec<SessionRecord>, Rep
         })
     };
 
-    let Some(first) = next_record()? else {
-        return Err(ReplayError::Corrupt(
-            session_id.to_string(),
-            "session file is empty".to_string(),
-        ));
-    };
-    let Some(first_text) = first.text.as_deref() else {
-        return Err(ReplayError::Corrupt(
-            session_id.to_string(),
-            "session file begins with a record that is not valid UTF-8".to_string(),
-        ));
-    };
-    let meta = parse_record(first_text, &session_id)?;
-    validate_meta(&meta, session_id)?;
-
-    let mut records = vec![meta];
+    let mut records = vec![header.meta];
     while let Some(line) = next_record()? {
         let Some(text) = line.text.as_deref() else {
             tracing::warn!(
@@ -225,36 +222,34 @@ fn load_records(path: &Path, session_id: Uuid) -> Result<Vec<SessionRecord>, Rep
     Ok(records)
 }
 
-/// Validate the header record's format version and identity against the
-/// requested session UUID.
-fn validate_meta(meta: &SessionRecord, session_id: Uuid) -> Result<(), ReplayError> {
-    match meta {
-        SessionRecord::SessionMeta {
-            format_version,
-            session_id: meta_session_id,
-            ..
-        } => {
-            if *format_version != CURRENT_FORMAT_VERSION {
-                return Err(ReplayError::UnsupportedFormat {
-                    session_id: session_id.to_string(),
-                    found: *format_version,
-                    expected: CURRENT_FORMAT_VERSION,
-                });
-            }
-            if meta_session_id != &session_id.to_string() {
-                return Err(ReplayError::Corrupt(
-                    session_id.to_string(),
-                    format!(
-                        "session_meta session_id '{meta_session_id}' does not match requested session {session_id}"
-                    ),
-                ));
-            }
-            Ok(())
+/// Map a shared header failure onto the replay error vocabulary without
+/// changing the stream record or exit class.
+fn header_error(error: HeaderError, session_id: Uuid) -> ReplayError {
+    match error {
+        HeaderError::Empty => {
+            ReplayError::Corrupt(session_id.to_string(), "session file is empty".to_string())
         },
-        _ => Err(ReplayError::Corrupt(
+        HeaderError::NotUtf8 => ReplayError::Corrupt(
+            session_id.to_string(),
+            "session file begins with a record that is not valid UTF-8".to_string(),
+        ),
+        HeaderError::Read(source) => ReplayError::Corrupt(
+            session_id.to_string(),
+            format!("failed to read session file: {source}"),
+        ),
+        HeaderError::NotSessionMeta => ReplayError::Corrupt(
             session_id.to_string(),
             "first record is not session_meta".to_string(),
-        )),
+        ),
+        HeaderError::UnsupportedVersion { found, expected } => ReplayError::UnsupportedFormat {
+            session_id: session_id.to_string(),
+            found,
+            expected,
+        },
+        HeaderError::Parse(source) => ReplayError::Corrupt(
+            session_id.to_string(),
+            format!("invalid session record: {source}"),
+        ),
     }
 }
 

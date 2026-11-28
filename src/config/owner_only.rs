@@ -7,8 +7,10 @@
 
 use std::{
     fs::{self, File, OpenOptions},
-    io,
+    io::{self, Write as _},
     path::Path,
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 /// Owner-only mode for Cake's data and sessions directories.
@@ -93,6 +95,50 @@ pub fn set_file_owner_only(file: &File) -> io::Result<()> {
         let _ = file;
         Ok(())
     }
+}
+
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Atomically replace `path` with `bytes` through an owner-only sibling.
+///
+/// The write is durable and invisible under the destination name until it
+/// completes: the temporary file is created `0600`, written, synced, and
+/// renamed. A failure removes the temporary file and leaves an existing
+/// destination untouched. The parent directory must already exist.
+pub fn write_atomic_owner_only(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the destination path has no parent directory",
+        )
+    })?;
+    let file_name = path
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("file");
+    let temp = parent.join(format!(
+        ".{file_name}.{}.{}.{}.tmp",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos()),
+        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let result = (|| {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        apply_session_options(&mut options);
+        let mut file = options.open(&temp)?;
+        set_file_owner_only(&file)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temp, path)
+    })();
+    if result.is_err() {
+        drop(fs::remove_file(&temp));
+    }
+    result
 }
 
 /// Apply the session-file creation mode and refuse to follow a final symlink.

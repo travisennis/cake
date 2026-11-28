@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     fs::{self, File, OpenOptions},
-    io::{BufRead, BufReader, BufWriter, Read, Seek, Write},
+    io::{BufRead, BufReader, BufWriter, Seek, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     thread,
@@ -10,9 +10,14 @@ use std::{
 
 use crate::config::{
     BlobStore, owner_only,
-    session_jsonl::SessionFramer,
+    session_jsonl::{
+        HeaderError, JsonlWriteError, SessionFramer, SessionHeader, append_json_record,
+        read_unterminated_tail,
+    },
     session_paths::{validate_session_parent, validate_session_target},
 };
+
+pub use crate::config::session_jsonl::CURRENT_FORMAT_VERSION;
 
 use anyhow::Context;
 use fs4::{FileExt, TryLockError};
@@ -187,14 +192,8 @@ impl SessionWriter {
     }
 }
 
-/// Session format version for append-only task event logs.
-pub const CURRENT_FORMAT_VERSION: u32 = 4;
 const SESSION_LOCK_RETRY_COUNT: usize = 2;
 const SESSION_LOCK_RETRY_DELAY: Duration = Duration::from_millis(10);
-
-/// Initial window, in bytes, of the backwards scan that finds the last record
-/// boundary of a session file. It doubles until a newline or the file start.
-const SESSION_TAIL_WINDOW_BYTES: u64 = 64 * 1024;
 
 /// In-memory session state reconstructed from a JSONL file.
 ///
@@ -449,19 +448,36 @@ impl Session {
     /// and [`Self::load_from_append_handle`].
     fn read_from(reader: impl BufRead, path: &Path) -> anyhow::Result<Self> {
         let mut framer = SessionFramer::new(reader);
-        let (meta, header) = read_session_header(&mut framer, path)?;
-        let records = read_session_records(&mut framer, path, header.timestamp, meta, header.id)?;
+        let header =
+            SessionHeader::read_framed(&mut framer).map_err(|error| header_error(error, path))?;
+        let id = header
+            .parsed_session_id()
+            .with_context(|| format!("Invalid session UUID '{}'", header.session_id))?;
+        let SessionHeader {
+            meta,
+            timestamp,
+            working_directory,
+            model,
+            model_config,
+            provider_identity,
+            system_prompt,
+            run_config,
+            context_identity,
+            git,
+            ..
+        } = header;
+        let records = read_session_records(&mut framer, path, timestamp, meta, id)?;
 
         Ok(Self {
-            id: header.id,
-            working_dir: header.working_dir,
-            model: header.model,
-            model_config: header.model_config,
-            provider_identity: header.provider_identity,
-            system_prompt: header.system_prompt,
-            run_config: header.run_config,
-            context_identity: header.context_identity,
-            git: header.git,
+            id,
+            working_dir: working_directory,
+            model,
+            model_config,
+            provider_identity,
+            system_prompt,
+            run_config,
+            context_identity,
+            git: Some(git),
             records,
         })
     }
@@ -541,9 +557,17 @@ impl Session {
     /// Accepts any `Write` implementor so callers can pass a `File` directly
     /// (e.g., during session creation) or a `BufWriter<File>` (shared writer).
     pub fn append_record(file: &mut impl Write, record: &SessionRecord) -> anyhow::Result<()> {
-        serde_json::to_writer(&mut *file, record).context("Failed to serialize session record")?;
-        file.write_all(b"\n").context("Failed to write newline")?;
-        file.flush().context("Failed to flush session file")
+        append_json_record(file, record).map_err(|error| match error {
+            JsonlWriteError::Serialize(source) => {
+                anyhow::Error::new(source).context("Failed to serialize session record")
+            },
+            JsonlWriteError::Newline(source) => {
+                anyhow::Error::new(source).context("Failed to write newline")
+            },
+            JsonlWriteError::Flush(source) => {
+                anyhow::Error::new(source).context("Failed to flush session file")
+            },
+        })
     }
 
     /// Append multiple JSONL session records.
@@ -582,7 +606,6 @@ fn repair_partial_tail(file: &File, path: &Path) -> anyhow::Result<()> {
     else {
         return Ok(());
     };
-
     let tail_len = tail.len() as u64;
     let is_complete_record =
         serde_json::from_slice::<serde_json::Value>(&tail).is_ok_and(|value| value.is_object());
@@ -614,126 +637,28 @@ fn repair_partial_tail(file: &File, path: &Path) -> anyhow::Result<()> {
         .with_context(|| format!("Failed to repair session file: {}", path.display()))
 }
 
-/// Read the bytes after the last newline of a file, or `None` when the file is
-/// empty or already ends at a record boundary.
-///
-/// The scan reads backwards in windows, doubling the window until it reaches a
-/// newline or the start of the file, so it does not hold a whole large session
-/// in memory to inspect its last record.
-fn read_unterminated_tail(file: &File, len: u64) -> std::io::Result<Option<Vec<u8>>> {
-    if len == 0 {
-        return Ok(None);
-    }
-
-    let mut window = len.min(SESSION_TAIL_WINDOW_BYTES);
-    loop {
-        let start = len - window;
-        let mut buffer = vec![0; usize::try_from(window).unwrap_or(usize::MAX)];
-        let mut handle = file;
-        handle.seek(std::io::SeekFrom::Start(start))?;
-        handle.read_exact(&mut buffer)?;
-
-        if let Some(last_newline) = buffer.iter().rposition(|byte| *byte == b'\n') {
-            buffer.drain(..=last_newline);
-            return Ok((!buffer.is_empty()).then_some(buffer));
-        }
-        if start == 0 {
-            return Ok(Some(buffer));
-        }
-        window = window.saturating_mul(2).min(len);
-    }
-}
-
-struct SessionHeader {
-    id: uuid::Uuid,
-    working_dir: PathBuf,
-    model: Option<String>,
-    model_config: Option<String>,
-    provider_identity: Option<ProviderIdentity>,
-    system_prompt: Option<String>,
-    run_config: Option<SessionRunConfig>,
-    context_identity: Option<ContextIdentity>,
-    git: Option<GitState>,
-    timestamp: chrono::DateTime<chrono::Utc>,
-}
-
-fn read_session_header<R: std::io::BufRead>(
-    framer: &mut SessionFramer<R>,
-    path: &Path,
-) -> anyhow::Result<(SessionRecord, SessionHeader)> {
-    let first_line = framer
-        .next_record()
-        .with_context(|| format!("Failed to read session file: {}", path.display()))?
-        .ok_or_else(|| anyhow::anyhow!("Session file is empty"))?;
-    let Some(first_line) = first_line.text.as_deref() else {
-        anyhow::bail!(
+fn header_error(error: HeaderError, path: &Path) -> anyhow::Error {
+    match error {
+        HeaderError::Empty => anyhow::anyhow!("Session file is empty"),
+        HeaderError::NotUtf8 => anyhow::anyhow!(
             "Session file {} begins with a record that is not valid UTF-8",
             path.display()
-        );
-    };
-
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(first_line)
-        && value.get("type").and_then(|value| value.as_str()) != Some("session_meta")
-    {
-        anyhow::bail!(
+        ),
+        HeaderError::Read(source) => anyhow::Error::new(source)
+            .context(format!("Failed to read session file: {}", path.display())),
+        HeaderError::NotSessionMeta => anyhow::anyhow!(
             "Unsupported or legacy session file format: expected session_meta as first record in {}",
             path.display()
-        );
-    }
-
-    let meta: SessionRecord = serde_json::from_str(first_line).with_context(|| {
-        format!(
+        ),
+        HeaderError::UnsupportedVersion { found, expected } => anyhow::anyhow!(
+            "Unsupported session format_version: {found} (expected {expected}). Session file: {}",
+            path.display()
+        ),
+        HeaderError::Parse(source) => anyhow::Error::new(source).context(format!(
             "Failed to parse session_meta record of session file: {}",
             path.display()
-        )
-    })?;
-
-    let header = match &meta {
-        SessionRecord::SessionMeta {
-            format_version,
-            session_id,
-            timestamp,
-            working_directory,
-            model,
-            model_config,
-            provider_identity,
-            system_prompt,
-            run_config,
-            context_identity,
-            git,
-            ..
-        } => {
-            if *format_version != CURRENT_FORMAT_VERSION {
-                anyhow::bail!(
-                    "Unsupported session format_version: {} (expected {}). Session file: {}",
-                    format_version,
-                    CURRENT_FORMAT_VERSION,
-                    path.display()
-                );
-            }
-            SessionHeader {
-                id: uuid::Uuid::parse_str(session_id)
-                    .with_context(|| format!("Invalid session UUID '{session_id}'"))?,
-                working_dir: working_directory.clone(),
-                model: model.clone(),
-                model_config: model_config.clone(),
-                provider_identity: provider_identity.as_deref().cloned(),
-                system_prompt: system_prompt.clone(),
-                run_config: run_config.clone(),
-                context_identity: context_identity.as_deref().cloned(),
-                git: Some(git.clone()),
-                timestamp: *timestamp,
-            }
-        },
-        _ => {
-            return Err(anyhow::anyhow!(
-                "Unsupported or legacy session file format: expected session_meta as first record in {}",
-                path.display()
-            ));
-        },
-    };
-
-    Ok((meta, header))
+        )),
+    }
 }
 
 fn read_session_records<R: std::io::BufRead>(

@@ -29,16 +29,13 @@
 //! `cake mcp remove` edit the user-owned global file through this module.
 
 use std::collections::{BTreeMap, HashMap};
-use std::fs::{self, OpenOptions};
-use std::io::Write as _;
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt as _;
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::config::owner_only;
 use crate::config::trust::{ProjectConfigMode, ProjectTrustReport};
 
 /// File name under `<config>/cake/` for the user-owned server list.
@@ -977,17 +974,10 @@ fn write_document(path: &Path, document: &serde_json::Value) -> Result<(), McpMa
         source: std::io::Error::other(error),
     })?;
     bytes.push(b'\n');
-    let temp = temp_path(&target, parent);
-    let write_result = write_temp_file(&temp, &bytes).and_then(|()| {
-        fs::rename(&temp, &target).map_err(|source| McpManageError::Write {
-            path: target.clone(),
-            source,
-        })
-    });
-    if write_result.is_err() {
-        drop(fs::remove_file(&temp));
-    }
-    write_result
+    owner_only::write_atomic_owner_only(&target, &bytes).map_err(|source| McpManageError::Write {
+        path: target.clone(),
+        source,
+    })
 }
 
 /// Resolve a symlinked destination so the write keeps the link in place.
@@ -1001,35 +991,4 @@ fn write_target(path: &Path) -> Result<PathBuf, McpManageError> {
         },
         _ => Ok(path.to_path_buf()),
     }
-}
-
-/// Build a unique sibling path for the temporary file.
-fn temp_path(path: &Path, parent: &Path) -> PathBuf {
-    parent.join(format!(
-        ".{}.{}.{}.tmp",
-        path.file_name()
-            .map_or("mcp", |name| name.to_str().unwrap_or("mcp")),
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos())
-    ))
-}
-
-/// Create the temporary file with owner-only permissions and flush it.
-fn write_temp_file(path: &Path, bytes: &[u8]) -> Result<(), McpManageError> {
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-    let mut file = options.open(path).map_err(|source| McpManageError::Write {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    file.write_all(bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|source| McpManageError::Write {
-            path: path.to_path_buf(),
-            source,
-        })
 }

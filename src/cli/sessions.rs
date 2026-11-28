@@ -1,6 +1,6 @@
 use std::fmt::Write;
 use std::io::BufRead;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
@@ -12,8 +12,7 @@ use crate::cli::{
     DiagnosticCheck, DiagnosticDocument, report_failure,
 };
 use crate::config::DataDir;
-use crate::config::session::CURRENT_FORMAT_VERSION;
-use crate::config::session_jsonl::SessionFramer;
+use crate::config::session_jsonl::{HeaderError, SessionHeader};
 
 /// Maximum number of discovery failures reported by one listing. The last
 /// retained warning names any that were omitted.
@@ -193,15 +192,6 @@ fn collect_session(listing: &mut SessionListing, path: &Path, working_dir: &Path
     }
 }
 
-/// Minimal header struct parsed from the first line of a session file.
-#[derive(serde::Deserialize)]
-struct SessionFileHeader {
-    format_version: u32,
-    session_id: String,
-    working_directory: PathBuf,
-    timestamp: DateTime<Utc>,
-}
-
 /// Read a session file's metadata and first user prompt. `Ok(None)` means the
 /// file is valid but belongs to another working directory; every other
 /// discovery failure is returned with its cause.
@@ -210,7 +200,7 @@ fn read_session_info(path: &Path, working_dir: &Path) -> anyhow::Result<Option<S
         .map_err(|error| anyhow::anyhow!("failed to open session file: {error}"))?;
     let mut reader = std::io::BufReader::new(file);
 
-    let header = read_header(&mut reader)?;
+    let header = SessionHeader::read(&mut reader).map_err(header_error)?;
     if header.working_directory != working_dir {
         return Ok(None);
     }
@@ -224,30 +214,23 @@ fn read_session_info(path: &Path, working_dir: &Path) -> anyhow::Result<Option<S
     }))
 }
 
-/// Parse the `session_meta` header line once, rejecting unsupported versions.
-fn read_header(reader: &mut impl std::io::BufRead) -> anyhow::Result<SessionFileHeader> {
-    let header_line = {
-        let mut framer = SessionFramer::new(&mut *reader);
-        framer
-            .next_record()
-            .map_err(|error| anyhow::anyhow!("failed to read session header: {error}"))?
-            .ok_or_else(|| anyhow::anyhow!("session file is empty"))?
-    };
-    let Some(header_line) = header_line.text.as_deref() else {
-        anyhow::bail!("session file header is not valid UTF-8");
-    };
-
-    let header: SessionFileHeader = serde_json::from_str(header_line)
-        .map_err(|error| anyhow::anyhow!("failed to parse session header: {error}"))?;
-    if header.format_version != CURRENT_FORMAT_VERSION {
-        return Err(anyhow::anyhow!(
-            "Unsupported session format_version: {} (expected {})",
-            header.format_version,
-            CURRENT_FORMAT_VERSION
-        ));
+fn header_error(error: HeaderError) -> anyhow::Error {
+    match error {
+        HeaderError::Empty => anyhow::anyhow!("session file is empty"),
+        HeaderError::NotUtf8 => anyhow::anyhow!("session file header is not valid UTF-8"),
+        HeaderError::Read(source) => {
+            anyhow::anyhow!("failed to read session header: {source}")
+        },
+        HeaderError::NotSessionMeta => anyhow::anyhow!(
+            "unsupported or legacy session file format: expected session_meta as first record"
+        ),
+        HeaderError::UnsupportedVersion { found, expected } => {
+            anyhow::anyhow!("Unsupported session format_version: {found} (expected {expected})")
+        },
+        HeaderError::Parse(source) => {
+            anyhow::anyhow!("failed to parse session header: {source}")
+        },
     }
-
-    Ok(header)
 }
 
 /// Read lines after the `session_meta` to find the first `message` with `role: "user"`.

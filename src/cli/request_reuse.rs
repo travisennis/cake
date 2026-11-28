@@ -7,7 +7,7 @@
 
 use std::{
     fs::{self, OpenOptions},
-    io::{Read as _, Write as _},
+    io::Read as _,
     path::{Path, PathBuf},
 };
 
@@ -138,12 +138,8 @@ pub fn write_capture(
             MAX_CAPTURE_BYTES
         );
     }
-    let temporary = directory.join(format!(".{session_id}-{}.tmp", Uuid::new_v4()));
-    let result = write_temporary(&temporary, &path, &bytes);
-    if result.is_err() {
-        drop(fs::remove_file(&temporary));
-    }
-    result
+    owner_only::write_atomic_owner_only(&path, &bytes)?;
+    Ok(())
 }
 
 /// Load and verify a capture's own integrity fields.
@@ -364,19 +360,6 @@ fn ensure_capture_directory(directory: &Path) -> anyhow::Result<()> {
         },
         Err(error) => Err(error.into()),
     }
-}
-
-fn write_temporary(temporary: &Path, path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    owner_only::apply_session_options(&mut options);
-    let mut file = options.open(temporary)?;
-    owner_only::set_file_owner_only(&file)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    drop(file);
-    fs::rename(temporary, path)?;
-    Ok(())
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
