@@ -8,7 +8,8 @@ use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
 
 use crate::cli::{
-    CmdRunner, CommandRunOptions, DiagnosticCheck, DiagnosticDocument, settings_warnings,
+    CliUsageError, CmdRunner, CommandRunOptions, DiagnosticCheck, DiagnosticDocument,
+    settings_warnings,
 };
 use crate::config::settings::LoadedSettings;
 use crate::config::{DataDir, ModelConfig, SettingsLoader};
@@ -70,9 +71,10 @@ async fn run_bash_check_command(
     options: &CommandRunOptions<'_>,
 ) -> anyhow::Result<()> {
     if check.diagnostic {
-        anyhow::bail!(
-            "`cake bash check --diagnostic` was removed with the in-process judge; use `cake-safety-judge check --diagnostic` for standalone diagnostics"
-        );
+        return Err(CliUsageError::new(
+            "`cake bash check --diagnostic` was removed with the in-process judge; use `cake-safety-judge check --diagnostic` for standalone diagnostics",
+        )
+        .into());
     }
 
     let current_dir = std::env::current_dir()

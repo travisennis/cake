@@ -139,8 +139,9 @@ fn classify_cli_command_error(err: &anyhow::Error) -> Option<u8> {
     None
 }
 
-/// Configuration-state conflicts, root agent-run options combined with a
-/// subcommand, and data-directory preparation failures are input errors.
+/// CLI usage and configuration-state conflicts, root agent-run options
+/// combined with a subcommand, and data-directory preparation failures are
+/// input errors.
 fn is_input_configuration_error(err: &anyhow::Error) -> bool {
     is_cli_input_error(err) || err.downcast_ref::<crate::config::DataDirError>().is_some()
 }
@@ -148,6 +149,7 @@ fn is_input_configuration_error(err: &anyhow::Error) -> bool {
 fn is_cli_input_error(err: &anyhow::Error) -> bool {
     err.downcast_ref::<crate::cli::SandboxGrantError>()
         .is_some()
+        || err.downcast_ref::<crate::cli::CliUsageError>().is_some()
         || err
             .downcast_ref::<crate::cli::InvalidSubcommandOptions>()
             .is_some()

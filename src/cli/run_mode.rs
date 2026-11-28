@@ -4,6 +4,7 @@
 //! `--no-session`) into an enum controlling session lifecycle, and
 //! [`SessionPersistencePlan`] for creating or appending a session file.
 
+use crate::cli::CliUsageError;
 use crate::session_telemetry::SessionTelemetryRunMode;
 use crate::types::SessionRecord;
 
@@ -38,7 +39,9 @@ impl RunMode {
                 }
             )
         {
-            anyhow::bail!("Invalid read-only run: --read-only requires --resume");
+            return Err(
+                CliUsageError::new("Invalid read-only run: --read-only requires --resume").into(),
+            );
         }
         if args.allow_session_model_change
             && !matches!(
@@ -68,12 +71,13 @@ impl RunMode {
             mode,
             Self::Resume { .. } | Self::ForkLatest | Self::Fork { .. }
         ) {
-            anyhow::bail!("--refresh-context requires --resume or --fork");
+            return Err(CliUsageError::new("--refresh-context requires --resume or --fork").into());
         }
         if args.reuse_last_request {
-            anyhow::bail!(
-                "--refresh-context cannot be combined with --reuse-last-request; reuse preserves the captured context"
-            );
+            return Err(CliUsageError::new(
+                "--refresh-context cannot be combined with --reuse-last-request; reuse preserves the captured context",
+            )
+            .into());
         }
         Ok(())
     }

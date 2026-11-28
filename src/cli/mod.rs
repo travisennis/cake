@@ -85,6 +85,22 @@ impl InvalidSubcommandOptions {
     }
 }
 
+/// A CLI flag combination rejected before dispatch.
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct CliUsageError {
+    message: String,
+}
+
+impl CliUsageError {
+    /// Build a usage error with the command-line guidance shown to the user.
+    pub(crate) fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
 /// Top-level CLI subcommands.
 #[derive(Clone, Debug, clap::Subcommand)]
 pub enum Commands {
